@@ -29,6 +29,10 @@ If you use JaxQSOFit in published work, please cite:
 
 - Shen et al. (2019), *ApJS*, 241, 34:
   `https://ui.adsabs.harvard.edu/abs/2019ApJS..241...34S/abstract`
+- Hearin et al. (2023), *MNRAS*, 521, 1741 (DSPS):
+  `https://ui.adsabs.harvard.edu/abs/2023MNRAS.521.1741H/abstract`
+- Green (2018), *JOSS*, 3, 695 (dustmaps):
+  `https://ui.adsabs.harvard.edu/abs/2018JOSS....3..695G/abstract`
 
 ## Key Differences vs PyQSOFit
 
@@ -50,8 +54,8 @@ JaxQSOFit is designed around a **joint Bayesian model** of AGN and host componen
 - `astropy`
 - `astroquery`
 - `extinction`
-- `dsps`
-- `dustmaps`
+- `dsps` ([GitHub](https://github.com/ArgonneCPAC/dsps))
+- `dustmaps` ([GitHub](https://github.com/gregreen/dustmaps))
 
 ## Install
 
