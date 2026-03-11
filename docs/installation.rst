@@ -10,6 +10,20 @@ Requirements
 - DSPS
 - dustmaps
 
+Setup notes
+-----------
+
+1. Configure dustmaps SFD (one-time):
+
+.. code-block:: bash
+
+   python setup.py fetch --map-name=sfd
+
+Then ensure dustmaps points to the directory containing the downloaded SFD maps.
+
+2. Set ``dsps_ssp_fn`` to your DSPS HDF5 SSP template file path when fitting
+   (for example ``tempdata.h5``).
+
 Install from source
 -------------------
 

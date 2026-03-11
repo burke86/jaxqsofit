@@ -13,7 +13,22 @@ Bayesian quasar spectral fitting with JAX + NumPyro, including:
 - Tied Gaussian emission-line model
 - Student-t likelihood (robust to outliers/absorption)
 
-The main implementation is in [`src/jaxqsofit/core.py`](./src/jaxqsofit/core.py).
+## Start Here: Tutorial
+
+- GitHub view: [`notebooks/01_jaxqsofit_tutorial.ipynb`](./notebooks/01_jaxqsofit_tutorial.ipynb)
+- Direct download:
+  `https://raw.githubusercontent.com/burke86/jaxqsofit/main/notebooks/01_jaxqsofit_tutorial.ipynb`
+
+## Documentation
+
+- Read the Docs: `https://jaxqsofit.readthedocs.io/`
+
+## Citation
+
+If you use JaxQSOFit in published work, please cite:
+
+- Shen et al. (2019), *ApJS*, 241, 34:
+  `https://ui.adsabs.harvard.edu/abs/2019ApJS..241...34S/abstract`
 
 ## Key Differences vs PyQSOFit
 
@@ -69,6 +84,8 @@ Current default in code/notebook examples:
 dsps_ssp_fn="tempdata.h5"
 ```
 
+Always set `dsps_ssp_fn` to the HDF5 SSP template file you want to use.
+
 ### 4. Configure dustmaps SFD (one-time)
 
 This repo assumes `dustmaps` is already configured and SFD maps are available.
@@ -78,6 +95,8 @@ Typical one-time setup:
 ```
 python setup.py fetch --map-name=sfd
 ```
+
+After fetching, make sure `dustmaps` is configured to use the directory containing the SFD maps.
 
 ## Repo layout
 
