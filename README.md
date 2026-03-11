@@ -85,11 +85,18 @@ python setup.py fetch --map-name=sfd
 - `src/jaxqsofit/defaults.py` – default prior/line configs
 - `src/jaxqsofit/__init__.py` – package exports
 - `tests/` – test directory
-- `test.ipynb` – development/example notebook
+- `notebooks/01_jaxqsofit_tutorial.ipynb` – end-to-end tutorial notebook
+- `test.ipynb` – development notebook
 - `src/jaxqsofit/data/fe_uv.txt`, `src/jaxqsofit/data/fe_optical.txt` – Fe templates
 - `tempdata.h5` – DSPS SSP template file (example)
 - `data/spec-0332-52367-0639.csv` – example spectrum (`loglam`, `flux`, `ivar`)
 - `data/spec-0332-52367-0639-meta.csv` – example metadata (`z`, `ra`, `dec`, etc.)
+
+## Tutorials
+
+- GitHub view: [`notebooks/01_jaxqsofit_tutorial.ipynb`](./notebooks/01_jaxqsofit_tutorial.ipynb)
+- Direct download:
+  `https://raw.githubusercontent.com/burke86/jaxqsofit/main/notebooks/01_jaxqsofit_tutorial.ipynb`
 
 ## Minimal usage
 
