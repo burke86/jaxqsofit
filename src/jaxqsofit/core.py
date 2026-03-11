@@ -206,33 +206,7 @@ class QSOFit:
                              self.line_result, self.line_result_type, self.line_result_name,
                              save_fits_name)
         if plot_fig:
-            plot_kwargs = dict(kwargs_plot)
-            do_trace = bool(plot_kwargs.pop('plot_trace', True))
-            do_corner = bool(plot_kwargs.pop('plot_corner', True))
-            full_posterior = bool(plot_kwargs.pop('full_posterior', False))
-            trace_params = plot_kwargs.pop('trace_params', None)
-            corner_params = plot_kwargs.pop('corner_params', None)
-            max_vector_elems = plot_kwargs.pop('max_vector_elems', 2)
-            max_corner_dims = plot_kwargs.pop('max_corner_dims', 8)
-            if full_posterior:
-                trace_params = 'all'
-                corner_params = 'all'
-                max_vector_elems = -1
-                max_corner_dims = 0
-            self.plot_fig(**plot_kwargs)
-            if do_trace:
-                self.plot_trace(
-                    param_names=trace_params,
-                    max_vector_elems=max_vector_elems,
-                    save_fig_path=plot_kwargs.get('save_fig_path', '.'),
-                )
-            if do_corner:
-                self.plot_corner(
-                    param_names=corner_params,
-                    max_vector_elems=max_vector_elems,
-                    max_dims=max_corner_dims,
-                    save_fig_path=plot_kwargs.get('save_fig_path', '.'),
-                )
+            self.plot_fig(**kwargs_plot)
 
     def run_fsps_numpyro_fit(self, num_warmup=500, num_samples=1000, num_chains=1,
                              target_accept_prob=0.9,
@@ -927,7 +901,6 @@ class QSOFit:
             ax.set_ylabel(label, fontsize=9)
             self._style_axis(ax)
         axes[-1].set_xlabel('Sample', fontsize=10)
-        fig.suptitle(f'{self.sdss_name} Trace Plot', fontsize=14)
         fig.tight_layout()
         plt.show()
         if self.save_fig:
@@ -939,19 +912,21 @@ class QSOFit:
         self.trace_fig = fig
         return fig
 
-    def plot_corner(self, param_names=None, max_vector_elems=2, max_dims=8, bins=30, save_fig_path='.', save_fig_name=None):
+    def plot_corner(self, param_names=None, max_vector_elems=2, bins=30, max_points=2000, save_fig_path='.', save_fig_name=None):
         """Plot a simple corner-style posterior projection matrix."""
         series = self._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
         if len(series) == 0:
             return None
 
-        if max_dims is not None and int(max_dims) > 0:
-            series = series[:int(max_dims)]
         labels = [s[0] for s in series]
         data = np.column_stack([s[1] for s in series])
+        if data.shape[0] > int(max_points):
+            idx = np.linspace(0, data.shape[0] - 1, int(max_points), dtype=int)
+            data = data[idx]
         ndim = data.shape[1]
 
         fig, axes = plt.subplots(ndim, ndim, figsize=(2.2 * ndim, 2.2 * ndim))
+        fig.subplots_adjust(wspace=0.03, hspace=0.03)
         for i in range(ndim):
             for j in range(ndim):
                 ax = axes[i, j]
@@ -961,7 +936,7 @@ class QSOFit:
                 if i == j:
                     ax.hist(data[:, j], bins=bins, color='tab:blue', alpha=0.75)
                 else:
-                    ax.scatter(data[:, j], data[:, i], s=3, alpha=0.25, color='tab:blue')
+                    ax.hist2d(data[:, j], data[:, i], bins=bins, cmap='Blues', cmin=1)
                 if i == ndim - 1:
                     ax.set_xlabel(labels[j], fontsize=8)
                 else:
@@ -971,8 +946,7 @@ class QSOFit:
                 else:
                     ax.set_yticklabels([])
                 self._style_axis(ax)
-        fig.suptitle(f'{self.sdss_name} Corner Plot', fontsize=14)
-        fig.tight_layout()
+        fig.tight_layout(pad=0.35)
         plt.show()
         if self.save_fig:
             out_name = f'{self.sdss_name}_corner.pdf' if save_fig_name is None else save_fig_name
@@ -982,6 +956,34 @@ class QSOFit:
             plt.close(fig)
         self.corner_fig = fig
         return fig
+
+    def plot_mcmc_diagnostics(self, do_trace=True, do_corner=True,
+                              param_names=None,
+                              max_vector_elems=2,
+                              corner_bins=30, corner_max_points=2000,
+                              save_fig_path='.'):
+        """Plot trace and/or corner diagnostics in a single convenience call.
+
+        Parameters
+        ----------
+        param_names : list[str] | str | None
+            Parameter selector shared by both trace and corner plots.
+            Use ``'all'`` to include all posterior parameters.
+        """
+        if do_trace:
+            self.plot_trace(
+                param_names=param_names,
+                max_vector_elems=max_vector_elems,
+                save_fig_path=save_fig_path,
+            )
+        if do_corner:
+            self.plot_corner(
+                param_names=param_names,
+                max_vector_elems=max_vector_elems,
+                bins=corner_bins,
+                max_points=corner_max_points,
+                save_fig_path=save_fig_path,
+            )
 
     def plot_fig(self, save_fig_path='.', broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
                  plot_1sigma=True, sigma_alpha=0.12):
