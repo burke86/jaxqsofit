@@ -21,6 +21,7 @@ dependencies = [
   "jax",
   "jaxlib",
   "numpyro",
+  "optax",
   "dsps",
   "dustmaps",
 ]
