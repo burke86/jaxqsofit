@@ -33,6 +33,7 @@ JaxQSOFit is designed around a **joint Bayesian model** of AGN and host componen
 - `numpyro`
 - `numpy`, `scipy`, `matplotlib`, `pandas`
 - `astropy`
+- `astroquery`
 - `extinction`
 - `dsps`
 - `dustmaps`
@@ -52,7 +53,7 @@ CPU example:
 
 ```bash
 pip install -U pip
-pip install numpy scipy matplotlib pandas astropy extinction dustmaps dsps numpyro
+pip install numpy scipy matplotlib pandas astropy astroquery extinction dustmaps dsps numpyro
 pip install "jax[cpu]"
 ```
 
@@ -94,66 +95,32 @@ python setup.py fetch --map-name=sfd
 
 ```python
 import numpy as np
-import pandas as pd
 import jaxqsofit
+from astroquery.sdss import SDSS
+from astropy import units as u
+from astropy.coordinates import SkyCoord
 
-# Load example spectrum
-spec = pd.read_csv("data/spec-0332-52367-0639.csv")
-meta = pd.read_csv("data/spec-0332-52367-0639-meta.csv").iloc[0]
+# Example: fetch SDSS spectrum for NGC 5548
+coord = SkyCoord.from_name("NGC 5548")
+xid = SDSS.query_region(coord, spectro=True, radius=5 * u.arcsec)
+sp = SDSS.get_spectra(matches=xid)[0]
 
-lam = 10 ** spec["loglam"].to_numpy()
-flux = spec["flux"].to_numpy()
-err = 1.0 / np.sqrt(spec["ivar"].to_numpy())
+tb = sp[1].data
+lam = 10 ** tb["loglam"]                 # observed-frame wavelength [A]
+flux = tb["flux"]                        # f_lambda
+err = 1.0 / np.sqrt(tb["ivar"])          # 1-sigma
+
+# Prefer SDSS pipeline redshift if available, else supply your own z
+z = float(sp[2].data["z"][0])
 
 q = jaxqsofit.QSOFit(
-    lam, flux, err, z=float(meta["z"]),
-    ra=float(meta["ra"]), dec=float(meta["dec"]),
-    plateid=int(meta["plateid"]), mjd=int(meta["mjd"]), fiberid=int(meta["fiberid"]),
+    lam, flux, err, z=z,
+    ra=float(coord.ra.deg), dec=float(coord.dec.deg),
+    plateid=int(sp[0].header.get("plateid", 0)),
+    mjd=int(sp[0].header.get("mjd", 0)),
+    fiberid=int(sp[0].header.get("fiberid", 0)),
     path="."
 )
-
-# You must provide prior_config keys used by enabled model components.
-prior_config = {
-    "log_cont_norm": {"loc": np.log(np.nanmedian(np.abs(flux))), "scale": 0.3},
-    "PL_slope": {"loc": -1.5, "scale": 0.4, "low": -3.5, "high": 0.3},
-
-    # host
-    "log_frac_host": {"loc": 0.0, "scale": 1.0},
-    "tau_host": {"scale": 1.0},
-    "raw_w": {"loc": -0.5, "scale": 1.0},
-    "gal_v_kms": {"loc": 0.0, "scale": 120.0},
-    "gal_sigma_kms": {"scale": 200.0},
-
-    # Fe (required if fit_fe=True)
-    "log_Fe_uv_norm": {"loc": np.log(1e-2), "scale": 0.5},
-    "log_Fe_op_norm": {"loc": np.log(1e-2), "scale": 0.5},
-    "log_Fe_uv_FWHM": {"loc": np.log(3000.0), "scale": 0.3},
-    "log_Fe_op_FWHM": {"loc": np.log(3000.0), "scale": 0.3},
-    "Fe_uv_shift": {"loc": 0.0, "scale": 1e-3},
-    "Fe_op_shift": {"loc": 0.0, "scale": 1e-3},
-
-    # Balmer continuum (required if fit_bc=True)
-    "log_Balmer_norm": {"loc": np.log(1e-2), "scale": 0.5},
-    "log_Balmer_Tau": {"loc": np.log(0.5), "scale": 0.25},
-    "log_Balmer_vel": {"loc": np.log(3000.0), "scale": 0.25},
-
-    # optional polynomial (required if fit_poly=True)
-    "poly_c1": {"loc": 0.0, "scale": 0.1},
-    "poly_c2": {"loc": 0.0, "scale": 0.1},
-
-    # line model (required if fit_lines=True)
-    "line_dmu_scale_mult": 0.25,
-    "line_sig_scale_mult": 0.25,
-    "line_amp_scale_mult": 0.25,
-    "line": {"table": ...},  # structured line-prior array, see test.ipynb
-
-    # noise
-    "frac_jitter": {"scale": 0.02},
-    "add_jitter": {"scale_mult_err": 0.3},
-
-    # robust likelihood (optional; default 3.0)
-    "student_t_df": 3.0,
-}
 
 q.Fit(
     deredden=True,
@@ -162,7 +129,6 @@ q.Fit(
     fit_fe=False,
     fit_bc=True,
     fit_poly=False,
-    prior_config=prior_config,
     dsps_ssp_fn="tempdata.h5",
     nuts_warmup=300,
     nuts_samples=600,
@@ -172,15 +138,25 @@ q.Fit(
 )
 ```
 
+Optional: override any defaults by passing `prior_config`:
+
+```python
+prior_config = {
+    "student_t_df": 2.5,
+    "PL_slope": {"loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.3},
+}
+q.Fit(prior_config=prior_config, fit_lines=False, fit_fe=False, fit_bc=True)
+```
+
 ## Important API notes
 
-- There are no hidden/default prior checks for required parameters. Missing keys raise normal Python/JAX errors.
+- If `prior_config=None`, defaults are auto-built from `src/jaxqsofit/defaults.py` using the input flux scale.
+- If you pass a custom `prior_config`, ensure required keys exist for enabled model components.
 - `fit_lines=True` requires a line prior table in:
   - `prior_config["line"]["table"]` (preferred), or
   - `prior_config["line_priors"]`, or
   - `prior_config["line_table"]`.
 - `fit_fe=False`, `fit_bc=False`, `fit_poly=False`, `decompose_host=False` disable those model blocks.
-- If `prior_config=None`, defaults are auto-built from `src/jaxqsofit/defaults.py` using the input flux scale.
 - Likelihood is Student-t:
   - `prior_config["student_t_df"]` controls tail heaviness.
   - Lower `df` is more robust to outliers.
