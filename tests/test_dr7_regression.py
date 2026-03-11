@@ -26,8 +26,6 @@ from astropy.io import fits
 
 from jaxqsofit import QSOFit
 
-pytestmark = pytest.mark.integration
-
 COSMO = FlatLambdaCDM(H0=70, Om0=0.3)
 
 DR7_CAT_NAME = "dr7_bh_Nov19_2013.fits.gz"

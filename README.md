@@ -154,7 +154,7 @@ q.Fit(
     decompose_host=True,
     fit_fe=False,
     fit_bc=True,
-    fit_poly=False,
+    fit_poly=True,
     dsps_ssp_fn="tempdata.h5",
     nuts_warmup=300,
     nuts_samples=600,

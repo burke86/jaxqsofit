@@ -22,7 +22,7 @@ Minimal fitting example
        decompose_host=True,
        fit_fe=True,
        fit_bc=True,
-       fit_poly=False,
+       fit_poly=True,
        save_result=False,
        plot_fig=True,
    )
