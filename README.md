@@ -82,10 +82,9 @@ If you want GPU JAX, install `jax`/`jaxlib` following official JAX instructions 
 
 This code expects an HDF5 SSP file path passed as `dsps_ssp_fn`, e.g. `tempdata.h5`.
 
-Current default in code/notebook examples:
-
-```python
-dsps_ssp_fn="tempdata.h5"
+```
+curl -L -o tempdata.h5 https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5
+python dsps_ssp_fn="tempdata.h5"
 ```
 
 Always set `dsps_ssp_fn` to the HDF5 SSP template file you want to use.
@@ -101,19 +100,6 @@ python setup.py fetch --map-name=sfd
 ```
 
 After fetching, make sure `dustmaps` is configured to use the directory containing the SFD maps.
-
-## Repo layout
-
-- `src/jaxqsofit/core.py` – fitting code
-- `src/jaxqsofit/defaults.py` – default prior/line configs
-- `src/jaxqsofit/__init__.py` – package exports
-- `tests/` – test directory
-- `notebooks/01_jaxqsofit_tutorial.ipynb` – end-to-end tutorial notebook
-- `test.ipynb` – development notebook
-- `src/jaxqsofit/data/fe_uv.txt`, `src/jaxqsofit/data/fe_optical.txt` – Fe templates
-- `tempdata.h5` – DSPS SSP template file (example)
-- `data/spec-0332-52367-0639.csv` – example spectrum (`loglam`, `flux`, `ivar`)
-- `data/spec-0332-52367-0639-meta.csv` – example metadata (`z`, `ra`, `dec`, etc.)
 
 ## Tutorials
 
