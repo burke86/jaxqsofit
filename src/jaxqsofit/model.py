@@ -428,7 +428,9 @@ def build_tied_line_meta_from_linelist(linelist, wave):
 
 def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_grid,
                          fe_uv_wave, fe_uv_flux, fe_op_wave, fe_op_flux, use_lines=True,
-                         prior_config=None, decompose_host=True, fit_pl=True, fit_fe=True, fit_bc=True, fit_poly=False):
+                         prior_config=None, decompose_host=True, fit_pl=True, fit_fe=True, fit_bc=True, fit_poly=False,
+                         fit_poly_order=2,
+                         fit_poly_edge_flex=True):
     """Joint AGN+host spectral forward model for NumPyro inference."""
     wave = _np_to_jnp(wave)
     flux = _np_to_jnp(flux)
@@ -465,7 +467,15 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     # Continuum amplitude + host fraction parameterization
     cont_norm = numpyro.sample('cont_norm', dist.LogNormal(*_cfg_norm('log_cont_norm')))
     if decompose_host:
-        log_frac_host = numpyro.sample('log_frac_host', dist.Normal(*_cfg_norm('log_frac_host')))
+        log_frac_host_loc, log_frac_host_scale = _cfg_norm('log_frac_host')
+        if isinstance(prior_config.get('log_frac_host', None), dict) and ('df' in prior_config['log_frac_host']):
+            log_frac_host_df = float(prior_config['log_frac_host']['df'])
+        else:
+            log_frac_host_df = float(prior_config.get('log_frac_host_df', 3.0))
+        log_frac_host = numpyro.sample(
+            'log_frac_host',
+            dist.StudentT(df=log_frac_host_df, loc=log_frac_host_loc, scale=log_frac_host_scale),
+        )
         frac_host = jax.nn.sigmoid(log_frac_host)
     else:
         frac_host = jnp.asarray(0.0)
@@ -531,12 +541,40 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_op_model = fe_op_model_intrinsic
     bc_model = bc_model_intrinsic
     poly_model = jnp.ones_like(wave)
+    edge_additive_model = jnp.zeros_like(wave)
     if fit_poly:
-        poly_c1 = numpyro.sample('poly_c1', dist.Normal(*_cfg_norm('poly_c1')))
-        poly_c2 = numpyro.sample('poly_c2', dist.Normal(*_cfg_norm('poly_c2')))
+        poly_order = int(max(fit_poly_order, 0))
         w0 = 0.5 * (wave[0] + wave[-1])
         x = (wave - w0) / jnp.maximum(w0, 1.0)
-        poly_model = jnp.clip(1.0 + poly_c1 * x + poly_c2 * x * x, 0.2, 5.0)
+        # Global low-order tilt
+        poly_base = jnp.ones_like(wave)
+        for k in range(1, poly_order + 1):
+            ck = numpyro.sample(f'poly_c{k}', dist.Normal(*_cfg_norm(f'poly_c{k}')))
+            poly_base = poly_base + ck * (x ** k)
+
+        if fit_poly_edge_flex:
+            # Localized edge corrections using an additive RBF basis on each edge.
+            n_edge = int(prior_config.get('edge_rbf_n_per_side', 3))
+            n_edge = max(n_edge, 1)
+            frac_min = float(prior_config.get('edge_rbf_frac_min', 0.01))
+            frac_max = float(prior_config.get('edge_rbf_frac_max', 0.10))
+            span = jnp.maximum(wave[-1] - wave[0], 1.0)
+            frac_grid = jnp.linspace(frac_min, frac_max, n_edge)
+
+            c_blue = wave[0] + frac_grid * span
+            c_red = wave[-1] - frac_grid * span
+
+            amp_loc, amp_scale = _cfg_norm('edge_rbf_amp')
+            sigma_blue = numpyro.sample('edge_rbf_sigma_blue', dist.LogNormal(*_cfg_norm('log_edge_rbf_sigma_blue')))
+            sigma_red = numpyro.sample('edge_rbf_sigma_red', dist.LogNormal(*_cfg_norm('log_edge_rbf_sigma_red')))
+            amps_blue = numpyro.sample('edge_rbf_amp_blue', dist.Normal(jnp.full((n_edge,), amp_loc), amp_scale))
+            amps_red = numpyro.sample('edge_rbf_amp_red', dist.Normal(jnp.full((n_edge,), amp_loc), amp_scale))
+
+            phi_blue = jnp.exp(-0.5 * ((wave[None, :] - c_blue[:, None]) / jnp.maximum(sigma_blue, 1.0)) ** 2)
+            phi_red = jnp.exp(-0.5 * ((wave[None, :] - c_red[:, None]) / jnp.maximum(sigma_red, 1.0)) ** 2)
+            edge_add = jnp.dot(amps_blue, phi_blue) + jnp.dot(amps_red, phi_red)
+            edge_additive_model = cont_norm * edge_add
+        poly_model = jnp.clip(poly_base, 0.2, 5.0)
         pl_model = pl_model * poly_model
         fe_uv_model = fe_uv_model * poly_model
         fe_op_model = fe_op_model * poly_model
@@ -546,8 +584,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     ntemp = fsps_grid.templates.shape[1]
     if decompose_host:
         tau_host = numpyro.sample('tau_host', dist.HalfNormal(_cfg_halfnorm('tau_host')))
+        tau_host_eff = jnp.maximum(tau_host, 1e-6)
         raw_w_loc, _ = _cfg_norm('raw_w')
-        raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(jnp.full((ntemp,), raw_w_loc), tau_host))
+        raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(jnp.full((ntemp,), raw_w_loc), tau_host_eff))
         fsps_weights_frac = jax.nn.softmax(raw_w)
         host_amp = cont_norm * frac_host
         fsps_weights = host_amp * fsps_weights_frac
@@ -619,7 +658,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     frac_jitter = numpyro.sample('frac_jitter', dist.HalfNormal(_cfg_halfnorm('frac_jitter')))
     add_jitter = numpyro.sample('add_jitter', dist.HalfNormal(_cfg_halfnorm('add_jitter', ref_scale=jnp.mean(err))))
 
-    continuum_model = agn_model + gal_model
+    continuum_model = agn_model + gal_model + edge_additive_model
     model = continuum_model + line_model
     sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
 
@@ -634,6 +673,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('line_model_intrinsic', line_model_intrinsic)
     numpyro.deterministic('line_model', line_model)
     numpyro.deterministic('continuum_model', continuum_model)
+    numpyro.deterministic('edge_additive_model', edge_additive_model)
     numpyro.deterministic('model', model)
     numpyro.deterministic('PL_norm_eff', pl_norm)
     numpyro.deterministic('frac_host', frac_host)

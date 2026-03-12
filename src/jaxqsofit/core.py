@@ -104,10 +104,12 @@ class QSOFit:
             fit_fe=True,
             fit_bc=False,
             fit_poly=True,
+            fit_poly_order=2,
+            fit_poly_edge_flex=True,
             mask_lya_forest=True,
             fit_method='jaxopt+nuts',
             verbose=True,
-            fsps_age_grid=(0.1, 0.3, 1.0, 3.0, 10.0),
+            fsps_age_grid=(0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0),
             fsps_logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
             prior_config=None,
             dsps_ssp_fn='tempdata.h5',
@@ -153,6 +155,12 @@ class QSOFit:
             Enable/disable Balmer continuum.
         fit_poly : bool, optional
             Enable/disable multiplicative polynomial tilt.
+        fit_poly_order : int, optional
+            Polynomial order for the multiplicative continuum tilt. Uses
+            coefficients ``poly_c1`` through ``poly_cN``.
+        fit_poly_edge_flex : bool, optional
+            If True, enable localized blue/red exponential edge correction
+            terms within the polynomial model.
         mask_lya_forest : bool, optional
             If True, mask pixels with rest-frame wavelength below Ly-alpha
             (1215.67 Angstrom) before fitting.
@@ -254,6 +262,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_poly_order=fit_poly_order,
+                fit_poly_edge_flex=fit_poly_edge_flex,
             )
         elif fit_method == 'optax':
             self.run_fsps_optax_fit(
@@ -269,6 +279,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_poly_order=fit_poly_order,
+                fit_poly_edge_flex=fit_poly_edge_flex,
             )
         elif fit_method == 'optax+nuts':
             self.run_fsps_optax_nuts_fit(
@@ -288,6 +300,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_poly_order=fit_poly_order,
+                fit_poly_edge_flex=fit_poly_edge_flex,
             )
         else:
             raise ValueError(f"Unknown fit_method='{fit_method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
@@ -311,6 +325,8 @@ class QSOFit:
                              fit_fe=True,
                              fit_bc=True,
                              fit_poly=False,
+                             fit_poly_order=2,
+                             fit_poly_edge_flex=True,
                              init_values=None):
         """Fit the full model using NUTS MCMC and store posterior summaries.
 
@@ -330,8 +346,10 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
             Component toggles for model blocks.
+        fit_poly_order : int, optional
+            Polynomial order for the multiplicative continuum tilt.
         init_values : dict or None, optional
             Optional initial values for ``init_to_value``.
         """
@@ -408,6 +426,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_poly_order=fit_poly_order,
+            fit_poly_edge_flex=fit_poly_edge_flex,
         )
         samples = mcmc.get_samples()
 
@@ -437,6 +457,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_poly_order=fit_poly_order,
+            fit_poly_edge_flex=fit_poly_edge_flex,
         )
 
         self.numpyro_mcmc = mcmc
@@ -459,7 +481,9 @@ class QSOFit:
                            fit_pl=True,
                            fit_fe=True,
                            fit_bc=True,
-                           fit_poly=False):
+                           fit_poly=False,
+                           fit_poly_order=2,
+                           fit_poly_edge_flex=True):
         """Fit a MAP approximation using staged SVI with an Optax optimizer.
 
         Parameters
@@ -476,8 +500,10 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
             Component toggles for model blocks.
+        fit_poly_order : int, optional
+            Polynomial order for the multiplicative continuum tilt.
         """
         wave = np.asarray(self.wave, dtype=float)
         flux = np.asarray(self.flux, dtype=float)
@@ -528,7 +554,7 @@ class QSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _run_svi(guide, steps, use_lines_i, fit_pl_i, fit_fe_i, fit_bc_i, fit_poly_i, decompose_host_i):
+        def _run_svi(guide, steps, use_lines_i, fit_pl_i, fit_fe_i, fit_bc_i, fit_poly_i, fit_poly_order_i, fit_poly_edge_flex_i, decompose_host_i):
             """Run an SVI stage and return optimizer state/results."""
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
             svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
@@ -553,6 +579,8 @@ class QSOFit:
                 fit_fe=fit_fe_i,
                 fit_bc=fit_bc_i,
                 fit_poly=fit_poly_i,
+                fit_poly_order=fit_poly_order_i,
+                fit_poly_edge_flex=fit_poly_edge_flex_i,
                 progress_bar=self.verbose,
             )
             return svi, result
@@ -571,6 +599,8 @@ class QSOFit:
             fit_fe_i=False,
             fit_bc_i=False,
             fit_poly_i=False,
+            fit_poly_order_i=2,
+            fit_poly_edge_flex_i=False,
             decompose_host_i=decompose_host,
         )
         map1 = guide1.median(res1.params)
@@ -589,6 +619,8 @@ class QSOFit:
             fit_fe_i=fit_fe,
             fit_bc_i=fit_bc,
             fit_poly_i=fit_poly,
+            fit_poly_order_i=fit_poly_order,
+            fit_poly_edge_flex_i=fit_poly_edge_flex,
             decompose_host_i=decompose_host,
         )
 
@@ -625,6 +657,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_poly_order=fit_poly_order,
+            fit_poly_edge_flex=fit_poly_edge_flex,
         )
 
         self.numpyro_mcmc = None
@@ -654,7 +688,9 @@ class QSOFit:
                                 fit_pl=True,
                                 fit_fe=True,
                                 fit_bc=True,
-                                fit_poly=False):
+                                fit_poly=False,
+                                fit_poly_order=2,
+                                fit_poly_edge_flex=True):
         """Warm-start with Optax MAP, then run NUTS as final inference.
 
         Parameters
@@ -677,8 +713,10 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
             Component toggles for model blocks.
+        fit_poly_order : int, optional
+            Polynomial order for the multiplicative continuum tilt.
         """
         self.run_fsps_optax_fit(
             num_steps=optax_steps,
@@ -693,6 +731,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_poly_order=fit_poly_order,
+            fit_poly_edge_flex=fit_poly_edge_flex,
         )
         init_values = getattr(self, 'optax_map_point', None)
         self.run_fsps_numpyro_fit(
@@ -710,6 +750,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_poly_order=fit_poly_order,
+            fit_poly_edge_flex=fit_poly_edge_flex,
             init_values=init_values,
         )
 
