@@ -146,10 +146,6 @@ z = float(sp[2].data["z"][0])
 q = jaxqsofit.QSOFit(
     lam, flux, err, z=z,
     ra=float(coord.ra.deg), dec=float(coord.dec.deg),
-    plateid=int(sp[0].header.get("plateid", 0)),
-    mjd=int(sp[0].header.get("mjd", 0)),
-    fiberid=int(sp[0].header.get("fiberid", 0)),
-    path="."
 )
 
 q.fit(
