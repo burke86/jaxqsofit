@@ -226,6 +226,151 @@ def build_fsps_template_grid(
     )
 
 
+def reconstruct_posterior_components(
+    wave_out: np.ndarray,
+    samples: Dict[str, Any],
+    pred_out: Dict[str, Any] | None,
+    age_grid_gyr: Sequence[float],
+    logzsol_grid: Sequence[float],
+    dsps_ssp_fn: str,
+    prior_config: Dict[str, Any],
+    fit_poly: bool,
+    fit_poly_order: int,
+    fit_poly_edge_flex: bool,
+    fe_uv_wave: np.ndarray,
+    fe_uv_flux: np.ndarray,
+    fe_op_wave: np.ndarray,
+    fe_op_flux: np.ndarray,
+    n_draws: int | None = None,
+    return_components: bool = True,
+) -> Dict[str, Any]:
+    """Rebuild posterior continuum components on an arbitrary rest-frame grid."""
+    wave_out = np.asarray(wave_out, dtype=float)
+    if wave_out.ndim != 1 or wave_out.size < 2 or not np.all(np.isfinite(wave_out)):
+        raise ValueError("wave_out must be a finite 1D wavelength grid.")
+
+    fsps_grid = build_fsps_template_grid(
+        wave_out=wave_out,
+        age_grid_gyr=age_grid_gyr,
+        logzsol_grid=logzsol_grid,
+        dsps_ssp_fn=dsps_ssp_fn,
+    )
+    templates = np.asarray(fsps_grid.templates, dtype=float)
+    lnwave = np.log(wave_out)
+
+    n_total = int(np.asarray(next(iter(samples.values()))).shape[0]) if len(samples) > 0 else 0
+    if n_total == 0:
+        raise RuntimeError("Posterior samples are empty.")
+    n_use = n_total if n_draws is None else max(1, min(int(n_draws), n_total))
+    sl = slice(0, n_use)
+
+    cont_norm = np.asarray(samples.get('cont_norm', np.zeros(n_total)), dtype=float)[sl]
+    log_frac_host = np.asarray(samples.get('log_frac_host', np.full(n_total, -np.inf)), dtype=float)[sl]
+    frac_host = 1.0 / (1.0 + np.exp(-log_frac_host))
+    pl_slope = np.asarray(samples.get('PL_slope', np.zeros(n_total)), dtype=float)[sl]
+    gal_v = np.asarray(samples.get('gal_v_kms', np.zeros(n_total)), dtype=float)[sl]
+    gal_sigma = np.asarray(samples.get('gal_sigma_kms', np.full(n_total, 150.0)), dtype=float)[sl]
+
+    if pred_out is not None and 'fsps_weights' in pred_out:
+        fsps_weights = np.asarray(pred_out['fsps_weights'], dtype=float)[sl]
+    else:
+        fsps_weights = np.zeros((n_use, templates.shape[1]), dtype=float)
+
+    fe_uv_norm = np.asarray(samples.get('Fe_uv_norm', np.zeros(n_total)), dtype=float)[sl]
+    log_fe_op_over_uv = np.asarray(samples.get('log_Fe_op_over_uv', np.zeros(n_total)), dtype=float)[sl]
+    fe_op_norm = fe_uv_norm * np.exp(log_fe_op_over_uv)
+    fe_uv_fwhm = np.asarray(samples.get('Fe_uv_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
+    fe_op_fwhm = np.asarray(samples.get('Fe_op_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
+    fe_uv_shift = np.asarray(samples.get('Fe_uv_shift', np.zeros(n_total)), dtype=float)[sl]
+    fe_op_shift = np.asarray(samples.get('Fe_op_shift', np.zeros(n_total)), dtype=float)[sl]
+    balmer_norm = np.asarray(samples.get('Balmer_norm', np.zeros(n_total)), dtype=float)[sl]
+    balmer_tau = np.asarray(samples.get('Balmer_Tau', np.full(n_total, 0.5)), dtype=float)[sl]
+    balmer_vel = np.asarray(samples.get('Balmer_vel', np.full(n_total, 3000.0)), dtype=float)[sl]
+
+    n_edge = int(prior_config.get('edge_rbf_n_per_side', 3))
+    frac_min = float(prior_config.get('edge_rbf_frac_min', 0.01))
+    frac_max = float(prior_config.get('edge_rbf_frac_max', 0.10))
+    span = max(wave_out[-1] - wave_out[0], 1.0)
+    frac_grid = np.linspace(frac_min, frac_max, max(n_edge, 1))
+    c_blue = wave_out[0] + frac_grid * span
+    c_red = wave_out[-1] - frac_grid * span
+
+    component_draws = {
+        'host': np.zeros((n_use, wave_out.size), dtype=float),
+        'PL': np.zeros((n_use, wave_out.size), dtype=float),
+        'Fe_uv': np.zeros((n_use, wave_out.size), dtype=float),
+        'Fe_op': np.zeros((n_use, wave_out.size), dtype=float),
+        'Balmer_cont': np.zeros((n_use, wave_out.size), dtype=float),
+        'continuum': np.zeros((n_use, wave_out.size), dtype=float),
+        'edge_additive': np.zeros((n_use, wave_out.size), dtype=float),
+    }
+
+    for i in range(n_use):
+        host_intrinsic = templates @ fsps_weights[i]
+        host_model = np.asarray(
+            _shift_and_broaden_single_spectrum_lnlam(lnwave, host_intrinsic, gal_v[i], gal_sigma[i]),
+            dtype=float,
+        )
+
+        agn_amp = cont_norm[i] * (1.0 - frac_host[i])
+        pl_model = np.asarray(_powerlaw_jax(wave_out, pl_norm=agn_amp, pl_slope=pl_slope[i], pivot=3000.0), dtype=float)
+        fe_uv_model = np.asarray(
+            _fe_template_component(wave_out, fe_uv_wave, fe_uv_flux, fe_uv_norm[i], fe_uv_fwhm[i], fe_uv_shift[i]),
+            dtype=float,
+        )
+        fe_op_model = np.asarray(
+            _fe_template_component(wave_out, fe_op_wave, fe_op_flux, fe_op_norm[i], fe_op_fwhm[i], fe_op_shift[i]),
+            dtype=float,
+        )
+        bc_model = np.asarray(
+            _balmer_continuum_jax(wave_out, balmer_norm[i], 15000.0, balmer_tau[i], balmer_vel[i]),
+            dtype=float,
+        )
+
+        poly_model = np.ones_like(wave_out)
+        edge_add = np.zeros_like(wave_out)
+        if fit_poly:
+            w0 = 0.5 * (wave_out[0] + wave_out[-1])
+            x = (wave_out - w0) / max(w0, 1.0)
+            poly_base = np.ones_like(wave_out)
+            for k in range(1, fit_poly_order + 1):
+                key = f'poly_c{k}'
+                if key in samples:
+                    poly_base = poly_base + float(np.asarray(samples[key], dtype=float)[sl][i]) * (x ** k)
+            poly_model = np.clip(poly_base, 0.2, 5.0)
+
+            if fit_poly_edge_flex and 'edge_rbf_amp_blue' in samples and 'edge_rbf_amp_red' in samples:
+                sigma_blue = float(np.asarray(samples.get('edge_rbf_sigma_blue', np.array([1.0])), dtype=float)[sl][i])
+                sigma_red = float(np.asarray(samples.get('edge_rbf_sigma_red', np.array([1.0])), dtype=float)[sl][i])
+                amps_blue = np.asarray(samples['edge_rbf_amp_blue'], dtype=float)[sl][i]
+                amps_red = np.asarray(samples['edge_rbf_amp_red'], dtype=float)[sl][i]
+                phi_blue = np.exp(-0.5 * ((wave_out[None, :] - c_blue[:, None]) / max(sigma_blue, 1.0)) ** 2)
+                phi_red = np.exp(-0.5 * ((wave_out[None, :] - c_red[:, None]) / max(sigma_red, 1.0)) ** 2)
+                edge_add = cont_norm[i] * (amps_blue @ phi_blue + amps_red @ phi_red)
+
+        host_model = host_model * poly_model
+        pl_model = pl_model * poly_model
+        fe_uv_model = fe_uv_model * poly_model
+        fe_op_model = fe_op_model * poly_model
+        bc_model = bc_model * poly_model
+        continuum_model = pl_model + fe_uv_model + fe_op_model + bc_model + host_model + edge_add
+
+        component_draws['host'][i] = host_model
+        component_draws['PL'][i] = pl_model
+        component_draws['Fe_uv'][i] = fe_uv_model
+        component_draws['Fe_op'][i] = fe_op_model
+        component_draws['Balmer_cont'][i] = bc_model
+        component_draws['edge_additive'][i] = edge_add
+        component_draws['continuum'][i] = continuum_model
+
+    output_draws = component_draws if return_components else {'continuum': component_draws['continuum']}
+    return {
+        'wave': wave_out,
+        'draws': output_draws,
+        'median': {key: np.median(val, axis=0) for key, val in output_draws.items()},
+    }
+
+
 def _extract_line_table_from_prior_config(prior_config: Dict[str, Any] | None):
     """Extract line-table style priors from `prior_config` in supported layouts."""
     if prior_config is None:

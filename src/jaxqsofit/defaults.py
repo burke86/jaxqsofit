@@ -223,6 +223,9 @@ def build_default_prior_config(
         "frac_jitter": {"scale": 0.02},
         "add_jitter": {"scale_mult_err": 0.3},
         "student_t_df": 3.0,
+        "out_params": {
+            "cont_loc": [1350.0, 2500.0, 3000.0, 4200.0, 5100.0],
+        },
     }
 
     lc = copy.deepcopy(DEFAULT_LINE_CONFIG if line_config is None else line_config)

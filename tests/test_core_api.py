@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 import jaxqsofit
+import jaxqsofit.core as coremod
 from jaxqsofit import QSOFit, build_default_prior_config
 
 
@@ -169,3 +170,93 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert set(loaded.numpyro_samples.keys()) == {"PL_norm", "PL_slope"}
     assert called["plot_fig"] == 1
     assert called["plot_mcmc_diagnostics"] == 1
+
+
+def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    q.wave = lam
+    q.flux = flux
+    q.fsps_grid = type(
+        "Grid",
+        (),
+        {
+            "age_grid_gyr": np.array([0.1, 1.0]),
+            "logzsol_grid": np.array([-0.5, 0.0]),
+        },
+    )()
+    q.numpyro_samples = {
+        "cont_norm": np.array([1.0, 1.1]),
+        "log_frac_host": np.array([0.0, 0.1]),
+    }
+    q.pred_out = {"fsps_weights": np.ones((2, 2))}
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q._fit_fit_poly = True
+    q._fit_fit_poly_order = 3
+    q._fit_fit_poly_edge_flex = False
+
+    captured = {}
+
+    def _stub_reconstruct(**kwargs):
+        captured.update(kwargs)
+        return {
+            "wave": np.asarray(kwargs["wave_out"]),
+            "draws": {"continuum": np.ones((2, len(kwargs["wave_out"])))},
+            "median": {"continuum": np.ones(len(kwargs["wave_out"]))},
+        }
+
+    monkeypatch.setattr(coremod, "reconstruct_posterior_components", _stub_reconstruct)
+
+    out = q.reconstruct_posterior_spectrum(wave_min=2500.0, n_draws=2, return_components=False)
+
+    assert "wave_out" in captured
+    assert captured["samples"] is q.numpyro_samples
+    assert captured["pred_out"] is q.pred_out
+    assert captured["age_grid_gyr"] == q._fit_fsps_age_grid
+    assert captured["logzsol_grid"] == q._fit_fsps_logzsol_grid
+    assert captured["dsps_ssp_fn"] == "fake_ssp.h5"
+    assert captured["fit_poly"] is True
+    assert captured["fit_poly_order"] == 3
+    assert captured["fit_poly_edge_flex"] is False
+    assert captured["n_draws"] == 2
+    assert captured["return_components"] is False
+    assert np.isclose(np.min(captured["wave_out"]), 2500.0)
+    assert np.allclose(out["wave"], captured["wave_out"])
+
+
+def test_component_fraction_at_wave_reconstruct_uses_rebuilt_draws(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+
+    def _stub_reconstruct(self, **kwargs):
+        return {
+            "wave": np.array([2500.0, 3000.0]),
+            "draws": {
+                "host": np.array([[2.0, 2.0], [4.0, 4.0], [6.0, 6.0]]),
+                "continuum": np.array([[10.0, 10.0], [20.0, 20.0], [30.0, 30.0]]),
+            },
+            "median": {},
+        }
+
+    monkeypatch.setattr(QSOFit, "reconstruct_posterior_spectrum", _stub_reconstruct)
+
+    frac, err_out = q.component_fraction_at_wave(
+        component="host",
+        wave0=2500.0,
+        reference="continuum",
+        reconstruct=True,
+    )
+
+    expected = np.array([0.2, 0.2, 0.2])
+    p16, p50, p84 = np.percentile(expected, [16.0, 50.0, 84.0])
+    assert np.isclose(frac, p50)
+    assert np.isclose(err_out, 0.5 * (p84 - p16))

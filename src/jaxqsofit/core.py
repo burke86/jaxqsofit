@@ -27,6 +27,7 @@ from .model import (
     build_fsps_template_grid,
     build_tied_line_meta_from_linelist,
     qso_fsps_joint_model,
+    reconstruct_posterior_components,
     unred,
 )
 
@@ -279,6 +280,24 @@ class QSOFit:
         if 'show_plot' not in kwargs_plot:
             kwargs_plot['show_plot'] = show_plot
 
+        # Persist fit configuration so posterior reconstructions can be built on
+        # alternate wavelength grids after fitting.
+        self._fit_deredden = bool(deredden)
+        self._fit_decompose_host = bool(decompose_host)
+        self._fit_fit_lines = bool(fit_lines)
+        self._fit_fit_pl = bool(fit_pl)
+        self._fit_fit_fe = bool(fit_fe)
+        self._fit_fit_bc = bool(fit_bc)
+        self._fit_fit_poly = bool(fit_poly)
+        self._fit_fit_poly_order = int(fit_poly_order)
+        self._fit_fit_poly_edge_flex = bool(fit_poly_edge_flex)
+        self._fit_mask_lya_forest = bool(mask_lya_forest)
+        self._fit_method = str(fit_method)
+        self._fit_fsps_age_grid = tuple(fsps_age_grid)
+        self._fit_fsps_logzsol_grid = tuple(fsps_logzsol_grid)
+        self._fit_prior_config = prior_config
+        self._fit_dsps_ssp_fn = str(dsps_ssp_fn)
+
         self.wave_range = wave_range
         self.wave_mask = wave_mask
         self.linefit = fit_lines
@@ -289,7 +308,6 @@ class QSOFit:
         prior_config_input = prior_config
         prior_config = {} if prior_config is None else prior_config
         out_params = prior_config.get('out_params', {})
-        self.Fe_flux_range = np.asarray(out_params.get('Fe_flux_range', []), dtype=float)
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
 
         data_dir = os.path.join(self.install_path, 'data')
@@ -316,6 +334,7 @@ class QSOFit:
 
         if prior_config_input is None:
             prior_config = build_default_prior_config(self.flux)
+        self._fit_prior_config = prior_config
 
         if wave_range is not None:
             self._wave_trim(self.lam, self.flux, self.err, self.z)
@@ -1174,6 +1193,119 @@ class QSOFit:
         if not np.isfinite(comp) or not np.isfinite(total) or total == 0:
             return -1.
         return float(comp / total)
+
+    def reconstruct_posterior_spectrum(
+        self,
+        wave_out=None,
+        wave_min=2500.0,
+        wave_max=None,
+        n_draws=None,
+        return_components=True,
+    ):
+        """Rebuild posterior component draws on a requested rest-frame grid.
+
+        Parameters
+        ----------
+        wave_out : array-like or None, optional
+            Explicit rest-frame wavelength grid. If ``None``, build a grid from
+            ``min(wave_min, self.wave.min())`` to ``wave_max or self.wave.max()``
+            using the median native wavelength spacing.
+        wave_min, wave_max : float or None, optional
+            Bounds for the auto-generated grid when ``wave_out`` is ``None``.
+        n_draws : int or None, optional
+            If provided, use at most the first ``n_draws`` posterior samples.
+        return_components : bool, optional
+            If True, include per-component draws and medians in the return value.
+        """
+        if not hasattr(self, 'numpyro_samples') or not hasattr(self, 'fsps_grid'):
+            raise RuntimeError("No posterior samples available. Run fit() first.")
+        if not hasattr(self, 'wave') or len(self.wave) < 2:
+            raise RuntimeError("No fitted rest-frame wavelength grid available.")
+
+        wave_native = np.asarray(self.wave, dtype=float)
+        dw = float(np.nanmedian(np.diff(wave_native)))
+        if not np.isfinite(dw) or dw <= 0:
+            raise RuntimeError("Unable to infer wavelength spacing for reconstruction.")
+
+        if wave_out is None:
+            wmin = min(float(wave_min), float(np.nanmin(wave_native)))
+            wmax = float(np.nanmax(wave_native) if wave_max is None else wave_max)
+            if wmin >= wmax:
+                raise ValueError("Requested reconstruction grid has non-positive span.")
+            wave_out = np.arange(wmin, wmax + 0.5 * dw, dw, dtype=float)
+        else:
+            wave_out = np.asarray(wave_out, dtype=float)
+
+        if wave_out.ndim != 1 or wave_out.size < 2 or not np.all(np.isfinite(wave_out)):
+            raise ValueError("wave_out must be a finite 1D wavelength grid.")
+
+        prior_config = getattr(self, '_fit_prior_config', None)
+        if prior_config is None:
+            prior_config = build_default_prior_config(np.asarray(self.flux, dtype=float))
+        return reconstruct_posterior_components(
+            wave_out=wave_out,
+            samples=self.numpyro_samples,
+            pred_out=getattr(self, 'pred_out', None),
+            age_grid_gyr=getattr(self, '_fit_fsps_age_grid', self.fsps_grid.age_grid_gyr),
+            logzsol_grid=getattr(self, '_fit_fsps_logzsol_grid', self.fsps_grid.logzsol_grid),
+            dsps_ssp_fn=getattr(self, '_fit_dsps_ssp_fn', 'tempdata.h5'),
+            prior_config=prior_config,
+            fit_poly=bool(getattr(self, '_fit_fit_poly', False)),
+            fit_poly_order=int(getattr(self, '_fit_fit_poly_order', 2)),
+            fit_poly_edge_flex=bool(getattr(self, '_fit_fit_poly_edge_flex', False)),
+            fe_uv_wave=self.fe_uv_wave,
+            fe_uv_flux=self.fe_uv_flux,
+            fe_op_wave=self.fe_op_wave,
+            fe_op_flux=self.fe_op_flux,
+            n_draws=n_draws,
+            return_components=return_components,
+        )
+
+    def component_fraction_at_wave(self, component='host', wave0=2500.0, reference='continuum', reconstruct=False, n_draws=None):
+        """Return component/reference flux fraction at a requested wavelength.
+
+        Parameters
+        ----------
+        component, reference : str, optional
+            Component names. Supported reconstructed names are ``host``, ``PL``,
+            ``Fe_uv``, ``Fe_op``, ``Balmer_cont``, ``edge_additive``, and ``continuum``.
+        wave0 : float, optional
+            Rest-frame wavelength in Angstrom.
+        reconstruct : bool, optional
+            If True, rebuild posterior components on a grid that reaches ``wave0``.
+            Returns ``(median, err)`` from the posterior draws.
+        n_draws : int or None, optional
+            Maximum number of posterior draws to use in the reconstruction.
+        """
+        if not reconstruct:
+            component_map = {
+                'host': getattr(self, 'host', None),
+                'Balmer_cont': getattr(self, 'f_bc_model', None),
+                'continuum': getattr(self, 'f_conti_model', None),
+            }
+            comp_arr = component_map.get(component)
+            ref_arr = component_map.get(reference, getattr(self, 'f_conti_model', None))
+            if comp_arr is None or ref_arr is None or len(self.wave) == 0:
+                return -1.0, np.nan
+            comp = np.interp(wave0, self.wave, comp_arr, left=np.nan, right=np.nan)
+            ref = np.interp(wave0, self.wave, ref_arr, left=np.nan, right=np.nan)
+            if not np.isfinite(comp) or not np.isfinite(ref) or ref == 0:
+                return -1.0, np.nan
+            return float(comp / ref), np.nan
+
+        recon = self.reconstruct_posterior_spectrum(wave_min=min(float(wave0), float(np.nanmin(self.wave))), n_draws=n_draws)
+        wave = recon['wave']
+        idx = int(np.argmin(np.abs(wave - float(wave0))))
+        if component not in recon['draws'] or reference not in recon['draws']:
+            raise ValueError(f"Unknown reconstructed component/reference: {component}, {reference}")
+        num = np.asarray(recon['draws'][component], dtype=float)[:, idx]
+        den = np.asarray(recon['draws'][reference], dtype=float)[:, idx]
+        frac = np.divide(num, den, out=np.full_like(num, np.nan), where=np.isfinite(den) & (den != 0))
+        good = np.isfinite(frac)
+        if not np.any(good):
+            return np.nan, np.nan
+        p16, p50, p84 = np.percentile(frac[good], [16.0, 50.0, 84.0])
+        return float(p50), float(0.5 * (p84 - p16))
 
     def _line_profile_from_params(
         self,
