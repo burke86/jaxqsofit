@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pickle
+import glob
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -137,7 +138,7 @@ class QSOFit:
     @classmethod
     def load_from_samples(
         cls,
-        filename,
+        filename=None,
         output_path=None,
         save_name=None,
         plot_fig=True,
@@ -146,10 +147,33 @@ class QSOFit:
         diagnostics_kwargs=None,
     ):
         """Load a saved posterior bundle, optionally recreate figures, and return a QSOFit object."""
-        resolved_name = cls._resolve_filename(filename=filename)
-        bundle_name = f"{resolved_name}_samples.pkl" if save_name is None else save_name
-        bundle_dir = '.' if output_path is None else output_path
-        bundle_path = os.path.join(bundle_dir, bundle_name)
+        if save_name is not None:
+            bundle_name = save_name
+            bundle_dir = '.' if output_path is None else output_path
+            bundle_path = os.path.join(bundle_dir, bundle_name)
+            resolved_name = cls._resolve_filename(filename=filename)
+        elif filename is not None:
+            resolved_name = cls._resolve_filename(filename=filename)
+            bundle_name = f"{resolved_name}_samples.pkl"
+            bundle_dir = '.' if output_path is None else output_path
+            bundle_path = os.path.join(bundle_dir, bundle_name)
+        else:
+            bundle_dir = '.' if output_path is None else output_path
+            matches = sorted(glob.glob(os.path.join(bundle_dir, "*_samples.pkl")))
+            if len(matches) == 0:
+                raise FileNotFoundError(
+                    f"No posterior bundle found under: {bundle_dir}. "
+                    "Pass filename=..., output_path=..., or save_name=... explicitly."
+                )
+            if len(matches) > 1:
+                raise FileNotFoundError(
+                    f"Multiple posterior bundles found under: {bundle_dir}. "
+                    "Pass filename=... or save_name=... explicitly."
+                )
+            bundle_path = matches[0]
+            bundle_name = os.path.basename(bundle_path)
+            resolved_name = bundle_name[: -len("_samples.pkl")] if bundle_name.endswith("_samples.pkl") else bundle_name
+
         if not os.path.exists(bundle_path):
             raise FileNotFoundError(f"Posterior bundle not found: {bundle_path}")
 

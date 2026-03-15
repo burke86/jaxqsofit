@@ -172,6 +172,57 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert called["plot_mcmc_diagnostics"] == 1
 
 
+def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(
+        lam=lam,
+        flux=flux,
+        err=err,
+        z=0.1,
+        ra=150.0,
+        dec=2.0,
+        filename="unit_test_fit_auto",
+        output_path=str(tmp_path),
+    )
+
+    q.wave = lam
+    q.wave_prereduced = lam
+    q.flux = flux
+    q.flux_prereduced = flux
+    q.err = err
+    q.model_total = flux * 0.98
+    q.host = flux * 0.1
+    q.f_pl_model = flux * 0.6
+    q.f_fe_mgii_model = np.zeros_like(flux)
+    q.f_fe_balmer_model = np.zeros_like(flux)
+    q.f_bc_model = np.zeros_like(flux)
+    q.f_line_model = np.zeros_like(flux)
+    q.f_conti_model = q.host + q.f_pl_model
+    q.pred_bands = {}
+    q.decomposed = True
+    q.line_result = np.array([], dtype=object)
+    q.line_result_type = np.array([], dtype=object)
+    q.line_result_name = np.array([], dtype=object)
+    q.conti_result = np.array([], dtype=object)
+    q.conti_result_type = np.array([], dtype=object)
+    q.conti_result_name = np.array([], dtype=object)
+    q.numpyro_samples = {
+        "PL_norm": np.array([1.0, 1.1, 0.9]),
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+    }
+    q.save_fig = False
+    q.save_posterior_bundle()
+
+    monkeypatch.setattr(QSOFit, "plot_fig", lambda self, **kwargs: None)
+    monkeypatch.setattr(QSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
+
+    loaded = jaxqsofit.load_from_samples(output_path=str(tmp_path))
+
+    assert isinstance(loaded, QSOFit)
+    assert loaded.filename == "unit_test_fit_auto"
+    assert loaded.output_path == str(tmp_path)
+
+
 def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
