@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from speclite import filters as speclite_filters
 
 import jax
 import jax.numpy as jnp
@@ -32,9 +33,35 @@ from .model import (
     unred,
 )
 
+_SDSS_PSF_BANDS = ("u", "g", "r", "i", "z")
+_SDSS_FILTER_CACHE = None
+
+
+def _get_sdss_filters():
+    """Load SDSS filter curves once and return a band->response mapping."""
+    global _SDSS_FILTER_CACHE
+    if _SDSS_FILTER_CACHE is None:
+        filters = speclite_filters.load_filters(*[f"sdss2010-{b}" for b in _SDSS_PSF_BANDS])
+        _SDSS_FILTER_CACHE = {band: filt for band, filt in zip(_SDSS_PSF_BANDS, filters)}
+    return _SDSS_FILTER_CACHE
+
+
+def _filter_wave_to_angstrom_array(value):
+    """Return a filter wavelength grid as a float ndarray in Angstrom."""
+    if hasattr(value, "to_value"):
+        return np.asarray(value.to_value(u.AA), dtype=np.float64)
+    return np.asarray(value, dtype=np.float64)
+
+
+def _filter_wave_to_angstrom_scalar(value):
+    """Return a scalar wavelength-like object as a float in Angstrom."""
+    if hasattr(value, "to_value"):
+        return float(value.to_value(u.AA))
+    return float(value)
+
 class QSOFit:
     def __init__(self, lam, flux, err=None, z=0.0, ra=-999, dec=-999, filename=None, output_path=None,
-                 wdisp=None):
+                 wdisp=None, psf_mags=None, psf_mag_errs=None, psf_bands=None):
         """Initialize a spectral fitting object with observed-frame inputs.
 
         Parameters
@@ -57,6 +84,11 @@ class QSOFit:
             Output directory for saved artifacts.
         wdisp : array-like or None, optional
             Optional wavelength dispersion vector (stored only).
+        psf_mags, psf_mag_errs : array-like or None, optional
+            Optional PSF photometry magnitudes and 1-sigma errors.
+        psf_bands : sequence of str or None, optional
+            Band labels associated with ``psf_mags``. If omitted, defaults to
+            the first N SDSS bands.
 
         Notes
         -----
@@ -83,6 +115,13 @@ class QSOFit:
         self.install_path = os.path.dirname(os.path.abspath(__file__))
         self.output_path = output_path
         self.filename = self._resolve_filename(filename=filename, ra=ra, dec=dec)
+        self.psf_mags = None if psf_mags is None else np.asarray(psf_mags, dtype=np.float64)
+        self.psf_mag_errs = None if psf_mag_errs is None else np.asarray(psf_mag_errs, dtype=np.float64)
+        self.psf_bands = None if psf_bands is None else list(psf_bands)
+        if self.psf_bands is None and self.psf_mags is not None:
+            self.psf_bands = ["u", "g", "r", "i", "z"][:len(self.psf_mags)]
+        self.psf_filter_curves = None
+        self.use_psf_phot = False
 
     @staticmethod
     def _resolve_filename(filename=None, ra=-999, dec=-999):
@@ -97,6 +136,120 @@ class QSOFit:
         if np.isfinite(ra_f) and np.isfinite(dec_f) and (ra_f != -999) and (dec_f != -999):
             return f"ra{ra_f:.5f}_dec{dec_f:.5f}"
         return "result"
+
+    @staticmethod
+    def _predictive_return_sites():
+        """Return posterior predictive sites needed for summaries and plots."""
+        return [
+            'f_pl_model',
+            'f_fe_mgii_model',
+            'f_fe_balmer_model',
+            'f_bc_model',
+            'f_poly_model',
+            'agn_model',
+            'gal_model',
+            'line_model',
+            'continuum_model',
+            'model',
+            'fsps_weights',
+            'line_amp_per_component',
+            'line_mu_per_component',
+            'line_sig_per_component',
+            'delta_m_psf',
+            'eta_psf',
+            'scale_psf',
+            'agn_model_psf',
+            'gal_model_psf',
+            'line_model_psf',
+            'psf_model',
+        ]
+
+    def _prepare_psf_photometry(
+        self,
+        wave_obs,
+        psf_mags=None,
+        psf_mag_errs=None,
+        psf_bands=None,
+        use_psf_phot=False,
+        min_filter_coverage=0.97,
+    ):
+        """Validate PSF photometry and interpolate filters onto the observed wavelength grid."""
+        if psf_mags is not None:
+            self.psf_mags = np.asarray(psf_mags, dtype=np.float64)
+        if psf_mag_errs is not None:
+            self.psf_mag_errs = np.asarray(psf_mag_errs, dtype=np.float64)
+        if psf_bands is not None:
+            self.psf_bands = list(psf_bands)
+        if self.psf_bands is None and self.psf_mags is not None:
+            self.psf_bands = list(_SDSS_PSF_BANDS[:len(self.psf_mags)])
+
+        if (not use_psf_phot) or self.psf_mags is None or self.psf_mag_errs is None:
+            self.use_psf_phot = False
+            self.psf_filter_curves = None
+            return None, None, None, None, False
+
+        mags = np.asarray(self.psf_mags, dtype=np.float64)
+        errs = np.asarray(self.psf_mag_errs, dtype=np.float64)
+        bands = list(self.psf_bands) if self.psf_bands is not None else list(_SDSS_PSF_BANDS[:len(mags)])
+        if len(mags) != len(errs) or len(mags) != len(bands):
+            raise ValueError("psf_mags, psf_mag_errs, and psf_bands must have the same length.")
+
+        valid = np.isfinite(mags) & np.isfinite(errs) & (errs > 0)
+        wave_obs = np.asarray(wave_obs, dtype=np.float64)
+        filters = _get_sdss_filters()
+
+        keep_mags = []
+        keep_errs = []
+        keep_bands = []
+        keep_trans = []
+        keep_coverage = []
+        for band, mag, err, is_valid in zip(bands, mags, errs, valid):
+            if not is_valid:
+                continue
+            if band not in filters:
+                raise ValueError(f"Unsupported PSF photometry band '{band}'. Supported bands: {_SDSS_PSF_BANDS}.")
+
+            filt = filters[band]
+            filt_wave = _filter_wave_to_angstrom_array(filt.wavelength)
+            filt_trans = np.asarray(filt.response, dtype=np.float64)
+            trans_on_wave = np.interp(wave_obs, filt_wave, filt_trans, left=0.0, right=0.0)
+
+            full_norm = float(np.trapezoid(np.clip(filt_trans, 0.0, None), filt_wave))
+            covered_norm = float(np.trapezoid(np.clip(trans_on_wave, 0.0, None), wave_obs))
+            coverage = (covered_norm / full_norm) if full_norm > 0 else 0.0
+            if coverage < float(min_filter_coverage):
+                continue
+
+            keep_mags.append(float(mag))
+            keep_errs.append(float(err))
+            keep_bands.append(str(band))
+            keep_trans.append(np.asarray(trans_on_wave, dtype=np.float64))
+            keep_coverage.append(float(coverage))
+
+        if len(keep_bands) == 0:
+            self.use_psf_phot = False
+            self.psf_filter_curves = None
+            self.psf_mags = None
+            self.psf_mag_errs = None
+            self.psf_bands = None
+            return None, None, None, None, False
+
+        self.psf_mags = np.asarray(keep_mags, dtype=np.float64)
+        self.psf_mag_errs = np.asarray(keep_errs, dtype=np.float64)
+        self.psf_bands = keep_bands
+        self.psf_filter_curves = {
+            "bands": tuple(keep_bands),
+            "trans": np.asarray(keep_trans, dtype=np.float64),
+            "coverage": np.asarray(keep_coverage, dtype=np.float64),
+        }
+        self.use_psf_phot = True
+        return (
+            self.psf_mags,
+            self.psf_mag_errs,
+            self.psf_bands,
+            {"trans": self.psf_filter_curves["trans"]},
+            True,
+        )
 
     def _posterior_bundle_path(self, save_name=None, save_path=None):
         """Return the default on-disk path for a saved posterior bundle."""
@@ -190,6 +343,9 @@ class QSOFit:
             filename=state.get("filename", resolved_name),
             output_path=output_path if output_path is not None else state.get("output_path"),
             wdisp=state.get("wdisp"),
+            psf_mags=state.get("psf_mags"),
+            psf_mag_errs=state.get("psf_mag_errs"),
+            psf_bands=state.get("psf_bands"),
         )
         obj.__dict__.update(state)
         obj.install_path = os.path.dirname(os.path.abspath(__file__))
@@ -216,7 +372,7 @@ class QSOFit:
             fit_poly_order=2,
             fit_poly_edge_flex=True,
             mask_lya_forest=True,
-            fit_method='jaxopt+nuts',
+            fit_method='optax+nuts',
             verbose=True,
             fsps_age_grid=(0.01, 0.03, 0.1, 0.3, 1.0, 3.0, 10.0),
             fsps_logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
@@ -228,6 +384,10 @@ class QSOFit:
             nuts_target_accept=0.9,
             optax_steps=600,
             optax_lr=1e-2,
+            psf_mags=None,
+            psf_mag_errs=None,
+            psf_bands=None,
+            use_psf_phot=False,
             kwargs_plot=None):
         """Run end-to-end preprocessing, fitting, and optional plotting/saving.
 
@@ -295,6 +455,13 @@ class QSOFit:
             Number of SVI/Optax warm-start steps.
         optax_lr : float, optional
             Learning rate for Optax Adam.
+        psf_mags, psf_mag_errs : array-like or None, optional
+            Optional PSF-aperture photometry magnitudes and 1-sigma errors.
+        psf_bands : sequence of str or None, optional
+            Band labels for ``psf_mags``. Defaults to SDSS ``ugriz`` order.
+        use_psf_phot : bool, optional
+            If True, add a PSF-photometry likelihood term and infer PSF/fiber
+            scaling plus host leakage.
         kwargs_plot : dict or None, optional
             Extra keyword arguments passed to :meth:`plot_fig`.
         """
@@ -321,6 +488,7 @@ class QSOFit:
         self._fit_fsps_logzsol_grid = tuple(fsps_logzsol_grid)
         self._fit_prior_config = prior_config
         self._fit_dsps_ssp_fn = str(dsps_ssp_fn)
+        self._fit_use_psf_phot = bool(use_psf_phot)
 
         self.wave_range = wave_range
         self.wave_mask = wave_mask
@@ -331,8 +499,6 @@ class QSOFit:
             self.filename = str(name).strip()
         prior_config_input = prior_config
         prior_config = {} if prior_config is None else prior_config
-        out_params = prior_config.get('out_params', {})
-        self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
 
         data_dir = os.path.join(self.install_path, 'data')
         self.fe_uv = np.genfromtxt(os.path.join(data_dir, 'fe_uv.txt'))
@@ -358,6 +524,8 @@ class QSOFit:
 
         if prior_config_input is None:
             prior_config = build_default_prior_config(self.flux)
+        out_params = prior_config.get('out_params', {})
+        self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
         self._fit_prior_config = prior_config
 
         if wave_range is not None:
@@ -372,6 +540,13 @@ class QSOFit:
         self._rest_frame(self.lam, self.flux, self.err, self.z)
         self._calculate_sn(self.wave, self.flux)
         self._orignial_spec(self.wave, self.flux, self.err)
+        psf_mags_use, psf_mag_errs_use, _psf_bands_use, psf_filter_curves_use, use_psf_phot_use = self._prepare_psf_photometry(
+            wave_obs=self.lam,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_bands=psf_bands,
+            use_psf_phot=use_psf_phot,
+        )
 
         if fit_method == 'nuts':
             self.run_fsps_numpyro_fit(
@@ -391,6 +566,10 @@ class QSOFit:
                 fit_poly=fit_poly,
                 fit_poly_order=fit_poly_order,
                 fit_poly_edge_flex=fit_poly_edge_flex,
+                psf_mags=psf_mags_use,
+                psf_mag_errs=psf_mag_errs_use,
+                psf_filter_curves=psf_filter_curves_use,
+                use_psf_phot=use_psf_phot_use,
             )
         elif fit_method == 'optax':
             self.run_fsps_optax_fit(
@@ -408,6 +587,10 @@ class QSOFit:
                 fit_poly=fit_poly,
                 fit_poly_order=fit_poly_order,
                 fit_poly_edge_flex=fit_poly_edge_flex,
+                psf_mags=psf_mags_use,
+                psf_mag_errs=psf_mag_errs_use,
+                psf_filter_curves=psf_filter_curves_use,
+                use_psf_phot=use_psf_phot_use,
             )
         elif fit_method == 'optax+nuts':
             self.run_fsps_optax_nuts_fit(
@@ -429,6 +612,10 @@ class QSOFit:
                 fit_poly=fit_poly,
                 fit_poly_order=fit_poly_order,
                 fit_poly_edge_flex=fit_poly_edge_flex,
+                psf_mags=psf_mags_use,
+                psf_mag_errs=psf_mag_errs_use,
+                psf_filter_curves=psf_filter_curves_use,
+                use_psf_phot=use_psf_phot_use,
             )
         else:
             raise ValueError(f"Unknown fit_method='{fit_method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
@@ -455,6 +642,10 @@ class QSOFit:
                              fit_poly=False,
                              fit_poly_order=2,
                              fit_poly_edge_flex=True,
+                             psf_mags=None,
+                             psf_mag_errs=None,
+                             psf_filter_curves=None,
+                             use_psf_phot=False,
                              init_values=None):
         """Fit the full model using NUTS MCMC and store posterior summaries.
 
@@ -556,15 +747,18 @@ class QSOFit:
             fit_poly=fit_poly,
             fit_poly_order=fit_poly_order,
             fit_poly_edge_flex=fit_poly_edge_flex,
+            z_qso=self.z,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_filter_curves=psf_filter_curves,
+            use_psf_phot=use_psf_phot,
         )
         samples = mcmc.get_samples()
 
         pred = Predictive(
             qso_fsps_joint_model,
             posterior_samples=samples,
-            return_sites=['f_pl_model', 'f_fe_mgii_model', 'f_fe_balmer_model', 'f_bc_model', 'f_poly_model',
-                          'agn_model', 'gal_model', 'line_model', 'continuum_model', 'model',
-                          'fsps_weights', 'line_amp_per_component', 'line_mu_per_component', 'line_sig_per_component'],
+            return_sites=self._predictive_return_sites(),
         )
         pred_out = pred(
             rng_key,
@@ -587,6 +781,11 @@ class QSOFit:
             fit_poly=fit_poly,
             fit_poly_order=fit_poly_order,
             fit_poly_edge_flex=fit_poly_edge_flex,
+            z_qso=self.z,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_filter_curves=psf_filter_curves,
+            use_psf_phot=use_psf_phot,
         )
 
         self.numpyro_mcmc = mcmc
@@ -611,7 +810,11 @@ class QSOFit:
                            fit_bc=True,
                            fit_poly=False,
                            fit_poly_order=2,
-                           fit_poly_edge_flex=True):
+                           fit_poly_edge_flex=True,
+                           psf_mags=None,
+                           psf_mag_errs=None,
+                           psf_filter_curves=None,
+                           use_psf_phot=False):
         """Fit a MAP approximation using staged SVI with an Optax optimizer.
 
         Parameters
@@ -709,6 +912,11 @@ class QSOFit:
                 fit_poly=fit_poly_i,
                 fit_poly_order=fit_poly_order_i,
                 fit_poly_edge_flex=fit_poly_edge_flex_i,
+                z_qso=self.z,
+                psf_mags=psf_mags,
+                psf_mag_errs=psf_mag_errs,
+                psf_filter_curves=psf_filter_curves,
+                use_psf_phot=use_psf_phot,
                 progress_bar=self.verbose,
             )
             return svi, result
@@ -762,9 +970,7 @@ class QSOFit:
         pred = Predictive(
             qso_fsps_joint_model,
             posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
-            return_sites=['f_pl_model', 'f_fe_mgii_model', 'f_fe_balmer_model', 'f_bc_model', 'f_poly_model',
-                          'agn_model', 'gal_model', 'line_model', 'continuum_model', 'model',
-                          'fsps_weights', 'line_amp_per_component', 'line_mu_per_component', 'line_sig_per_component'],
+            return_sites=self._predictive_return_sites(),
         )
         pred_out = pred(
             rng_key,
@@ -787,6 +993,11 @@ class QSOFit:
             fit_poly=fit_poly,
             fit_poly_order=fit_poly_order,
             fit_poly_edge_flex=fit_poly_edge_flex,
+            z_qso=self.z,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_filter_curves=psf_filter_curves,
+            use_psf_phot=use_psf_phot,
         )
 
         self.numpyro_mcmc = None
@@ -818,7 +1029,11 @@ class QSOFit:
                                 fit_bc=True,
                                 fit_poly=False,
                                 fit_poly_order=2,
-                                fit_poly_edge_flex=True):
+                                fit_poly_edge_flex=True,
+                                psf_mags=None,
+                                psf_mag_errs=None,
+                                psf_filter_curves=None,
+                                use_psf_phot=False):
         """Warm-start with Optax MAP, then run NUTS as final inference.
 
         Parameters
@@ -861,6 +1076,10 @@ class QSOFit:
             fit_poly=fit_poly,
             fit_poly_order=fit_poly_order,
             fit_poly_edge_flex=fit_poly_edge_flex,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_filter_curves=psf_filter_curves,
+            use_psf_phot=use_psf_phot,
         )
         init_values = getattr(self, 'optax_map_point', None)
         self.run_fsps_numpyro_fit(
@@ -880,6 +1099,10 @@ class QSOFit:
             fit_poly=fit_poly,
             fit_poly_order=fit_poly_order,
             fit_poly_edge_flex=fit_poly_edge_flex,
+            psf_mags=psf_mags,
+            psf_mag_errs=psf_mag_errs,
+            psf_filter_curves=psf_filter_curves,
+            use_psf_phot=use_psf_phot,
             init_values=init_values,
         )
 
@@ -910,6 +1133,7 @@ class QSOFit:
         self._pred_cont_draws = np.asarray(pred_out['continuum_model'])
         self._pred_total_draws = np.asarray(pred_out['model'])
         self._pred_line_draws = np.asarray(pred_out['line_model'])
+        self._pred_psf_draws = np.asarray(pred_out['psf_model']) if 'psf_model' in pred_out else None
 
         self.f_pl_model = np.median(np.asarray(pred_out['f_pl_model']), axis=0)
         self.f_fe_mgii_model = np.median(np.asarray(pred_out['f_fe_mgii_model']), axis=0)
@@ -921,9 +1145,30 @@ class QSOFit:
         self.f_line_model = np.median(np.asarray(pred_out['line_model']), axis=0)
         self.f_conti_model = np.median(np.asarray(pred_out['continuum_model']), axis=0)
         self.model_total = np.median(np.asarray(pred_out['model']), axis=0)
+        self.qso_psf = np.median(np.asarray(pred_out['agn_model_psf']), axis=0) if 'agn_model_psf' in pred_out else np.full_like(self.model_total, np.nan)
+        self.host_psf = np.median(np.asarray(pred_out['gal_model_psf']), axis=0) if 'gal_model_psf' in pred_out else np.full_like(self.model_total, np.nan)
+        self.line_psf = np.median(np.asarray(pred_out['line_model_psf']), axis=0) if 'line_model_psf' in pred_out else np.full_like(self.model_total, np.nan)
+        self.psf_model = np.median(np.asarray(pred_out['psf_model']), axis=0) if 'psf_model' in pred_out else np.full_like(self.model_total, np.nan)
         self.fsps_weights_median = np.median(np.asarray(pred_out['fsps_weights']), axis=0)
         self.line_flux = flux - self.f_conti_model
         self.decomposed = True
+        if 'delta_m_psf_raw' in samples:
+            delta_m_draws = np.asarray(samples['delta_m_psf_raw'], dtype=float)
+        elif 'delta_m_psf' in pred_out:
+            delta_m_draws = np.asarray(pred_out['delta_m_psf'], dtype=float)
+        else:
+            delta_m_draws = np.array([np.nan], dtype=float)
+        if 'eta_psf_raw' in samples:
+            eta_psf_draws = np.asarray(samples['eta_psf_raw'], dtype=float)
+        elif 'eta_psf' in pred_out:
+            eta_psf_draws = np.asarray(pred_out['eta_psf'], dtype=float)
+        else:
+            eta_psf_draws = np.array([np.nan], dtype=float)
+        self.delta_m_psf = float(np.nanmedian(delta_m_draws)) if delta_m_draws.size > 0 else np.nan
+        self.delta_m_psf_err = float(np.nanstd(delta_m_draws)) if delta_m_draws.size > 0 else np.nan
+        self.eta_psf = float(np.nanmedian(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
+        self.eta_psf_err = float(np.nanstd(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
+        self.scale_psf = 10.0 ** (-0.4 * self.delta_m_psf) if np.isfinite(self.delta_m_psf) else np.nan
 
         def _band(x):
             """Compute 16th/84th percentile uncertainty band across samples."""
@@ -966,9 +1211,40 @@ class QSOFit:
         age_weighted = float(np.sum(self.fsps_weights_median * ages) / wsum) if wsum > 0 else -1.0
         metal_weighted = float(np.sum(self.fsps_weights_median * mets) / wsum) if wsum > 0 else -99.0
 
+        cont_waves = np.asarray(getattr(self, 'L_conti_wave', []), dtype=float)
+        cont_waves = cont_waves[np.isfinite(cont_waves)]
+        if cont_waves.size == 0:
+            cont_waves = np.asarray([2500.0, 4200.0, 5100.0], dtype=float)
+        self.L_conti_wave = cont_waves
+
+        frac_host_vals = []
+        frac_host_psf_vals = []
+        frac_bc_vals = []
+        frac_host_names = []
+        frac_host_psf_names = []
+        frac_bc_names = []
+        for w0 in cont_waves:
+            wave_label = self._format_wave_label(w0)
+            frac_host = self._host_fraction_at_wave(w0)
+            frac_host_psf = self._host_fraction_psf_at_wave(w0)
+            frac_bc = self._bc_fraction_at_wave(w0)
+            setattr(self, f'frac_host_{wave_label}', frac_host)
+            setattr(self, f'frac_host_psf_{wave_label}', frac_host_psf)
+            setattr(self, f'frac_bc_{wave_label}', frac_bc)
+            frac_host_vals.append(frac_host)
+            frac_host_psf_vals.append(frac_host_psf)
+            frac_bc_vals.append(frac_bc)
+            frac_host_names.append(f'frac_host_{wave_label}')
+            frac_host_psf_names.append(f'frac_host_psf_{wave_label}')
+            frac_bc_names.append(f'frac_bc_{wave_label}')
+
+        # Preserve the legacy fixed-wavelength attributes for downstream compatibility.
         self.frac_host_4200 = self._host_fraction_at_wave(4200.0)
         self.frac_host_5100 = self._host_fraction_at_wave(5100.0)
         self.frac_host_2500 = self._host_fraction_at_wave(2500.0)
+        self.frac_host_psf_4200 = self._host_fraction_psf_at_wave(4200.0)
+        self.frac_host_psf_5100 = self._host_fraction_psf_at_wave(5100.0)
+        self.frac_host_psf_2500 = self._host_fraction_psf_at_wave(2500.0)
         self.frac_bc_2500 = self._bc_fraction_at_wave(2500.0)
 
         n_samp = int(np.asarray(next(iter(samples.values()))).shape[0]) if len(samples) > 0 else 1
@@ -990,28 +1266,34 @@ class QSOFit:
         else:
             pl_slope_med = np.nan
             pl_slope_err = np.nan
-        self.conti_result = np.array([
-            self.ra, self.dec, str(self.filename), self.z,
-            self.SN_ratio_conti,
-            float(np.nanmedian(pl_norm_samp)), float(np.nanstd(pl_norm_samp)),
-            pl_slope_med, pl_slope_err,
-            gal_sig, gal_sig_err, gal_v, gal_v_err,
-            self.frac_host_4200, self.frac_host_5100, self.frac_host_2500, self.frac_bc_2500,
-            age_weighted, metal_weighted,
-        ], dtype=object)
-        self.conti_result_type = np.array([
-            'float', 'float', 'str', 'float', 'float',
-            'float', 'float', 'float', 'float',
-            'float', 'float', 'float', 'float',
-            'float', 'float', 'float', 'float', 'float', 'float'
-        ], dtype=object)
-        self.conti_result_name = np.array([
-            'ra', 'dec', 'filename', 'redshift', 'SN_ratio_conti',
-            'PL_norm', 'PL_norm_err', 'PL_slope', 'PL_slope_err',
-            'sigma', 'sigma_err', 'v_off', 'v_off_err',
-            'frac_host_4200', 'frac_host_5100', 'frac_host_2500', 'frac_bc_2500',
-            'fsps_age_weighted_gyr', 'fsps_logzsol_weighted'
-        ], dtype=object)
+        conti_entries = [
+            ('ra', self.ra, 'float'),
+            ('dec', self.dec, 'float'),
+            ('filename', str(self.filename), 'str'),
+            ('redshift', self.z, 'float'),
+            ('SN_ratio_conti', self.SN_ratio_conti, 'float'),
+            ('PL_norm', float(np.nanmedian(pl_norm_samp)), 'float'),
+            ('PL_norm_err', float(np.nanstd(pl_norm_samp)), 'float'),
+            ('PL_slope', pl_slope_med, 'float'),
+            ('PL_slope_err', pl_slope_err, 'float'),
+            ('sigma', gal_sig, 'float'),
+            ('sigma_err', gal_sig_err, 'float'),
+            ('v_off', gal_v, 'float'),
+            ('v_off_err', gal_v_err, 'float'),
+        ]
+        conti_entries += [(name, value, 'float') for name, value in zip(frac_host_names, frac_host_vals)]
+        conti_entries += [(name, value, 'float') for name, value in zip(frac_host_psf_names, frac_host_psf_vals)]
+        conti_entries += [(name, value, 'float') for name, value in zip(frac_bc_names, frac_bc_vals)]
+        conti_entries += [
+            ('fsps_age_weighted_gyr', age_weighted, 'float'),
+            ('fsps_logzsol_weighted', metal_weighted, 'float'),
+            ('delta_m_psf', self.delta_m_psf, 'float'),
+            ('delta_m_psf_err', self.delta_m_psf_err, 'float'),
+            ('eta_psf', self.eta_psf, 'float'),
+            ('eta_psf_err', self.eta_psf_err, 'float'),
+        ]
+
+        self.conti_result, self.conti_result_type, self.conti_result_name = self._build_result_arrays(conti_entries)
 
         if use_lines and tied_line_meta['n_lines'] > 0:
             amp_comp = np.asarray(pred_out['line_amp_per_component'])
@@ -1190,6 +1472,14 @@ class QSOFit:
         """
         return self._component_fraction_at_wave(self.host, w0)
 
+    def _host_fraction_psf_at_wave(self, w0):
+        """Return PSF-space host fraction at wavelength ``w0``."""
+        qso_psf = np.asarray(getattr(self, 'qso_psf', []), dtype=float)
+        host_psf = np.asarray(getattr(self, 'host_psf', []), dtype=float)
+        if qso_psf.size != len(getattr(self, 'wave', [])) or host_psf.size != len(getattr(self, 'wave', [])):
+            return -1.0
+        return self._component_fraction_at_wave(host_psf, w0, reference=qso_psf + host_psf)
+
     def _bc_fraction_at_wave(self, w0):
         """Return Balmer-continuum/continuum flux fraction at wavelength ``w0``.
 
@@ -1200,7 +1490,7 @@ class QSOFit:
         """
         return self._component_fraction_at_wave(self.f_bc_model, w0)
 
-    def _component_fraction_at_wave(self, component, w0):
+    def _component_fraction_at_wave(self, component, w0, reference=None):
         """Return component fraction relative to fitted continuum at ``w0``.
 
         Parameters
@@ -1209,11 +1499,16 @@ class QSOFit:
             Component flux array evaluated on ``self.wave``.
         w0 : float
             Rest-frame wavelength in Angstrom.
+        reference : ndarray or None, optional
+            Reference flux array. If ``None``, uses ``self.f_conti_model``.
         """
         if len(self.wave) == 0:
             return -1.
         comp = np.interp(w0, self.wave, component, left=np.nan, right=np.nan)
-        total = np.interp(w0, self.wave, self.f_conti_model, left=np.nan, right=np.nan)
+        ref_arr = self.f_conti_model if reference is None else np.asarray(reference, dtype=float)
+        if len(ref_arr) != len(self.wave):
+            return -1.
+        total = np.interp(w0, self.wave, ref_arr, left=np.nan, right=np.nan)
         if not np.isfinite(comp) or not np.isfinite(total) or total == 0:
             return -1.
         return float(comp / total)
@@ -1528,6 +1823,54 @@ class QSOFit:
         return out
 
     @staticmethod
+    def _format_wave_label(w0):
+        """Format a continuum wavelength for attribute/column naming."""
+        try:
+            w = float(w0)
+        except Exception:
+            return str(w0)
+        if np.isfinite(w) and abs(w - round(w)) < 1e-6:
+            return str(int(round(w)))
+        return str(w).replace('.', 'p')
+
+    @staticmethod
+    def _build_result_arrays(entries):
+        """Convert ``(name, value, type)`` entries into legacy result arrays."""
+        return (
+            np.array([value for _, value, _ in entries], dtype=object),
+            np.array([dtype for _, _, dtype in entries], dtype=object),
+            np.array([name for name, _, _ in entries], dtype=object),
+        )
+
+    @staticmethod
+    def _filter_half_width_angstrom(filt):
+        """Return an approximate half-width for a photometric filter."""
+        filt_wave = _filter_wave_to_angstrom_array(filt.wavelength)
+        filt_trans = np.asarray(filt.response, dtype=float)
+        support = filt_wave[filt_trans > 0.01 * np.nanmax(filt_trans)]
+        if support.size >= 2:
+            return 0.5 * float(support.max() - support.min())
+        return 0.0
+
+    def _plot_filter_metadata(self, bands):
+        """Return plotting metadata arrays for the requested photometric bands."""
+        filters = _get_sdss_filters()
+        filt_list = [filters.get(str(band)) for band in bands]
+        valid = np.asarray([filt is not None for filt in filt_list], dtype=bool)
+        filt_list = [filt for filt in filt_list if filt is not None]
+        if len(filt_list) == 0:
+            return valid, np.array([], dtype=float), np.array([], dtype=float)
+        eff_wave_obs = np.asarray(
+            [_filter_wave_to_angstrom_scalar(filt.effective_wavelength) for filt in filt_list],
+            dtype=float,
+        )
+        half_width_obs = np.asarray(
+            [self._filter_half_width_angstrom(filt) for filt in filt_list],
+            dtype=float,
+        )
+        return valid, eff_wave_obs, half_width_obs
+
+    @staticmethod
     def _style_axis(ax, spine_lw=1.5):
         """Apply consistent axis styling.
 
@@ -1549,6 +1892,111 @@ class QSOFit:
         )
         for spine in ax.spines.values():
             spine.set_linewidth(spine_lw)
+
+    def _synthetic_photometry_for_plot(self, model_attr='model_total'):
+        """Return rest-frame synthetic photometry points for plotting, if available."""
+        if not bool(getattr(self, 'use_psf_phot', False)):
+            return None
+        bands = list(getattr(self, 'psf_bands', []) or [])
+        mag_errs = np.asarray(getattr(self, 'psf_mag_errs', []), dtype=float)
+        if len(bands) == 0 or mag_errs.size != len(bands):
+            return None
+        if not hasattr(self, 'wave') or len(getattr(self, 'wave', [])) == 0:
+            return None
+
+        model_rf = np.asarray(getattr(self, model_attr, []), dtype=float)
+        if model_rf.size != len(self.wave) or not np.any(np.isfinite(model_rf)):
+            return None
+
+        wave_rf = np.asarray(self.wave, dtype=float)
+        z = float(getattr(self, 'z', 0.0))
+        wave_obs = wave_rf * (1.0 + z)
+        flam_obs = model_rf / max(1.0 + z, 1e-8)
+        filters = _get_sdss_filters()
+        c_ang_s = 2.99792458e18
+
+        x_rf, xerr_rf, y_rf, yerr_rf = [], [], [], []
+        for band, mag_err in zip(bands, mag_errs):
+            filt = filters.get(str(band))
+            if filt is None or not np.isfinite(mag_err) or mag_err <= 0:
+                continue
+
+            filt_wave = _filter_wave_to_angstrom_array(filt.wavelength)
+            filt_trans = np.asarray(filt.response, dtype=float)
+            trans = np.interp(wave_obs, filt_wave, filt_trans, left=0.0, right=0.0)
+            trans = np.clip(trans, 0.0, None)
+            flam_obs_cgs = 1e-17 * flam_obs
+            num = float(np.trapezoid(flam_obs_cgs * trans * wave_obs, wave_obs))
+            den = float(np.trapezoid(trans * c_ang_s / np.clip(wave_obs, 1e-8, None), wave_obs))
+            if not np.isfinite(num) or not np.isfinite(den) or num <= 0 or den <= 0:
+                continue
+
+            mag_syn = -2.5 * np.log10(num / den) - 48.60
+            if not np.isfinite(mag_syn):
+                continue
+
+            eff_wave_obs = _filter_wave_to_angstrom_scalar(filt.effective_wavelength)
+            support = filt_wave[filt_trans > 0.01 * np.nanmax(filt_trans)]
+            if support.size >= 2:
+                half_width_obs = 0.5 * float(support.max() - support.min())
+            else:
+                half_width_obs = 0.0
+
+            fnu_obs = 10.0 ** (-0.4 * (mag_syn + 48.60))
+            flam_band_obs_cgs = fnu_obs * c_ang_s / max(eff_wave_obs ** 2, 1e-30)
+            flam_band_obs = flam_band_obs_cgs / 1e-17
+            flam_band_rf = flam_band_obs * (1.0 + z)
+            flam_band_rf_err = flam_band_rf * (0.4 * np.log(10.0) * float(mag_err))
+
+            x_rf.append(eff_wave_obs / (1.0 + z))
+            xerr_rf.append(half_width_obs / (1.0 + z))
+            y_rf.append(flam_band_rf)
+            yerr_rf.append(flam_band_rf_err)
+
+        if len(x_rf) == 0:
+            return None
+        return (
+            np.asarray(x_rf, dtype=float),
+            np.asarray(xerr_rf, dtype=float),
+            np.asarray(y_rf, dtype=float),
+            np.asarray(yerr_rf, dtype=float),
+        )
+
+    def _observed_photometry_for_plot(self):
+        """Return rest-frame observed PSF photometry points for plotting, if available."""
+        if not bool(getattr(self, 'use_psf_phot', False)):
+            return None
+        bands = list(getattr(self, 'psf_bands', []) or [])
+        mags = np.asarray(getattr(self, 'psf_mags', []), dtype=float)
+        mag_errs = np.asarray(getattr(self, 'psf_mag_errs', []), dtype=float)
+        if len(bands) == 0 or mags.size != len(bands) or mag_errs.size != len(bands):
+            return None
+
+        z = float(getattr(self, 'z', 0.0))
+        c_ang_s = 2.99792458e18
+        filter_valid, eff_wave_obs, half_width_obs = self._plot_filter_metadata(bands)
+        phot_valid = np.isfinite(mags) & np.isfinite(mag_errs) & (mag_errs > 0)
+        valid = filter_valid & phot_valid
+        if not np.any(valid):
+            return None
+
+        mags = mags[valid]
+        mag_errs = mag_errs[valid]
+        eff_wave_obs = eff_wave_obs[phot_valid[filter_valid]]
+        half_width_obs = half_width_obs[phot_valid[filter_valid]]
+
+        fnu_obs = 10.0 ** (-0.4 * (mags + 48.60))
+        flam_band_obs_cgs = fnu_obs * c_ang_s / np.clip(eff_wave_obs ** 2, 1e-30, None)
+        flam_band_obs = flam_band_obs_cgs / 1e-17
+        flam_band_rf = flam_band_obs * (1.0 + z)
+        flam_band_rf_err = flam_band_rf * (0.4 * np.log(10.0) * mag_errs)
+
+        return (
+            eff_wave_obs / (1.0 + z),
+            half_width_obs / (1.0 + z),
+            flam_band_rf,
+            flam_band_rf_err,
+        )
 
     def plot_trace(self, param_names=None, max_vector_elems=2, save_fig_path=None, save_fig_name=None):
         """Plot posterior trace series for selected parameters.
@@ -1701,7 +2149,7 @@ class QSOFit:
             )
 
     def plot_fig(self, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
-                 plot_1sigma=True, sigma_alpha=0.12, show_plot=True):
+                 plot_1sigma=True, sigma_alpha=0.12, show_plot=True, plot_psf_space=False):
         """Plot data, model components, line decomposition, and residuals.
 
         Parameters
@@ -1725,10 +2173,18 @@ class QSOFit:
             Alpha transparency of 1-sigma bands.
         show_plot : bool, optional
             If True, call ``plt.show()``. If False, figure is created/saved without display.
+        plot_psf_space : bool, optional
+            If True, plot the PSF-space model/components. In this mode the
+            residual panel is suppressed because the observed spectrum remains
+            on the fiber scale.
         """
         matplotlib.rc('xtick', labelsize=20)
         matplotlib.rc('ytick', labelsize=20)
-        if plot_residual:
+        psf_total_model = np.asarray(getattr(self, 'psf_model', []), dtype=float)
+        use_psf_space = bool(plot_psf_space) and psf_total_model.size == len(getattr(self, 'wave', [])) and np.any(np.isfinite(psf_total_model))
+        residual_enabled = bool(plot_residual) and not use_psf_space
+
+        if residual_enabled:
             fig, (ax, ax_resid) = plt.subplots(
                 2,
                 1,
@@ -1742,6 +2198,21 @@ class QSOFit:
 
         flux_ref = float(np.nanpercentile(np.abs(self.flux[np.isfinite(self.flux)]), 95)) if np.any(np.isfinite(self.flux)) else 1.0
         comp_floor = max(1e-8, 0.005 * flux_ref)
+        psf_scale = float(getattr(self, 'scale_psf', np.nan))
+        psf_scale = psf_scale if np.isfinite(psf_scale) else 1.0
+
+        total_model_plot = self.psf_model if use_psf_space else self.model_total
+        host_plot = self.host_psf if use_psf_space else self.host
+        pl_plot = psf_scale * self.f_pl_model if use_psf_space else self.f_pl_model
+        fe_total_model = psf_scale * (self.f_fe_mgii_model + self.f_fe_balmer_model) if use_psf_space else (self.f_fe_mgii_model + self.f_fe_balmer_model)
+        bc_plot = psf_scale * self.f_bc_model if use_psf_space else self.f_bc_model
+        line_plot = self.line_psf if use_psf_space else self.f_line_model
+        total_model_label = 'total model (PSF)' if use_psf_space else 'total model'
+        host_label = 'host galaxy (PSF)' if use_psf_space else 'host galaxy'
+        powerlaw_label = 'power law (PSF)' if use_psf_space else 'power law'
+        fe_label = 'Fe II (PSF)' if use_psf_space else 'Fe II'
+        bc_label = 'Balmer continuum (PSF)' if use_psf_space else 'Balmer continuum'
+        line_label = 'total lines (PSF)' if use_psf_space else 'total lines'
 
         def _show_component(arr):
             arr = np.asarray(arr, dtype=float)
@@ -1750,7 +2221,7 @@ class QSOFit:
                 return False
             return float(np.nanmax(np.abs(arr))) >= comp_floor
 
-        if plot_1sigma and hasattr(self, 'pred_bands'):
+        if plot_1sigma and hasattr(self, 'pred_bands') and not use_psf_space:
             band_colors = {
                 'total_model': 'b',
                 'host': 'purple',
@@ -1778,51 +2249,94 @@ class QSOFit:
         ax.plot(
             self.wave_prereduced,
             self.flux_prereduced,
-            'k',
+            color='k' if not use_psf_space else 'gray',
             lw=1,
-            label='data',
+            label='data' if not use_psf_space else 'fiber data',
             zorder=2,
+            alpha=1.0 if not use_psf_space else 0.6,
             rasterized=True,
         )
-        ax.plot(self.wave, self.model_total, color='b', lw=1.8, label='total model', zorder=6, rasterized=True)
-        if _show_component(self.host):
-            ax.plot(self.wave, self.host, color='purple', lw=1.8, label='host galaxy', zorder=4, rasterized=True)
+        ax.plot(self.wave, total_model_plot, color='b', lw=1.8, label=total_model_label, zorder=6, rasterized=True)
+        if _show_component(host_plot):
+            ax.plot(self.wave, host_plot, color='purple', lw=1.8, label=host_label, zorder=4, rasterized=True)
         else:
-            ax.plot(self.wave, self.host, color='purple', lw=1.8, zorder=4, rasterized=True)
-        if _show_component(self.f_pl_model):
-            ax.plot(self.wave, self.f_pl_model, color='orange', lw=1.5, label='power law', zorder=5, rasterized=True)
+            ax.plot(self.wave, host_plot, color='purple', lw=1.8, zorder=4, rasterized=True)
+        if _show_component(pl_plot):
+            ax.plot(self.wave, pl_plot, color='orange', lw=1.5, label=powerlaw_label, zorder=5, rasterized=True)
         else:
-            ax.plot(self.wave, self.f_pl_model, color='orange', lw=1.5, zorder=5, rasterized=True)
-        fe_total_model = self.f_fe_mgii_model + self.f_fe_balmer_model
+            ax.plot(self.wave, pl_plot, color='orange', lw=1.5, zorder=5, rasterized=True)
         if _show_component(fe_total_model):
-            ax.plot(self.wave, fe_total_model, color='teal', lw=1.2, label='Fe II', zorder=5, rasterized=True)
+            ax.plot(self.wave, fe_total_model, color='teal', lw=1.2, label=fe_label, zorder=5, rasterized=True)
         else:
             ax.plot(self.wave, fe_total_model, color='teal', lw=1.2, zorder=5, rasterized=True)
-        if _show_component(self.f_bc_model):
-            ax.plot(self.wave, self.f_bc_model, color='y', lw=1.2, label='Balmer continuum', zorder=5, rasterized=True)
+        if _show_component(bc_plot):
+            ax.plot(self.wave, bc_plot, color='y', lw=1.2, label=bc_label, zorder=5, rasterized=True)
         else:
-            ax.plot(self.wave, self.f_bc_model, color='y', lw=1.2, zorder=5, rasterized=True)
-        if len(self.f_line_model) == len(self.wave):
-            if _show_component(self.f_line_model):
+            ax.plot(self.wave, bc_plot, color='y', lw=1.2, zorder=5, rasterized=True)
+        if len(line_plot) == len(self.wave):
+            if _show_component(line_plot):
                 ax.plot(
                     self.wave,
-                    self.f_line_model,
+                    line_plot,
                     color='lightskyblue',
                     lw=1.5,
-                    label='total lines',
+                    label=line_label,
                     zorder=5,
                     rasterized=True,
                 )
             else:
                 ax.plot(
                     self.wave,
-                    self.f_line_model,
+                    line_plot,
                     color='lightskyblue',
                     lw=1.5,
-                    label='total lines',
+                    label=line_label,
                     zorder=5,
                     rasterized=True,
                 )
+
+        obs_phot_points = self._observed_photometry_for_plot()
+        if obs_phot_points is not None:
+            phot_x, phot_xerr, phot_y, phot_yerr = obs_phot_points
+            ax.errorbar(
+                phot_x,
+                phot_y,
+                yerr=phot_yerr,
+                xerr=phot_xerr,
+                fmt='s',
+                ms=7,
+                color='black',
+                mfc='white',
+                mec='black',
+                mew=0.8,
+                elinewidth=1.0,
+                capsize=3,
+                alpha=0.95,
+                zorder=8,
+                label='PSF photometry',
+            )
+
+        syn_phot_points = self._synthetic_photometry_for_plot(
+            model_attr='psf_model' if use_psf_space else 'model_total'
+        )
+        if syn_phot_points is not None:
+            phot_x, phot_xerr, phot_y, phot_yerr = syn_phot_points
+            ax.errorbar(
+                phot_x,
+                phot_y,
+                yerr=phot_yerr,
+                xerr=phot_xerr,
+                fmt='o',
+                ms=7,
+                color='crimson',
+                mec='white',
+                mew=0.8,
+                elinewidth=1.0,
+                capsize=3,
+                alpha=0.95,
+                zorder=8,
+                label='synthetic photometry',
+            )
 
         # Plot individual Gaussian line components: broad (*_br) in red, narrow in green.
         if (hasattr(self, 'line_component_amp_median')
@@ -1834,7 +2348,7 @@ class QSOFit:
             comp_labels = self.tied_line_meta.get('names', [''] * len(self.line_component_amp_median))
             drew_broad_label = False
             drew_narrow_label = False
-            show_line_leg = _show_component(self.f_line_model)
+            show_line_leg = _show_component(line_plot)
             for i in range(len(self.line_component_amp_median)):
                 amp = float(self.line_component_amp_median[i])
                 mu = float(self.line_component_mu_median[i])
@@ -1845,6 +2359,8 @@ class QSOFit:
                 # Keep component plotting consistent with polynomial correction if enabled.
                 if hasattr(self, 'f_poly_model') and len(self.f_poly_model) == len(prof):
                     prof = prof * self.f_poly_model
+                if use_psf_space:
+                    prof = psf_scale * prof
                 cname = str(comp_labels[i]).lower()
                 is_broad = cname.endswith('_br') or ('_br' in cname)
                 if is_broad:
@@ -1878,7 +2394,7 @@ class QSOFit:
         if ylims is None:
             yplot = np.concatenate([
                 self.flux[np.isfinite(self.flux)],
-                self.model_total[np.isfinite(self.model_total)]
+                total_model_plot[np.isfinite(total_model_plot)]
             ])
             if yplot.size > 0:
                 y1, y2 = np.nanpercentile(yplot, [1, 99])
@@ -1916,8 +2432,8 @@ class QSOFit:
                     zorder=7,
                 )
 
-        if plot_residual and len(self.model_total) == len(self.wave) and ax_resid is not None:
-            resid = self.flux - self.model_total
+        if residual_enabled and len(total_model_plot) == len(self.wave) and ax_resid is not None:
+            resid = self.flux - total_model_plot
             ax_resid.plot(
                 self.wave,
                 resid,
@@ -1936,7 +2452,7 @@ class QSOFit:
             ax_resid.set_ylabel('resid', fontsize=20)
             self._style_axis(ax_resid)
 
-        if plot_residual and ax_resid is not None:
+        if residual_enabled and ax_resid is not None:
             ax_resid.set_xlabel(r'Rest Wavelength ($\AA$)', fontsize=20)
         else:
             ax.set_xlabel(r'Rest Wavelength ($\AA$)', fontsize=20)

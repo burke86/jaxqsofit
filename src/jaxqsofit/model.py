@@ -56,6 +56,18 @@ def _many_gauss_lnlam(lnlam, amps, mus, sigs):
     return jnp.sum(amps[None, :] * jnp.exp(-0.5 * z * z), axis=1)
 
 
+def _synth_ab_mag_from_grid(wave_obs, flam_obs, filt_trans):
+    """Compute an AB magnitude from flux density and filter transmission on one grid."""
+    c_ang_s = 2.99792458e18
+    trans = jnp.clip(filt_trans, 0.0, None)
+    # Model spectra are stored in SDSS-style 1e-17 flux-density units.
+    flam_obs_cgs = 1e-17 * flam_obs
+    num = jnp.trapezoid(flam_obs_cgs * trans * wave_obs, wave_obs)
+    den = jnp.trapezoid(trans * c_ang_s / jnp.clip(wave_obs, 1e-8, None), wave_obs)
+    fnu = num / jnp.maximum(den, 1e-30)
+    return -2.5 * jnp.log10(jnp.clip(fnu, 1e-30, None)) - 48.60
+
+
 def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms):
     """Apply LOS velocity shift and Gaussian broadening to one spectrum."""
     dln = jnp.mean(jnp.diff(lnwave))
@@ -575,7 +587,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          fe_uv_wave, fe_uv_flux, fe_op_wave, fe_op_flux, use_lines=True,
                          prior_config=None, decompose_host=True, fit_pl=True, fit_fe=True, fit_bc=True, fit_poly=False,
                          fit_poly_order=2,
-                         fit_poly_edge_flex=True):
+                         fit_poly_edge_flex=True, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
+                         psf_filter_curves=None, use_psf_phot=False):
     """Joint AGN+host spectral forward model for NumPyro inference."""
     wave = _np_to_jnp(wave)
     flux = _np_to_jnp(flux)
@@ -586,6 +599,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_uv_flux = _np_to_jnp(fe_uv_flux)
     fe_op_wave = _np_to_jnp(fe_op_wave)
     fe_op_flux = _np_to_jnp(fe_op_flux)
+    z_qso = jnp.asarray(float(z_qso))
     prior_config = {} if prior_config is None else prior_config
 
     def _cfg_norm(key):
@@ -806,6 +820,41 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     continuum_model = agn_model + gal_model + edge_additive_model
     model = continuum_model + line_model
     sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
+    fiber_model = model
+
+    delta_m_psf = jnp.asarray(0.0)
+    eta_psf = jnp.asarray(1.0)
+    scale_psf = jnp.asarray(1.0)
+    agn_model_psf = agn_model
+    gal_model_psf = gal_model
+    line_model_psf = line_model
+    psf_model = agn_model_psf + gal_model_psf + line_model_psf
+    use_psf_phot = (
+        bool(use_psf_phot)
+        and psf_mags is not None
+        and psf_mag_errs is not None
+        and psf_filter_curves is not None
+    )
+    if use_psf_phot:
+        delta_m_psf = numpyro.sample('delta_m_psf_raw', dist.Normal(0.0, 0.5))
+        if decompose_host:
+            eta_psf = numpyro.sample('eta_psf_raw', dist.Beta(2.0, 2.0))
+        scale_psf = 10.0 ** (-0.4 * delta_m_psf)
+        agn_model_psf = scale_psf * agn_model
+        gal_model_psf = scale_psf * eta_psf * gal_model
+        line_model_psf = scale_psf * line_model
+        psf_model = agn_model_psf + gal_model_psf + line_model_psf
+
+        wave_obs = wave * (1.0 + z_qso)
+        flam_psf_obs = psf_model / jnp.maximum(1.0 + z_qso, 1e-8)
+        psf_mags = _np_to_jnp(psf_mags)
+        psf_mag_errs = _np_to_jnp(psf_mag_errs)
+        psf_filter_trans = _np_to_jnp(psf_filter_curves['trans'])
+        sigma_phot_extra = numpyro.sample('sigma_phot_extra', dist.HalfNormal(0.05))
+        for i in range(psf_filter_trans.shape[0]):
+            m_syn = _synth_ab_mag_from_grid(wave_obs, flam_psf_obs, psf_filter_trans[i])
+            sig = jnp.sqrt(psf_mag_errs[i] ** 2 + sigma_phot_extra ** 2)
+            numpyro.sample(f'psf_mag_obs_{i}', dist.Normal(m_syn, sig), obs=psf_mags[i])
 
     numpyro.deterministic('f_pl_model', pl_model)
     numpyro.deterministic('f_fe_mgii_model', fe_uv_model)
@@ -820,10 +869,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('continuum_model', continuum_model)
     numpyro.deterministic('edge_additive_model', edge_additive_model)
     numpyro.deterministic('model', model)
+    numpyro.deterministic('delta_m_psf', delta_m_psf)
+    numpyro.deterministic('eta_psf', eta_psf)
+    numpyro.deterministic('scale_psf', scale_psf)
+    numpyro.deterministic('agn_model_psf', agn_model_psf)
+    numpyro.deterministic('gal_model_psf', gal_model_psf)
+    numpyro.deterministic('line_model_psf', line_model_psf)
+    numpyro.deterministic('psf_model', psf_model)
     numpyro.deterministic('PL_norm_eff', pl_norm)
     numpyro.deterministic('frac_host', frac_host)
     numpyro.deterministic('fsps_weights', fsps_weights)
     numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 
     student_t_df = float(prior_config.get('student_t_df', 3.0))
-    numpyro.sample('obs', dist.StudentT(df=student_t_df, loc=model, scale=sigma_tot), obs=flux)
+    numpyro.sample('obs', dist.StudentT(df=student_t_df, loc=fiber_model, scale=sigma_tot), obs=flux)

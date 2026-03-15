@@ -13,6 +13,13 @@ def _make_simple_spectrum(n=64):
     return lam, flux, err
 
 
+def _make_wide_spectrum(n=256):
+    lam = np.linspace(3000.0, 10000.0, n)
+    flux = 40.0 + 0.0015 * (lam - 6000.0)
+    err = np.full_like(flux, 0.4)
+    return lam, flux, err
+
+
 def test_init_err_optional_defaults_to_small_value():
     lam, flux, _ = _make_simple_spectrum()
     q = QSOFit(lam=lam, flux=flux, z=0.1)
@@ -21,14 +28,49 @@ def test_init_err_optional_defaults_to_small_value():
     assert np.allclose(q.err_in, 1e-6)
 
 
-def test_fit_dispatch_nuts(monkeypatch):
+def test_init_psf_defaults_band_labels():
     lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(
+        lam=lam,
+        flux=flux,
+        err=err,
+        z=0.1,
+        psf_mags=np.array([20.0, 19.8, 19.6]),
+        psf_mag_errs=np.array([0.1, 0.1, 0.1]),
+    )
+
+    assert q.psf_bands == ["u", "g", "r"]
+
+
+def test_prepare_psf_photometry_masks_invalid_and_builds_transmissions():
+    lam, flux, err = _make_wide_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
 
-    called = {'nuts': 0}
+    mags, mag_errs, bands, filt_curves, use_psf = q._prepare_psf_photometry(
+        wave_obs=lam,
+        psf_mags=np.array([20.0, 19.9, np.nan, 19.5]),
+        psf_mag_errs=np.array([0.10, 0.12, 0.20, -1.0]),
+        psf_bands=["u", "g", "r", "i"],
+        use_psf_phot=True,
+    )
+
+    assert use_psf is True
+    assert bands == ["u", "g"]
+    assert mags.shape == (2,)
+    assert mag_errs.shape == (2,)
+    assert filt_curves["trans"].shape == (2, lam.size)
+    assert np.all(filt_curves["trans"] >= 0.0)
+
+
+def test_fit_dispatch_nuts(monkeypatch):
+    lam, flux, err = _make_wide_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    called = {'nuts': 0, 'kwargs': None}
 
     def _stub_nuts(**kwargs):
         called['nuts'] += 1
+        called['kwargs'] = kwargs
 
     monkeypatch.setattr(q, 'run_fsps_numpyro_fit', _stub_nuts)
 
@@ -38,9 +80,16 @@ def test_fit_dispatch_nuts(monkeypatch):
         plot_fig=False,
         save_result=False,
         prior_config=build_default_prior_config(flux),
+        psf_mags=np.array([19.8, 19.6]),
+        psf_mag_errs=np.array([0.05, 0.06]),
+        psf_bands=["g", "r"],
+        use_psf_phot=True,
     )
 
     assert called['nuts'] == 1
+    assert called['kwargs']['use_psf_phot'] is True
+    assert called['kwargs']['psf_mags'].shape == (2,)
+    assert called['kwargs']['psf_filter_curves']['trans'].shape == (2, q.lam.size)
 
 
 def test_fit_dispatch_optax(monkeypatch):
