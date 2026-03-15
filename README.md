@@ -12,6 +12,9 @@ Bayesian quasar spectral fitting with JAX + NumPyro, including:
 - Balmer continuum
 - Tied Gaussian emission-line model
 - Student-t likelihood (robust to outliers/absorption)
+- Low-order multiplicative polynomial basis for spectrophotometric calibration errors
+- Uses flexible Gaussian radial basis functions to correct errors near the spectral edges
+- Additive and multiplicative intrinsic scatter
 
 ## Start Here: Tutorial
 
