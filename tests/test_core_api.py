@@ -62,6 +62,55 @@ def test_prepare_psf_photometry_masks_invalid_and_builds_transmissions():
     assert np.all(filt_curves["trans"] >= 0.0)
 
 
+def test_prepare_psf_photometry_dereddens_psf_mags_bandpass_consistently():
+    lam, flux, err = _make_wide_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q._fit_deredden = True
+    q.ebv_mw = 0.12
+
+    mags, mag_errs, bands, filt_curves, use_psf = q._prepare_psf_photometry(
+        wave_obs=lam,
+        psf_mags=np.array([20.0, 19.8, 19.6]),
+        psf_mag_errs=np.array([0.10, 0.10, 0.10]),
+        psf_bands=["u", "g", "r"],
+        use_psf_phot=True,
+    )
+
+    assert use_psf is True
+    assert bands == ["u", "g", "r"]
+    assert mags.shape == (3,)
+    assert mag_errs.shape == (3,)
+    assert np.allclose(q.psf_mags_raw, np.array([20.0, 19.8, 19.6]))
+    assert np.allclose(q.psf_mag_errs_raw, np.array([0.10, 0.10, 0.10]))
+    assert np.allclose(q.psf_mags_dered, mags)
+    assert np.allclose(q.psf_mag_errs_dered, mag_errs)
+    assert np.all(mags < q.psf_mags_raw)
+    assert (q.psf_mags_raw[0] - mags[0]) > (q.psf_mags_raw[-1] - mags[-1])
+    assert filt_curves["trans"].shape == (3, lam.size)
+
+
+def test_prepare_psf_photometry_zero_ebv_keeps_mags_unchanged():
+    lam, flux, err = _make_wide_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q._fit_deredden = True
+    q.ebv_mw = 0.0
+
+    mags, mag_errs, bands, _filt_curves, use_psf = q._prepare_psf_photometry(
+        wave_obs=lam,
+        psf_mags=np.array([20.0, 19.8]),
+        psf_mag_errs=np.array([0.10, 0.12]),
+        psf_bands=["g", "r"],
+        use_psf_phot=True,
+    )
+
+    assert use_psf is True
+    assert bands == ["g", "r"]
+    assert np.allclose(mags, np.array([20.0, 19.8]))
+    assert np.allclose(q.psf_mags_raw, mags)
+    assert np.allclose(q.psf_mags_dered, mags)
+    assert np.allclose(q.psf_mag_errs_dered, mag_errs)
+
+
 def test_fit_dispatch_nuts(monkeypatch):
     lam, flux, err = _make_wide_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
@@ -90,6 +139,44 @@ def test_fit_dispatch_nuts(monkeypatch):
     assert called['kwargs']['use_psf_phot'] is True
     assert called['kwargs']['psf_mags'].shape == (2,)
     assert called['kwargs']['psf_filter_curves']['trans'].shape == (2, q.lam.size)
+
+
+def test_fit_dispatch_nuts_dereddens_psf_phot_when_enabled(monkeypatch):
+    lam, flux, err = _make_wide_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    called = {'nuts': 0, 'kwargs': None}
+
+    def _stub_nuts(**kwargs):
+        called['nuts'] += 1
+        called['kwargs'] = kwargs
+
+    def _stub_deredden(lam_in, flux_in, err_in, ra_in, dec_in):
+        q.ebv_mw = 0.15
+        q.flux = flux_in
+        q.err = err_in
+        return q.flux
+
+    monkeypatch.setattr(q, 'run_fsps_numpyro_fit', _stub_nuts)
+    monkeypatch.setattr(q, '_de_redden', _stub_deredden)
+
+    q.fit(
+        deredden=True,
+        fit_method='nuts',
+        plot_fig=False,
+        save_result=False,
+        prior_config=build_default_prior_config(flux),
+        psf_mags=np.array([19.8, 19.6]),
+        psf_mag_errs=np.array([0.05, 0.06]),
+        psf_bands=["g", "r"],
+        use_psf_phot=True,
+    )
+
+    assert called['nuts'] == 1
+    assert called['kwargs']['use_psf_phot'] is True
+    assert np.all(called['kwargs']['psf_mags'] < np.array([19.8, 19.6]))
+    assert np.allclose(q.psf_mags_raw, np.array([19.8, 19.6]))
+    assert np.allclose(q.psf_mags_dered, called['kwargs']['psf_mags'])
 
 
 def test_fit_dispatch_optax(monkeypatch):

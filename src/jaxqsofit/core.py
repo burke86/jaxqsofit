@@ -4,6 +4,7 @@ import os
 import pickle
 import glob
 
+import extinction
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -58,6 +59,37 @@ def _filter_wave_to_angstrom_scalar(value):
     if hasattr(value, "to_value"):
         return float(value.to_value(u.AA))
     return float(value)
+
+
+def _ab_mag_to_fnu(mag):
+    """Convert AB magnitude to flux density in cgs units."""
+    mag = np.asarray(mag, dtype=np.float64)
+    return 10.0 ** (-0.4 * (mag + 48.60))
+
+
+def _fnu_to_ab_mag(fnu):
+    """Convert flux density in cgs units to AB magnitude."""
+    fnu = np.asarray(fnu, dtype=np.float64)
+    return -2.5 * np.log10(np.clip(fnu, 1e-300, None)) - 48.60
+
+
+def _mw_band_attenuation_factor(wave_obs, filt_trans, ebv, r_v=3.1):
+    """Return the AB-weighted Galactic attenuation factor through a filter."""
+    wave_obs = np.asarray(wave_obs, dtype=np.float64)
+    filt_trans = np.clip(np.asarray(filt_trans, dtype=np.float64), 0.0, None)
+    if (not np.isfinite(ebv)) or ebv == 0.0:
+        return 1.0
+
+    a_lambda = extinction.fitzpatrick99(wave_obs, a_v=float(r_v) * float(ebv), r_v=float(r_v))
+    attenuation = 10.0 ** (-0.4 * np.asarray(a_lambda, dtype=np.float64))
+    inv_wave = 1.0 / np.clip(wave_obs, 1e-8, None)
+    denom = float(np.trapezoid(filt_trans * inv_wave, wave_obs))
+    if (not np.isfinite(denom)) or denom <= 0.0:
+        return 1.0
+    numer = float(np.trapezoid(filt_trans * attenuation * inv_wave, wave_obs))
+    if (not np.isfinite(numer)) or numer <= 0.0:
+        return 1.0
+    return numer / denom
 
 class QSOFit:
     def __init__(self, lam, flux, err=None, z=0.0, ra=-999, dec=-999, filename=None, output_path=None,
@@ -117,11 +149,16 @@ class QSOFit:
         self.filename = self._resolve_filename(filename=filename, ra=ra, dec=dec)
         self.psf_mags = None if psf_mags is None else np.asarray(psf_mags, dtype=np.float64)
         self.psf_mag_errs = None if psf_mag_errs is None else np.asarray(psf_mag_errs, dtype=np.float64)
+        self.psf_mags_raw = None if psf_mags is None else np.asarray(psf_mags, dtype=np.float64)
+        self.psf_mag_errs_raw = None if psf_mag_errs is None else np.asarray(psf_mag_errs, dtype=np.float64)
+        self.psf_mags_dered = None
+        self.psf_mag_errs_dered = None
         self.psf_bands = None if psf_bands is None else list(psf_bands)
         if self.psf_bands is None and self.psf_mags is not None:
             self.psf_bands = ["u", "g", "r", "i", "z"][:len(self.psf_mags)]
         self.psf_filter_curves = None
         self.use_psf_phot = False
+        self.ebv_mw = np.nan
 
     @staticmethod
     def _resolve_filename(filename=None, ra=-999, dec=-999):
@@ -180,8 +217,10 @@ class QSOFit:
         """Validate PSF photometry and interpolate filters onto the observed wavelength grid."""
         if psf_mags is not None:
             self.psf_mags = np.asarray(psf_mags, dtype=np.float64)
+            self.psf_mags_raw = np.asarray(psf_mags, dtype=np.float64)
         if psf_mag_errs is not None:
             self.psf_mag_errs = np.asarray(psf_mag_errs, dtype=np.float64)
+            self.psf_mag_errs_raw = np.asarray(psf_mag_errs, dtype=np.float64)
         if psf_bands is not None:
             self.psf_bands = list(psf_bands)
         if self.psf_bands is None and self.psf_mags is not None:
@@ -190,6 +229,8 @@ class QSOFit:
         if (not use_psf_phot) or self.psf_mags is None or self.psf_mag_errs is None:
             self.use_psf_phot = False
             self.psf_filter_curves = None
+            self.psf_mags_dered = None
+            self.psf_mag_errs_dered = None
             return None, None, None, None, False
 
         mags = np.asarray(self.psf_mags, dtype=np.float64)
@@ -235,11 +276,32 @@ class QSOFit:
             self.psf_filter_curves = None
             self.psf_mags = None
             self.psf_mag_errs = None
+            self.psf_mags_raw = None
+            self.psf_mag_errs_raw = None
+            self.psf_mags_dered = None
+            self.psf_mag_errs_dered = None
             self.psf_bands = None
             return None, None, None, None, False
 
-        self.psf_mags = np.asarray(keep_mags, dtype=np.float64)
-        self.psf_mag_errs = np.asarray(keep_errs, dtype=np.float64)
+        raw_mags = np.asarray(keep_mags, dtype=np.float64)
+        raw_errs = np.asarray(keep_errs, dtype=np.float64)
+        dered_mags = raw_mags.copy()
+        apply_dered = bool(getattr(self, "_fit_deredden", False)) and np.isfinite(getattr(self, "ebv_mw", np.nan))
+        if apply_dered and float(self.ebv_mw) != 0.0:
+            band_atten = np.asarray(
+                [_mw_band_attenuation_factor(wave_obs, trans, self.ebv_mw) for trans in keep_trans],
+                dtype=np.float64,
+            )
+            fnu_obs = _ab_mag_to_fnu(raw_mags)
+            fnu_dered = fnu_obs / np.clip(band_atten, 1e-30, None)
+            dered_mags = _fnu_to_ab_mag(fnu_dered)
+
+        self.psf_mags_raw = raw_mags
+        self.psf_mag_errs_raw = raw_errs
+        self.psf_mags_dered = dered_mags
+        self.psf_mag_errs_dered = raw_errs.copy()
+        self.psf_mags = dered_mags
+        self.psf_mag_errs = raw_errs
         self.psf_bands = keep_bands
         self.psf_filter_curves = {
             "bands": tuple(keep_bands),
@@ -347,8 +409,8 @@ class QSOFit:
             filename=state.get("filename", resolved_name),
             output_path=output_path if output_path is not None else state.get("output_path"),
             wdisp=state.get("wdisp"),
-            psf_mags=state.get("psf_mags"),
-            psf_mag_errs=state.get("psf_mag_errs"),
+            psf_mags=state.get("psf_mags_raw", state.get("psf_mags")),
+            psf_mag_errs=state.get("psf_mag_errs_raw", state.get("psf_mag_errs")),
             psf_bands=state.get("psf_bands"),
         )
         obj.__dict__.update(state)
@@ -1402,6 +1464,7 @@ class QSOFit:
         sfd_query = _get_sfd_query()
         coord = SkyCoord(float(ra) * u.deg, float(dec) * u.deg, frame='icrs')
         ebv = float(np.asarray(sfd_query(coord)))
+        self.ebv_mw = ebv
         zero_flux = np.where(flux == 0, True, False)
         flux[zero_flux] = 1e-10
         flux_unred = unred(lam, flux, ebv)
