@@ -27,6 +27,7 @@ from .model import (
     _get_sfd_query,
     _normalize_template_flux,
     _np_to_jnp,
+    _spectrum_center_pivot,
     build_fsps_template_grid,
     build_tied_line_meta_from_linelist,
     qso_fsps_joint_model,
@@ -1286,6 +1287,7 @@ class QSOFit:
         if cont_waves.size == 0:
             cont_waves = np.asarray([2500.0, 4200.0, 5100.0], dtype=float)
         self.L_conti_wave = cont_waves
+        pivot_wave = float(np.asarray(_spectrum_center_pivot(self.wave), dtype=float))
 
         frac_host_vals = []
         frac_host_psf_vals = []
@@ -1309,6 +1311,10 @@ class QSOFit:
             frac_bc_names.append(f'frac_bc_{wave_label}')
 
         # Preserve the legacy fixed-wavelength attributes for downstream compatibility.
+        self.pivot_wave = pivot_wave
+        self.frac_host_pivot = self._host_fraction_at_wave(pivot_wave)
+        self.frac_host_psf_pivot = self._host_fraction_psf_at_wave(pivot_wave)
+        self.frac_bc_pivot = self._bc_fraction_at_wave(pivot_wave)
         self.frac_host_4200 = self._host_fraction_at_wave(4200.0)
         self.frac_host_5100 = self._host_fraction_at_wave(5100.0)
         self.frac_host_2500 = self._host_fraction_at_wave(2500.0)
@@ -1346,6 +1352,10 @@ class QSOFit:
             ('PL_norm_err', float(np.nanstd(pl_norm_samp)), 'float'),
             ('PL_slope', pl_slope_med, 'float'),
             ('PL_slope_err', pl_slope_err, 'float'),
+            ('pivot_wave', self.pivot_wave, 'float'),
+            ('frac_host_pivot', self.frac_host_pivot, 'float'),
+            ('frac_host_psf_pivot', self.frac_host_psf_pivot, 'float'),
+            ('frac_bc_pivot', self.frac_bc_pivot, 'float'),
             ('sigma', gal_sig, 'float'),
             ('sigma_err', gal_sig_err, 'float'),
             ('v_off', gal_v, 'float'),
