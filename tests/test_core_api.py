@@ -172,7 +172,7 @@ def test_fit_dispatch_nuts(monkeypatch):
 
 def test_fit_dispatch_nuts_dereddens_psf_phot_when_enabled(monkeypatch):
     lam, flux, err = _make_wide_spectrum()
-    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1, ra=150.0, dec=2.0)
 
     called = {'nuts': 0, 'kwargs': None}
 
