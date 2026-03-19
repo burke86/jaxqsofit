@@ -15,6 +15,7 @@ Bayesian quasar spectral fitting with JAX + NumPyro, including:
 - Low-order multiplicative polynomial basis for spectrophotometric calibration errors
 - Uses flexible Gaussian radial basis functions to correct errors near the spectral edges
 - Additive and multiplicative intrinsic scatter
+- User-specified custom components (e.g., alternative iron template, custom continuum component, custom non-Gaussian line component)
 - Optional: fit PSF magnitudes to help constrain host (since large PSF-fiber mag offset implies high host) and slit losses
 
 ## Start Here: Tutorial
