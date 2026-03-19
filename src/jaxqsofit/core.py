@@ -22,9 +22,13 @@ from numpyro.optim import optax_to_numpyro
 
 from .custom_components import (
     CustomComponentSpec,
+    CustomLineComponentSpec,
     custom_component_site_names,
+    custom_line_component_site_names,
     inject_default_custom_component_priors,
+    inject_default_custom_line_component_priors,
     normalize_custom_components,
+    normalize_custom_line_components,
 )
 from .defaults import build_default_prior_config
 from .model import (
@@ -182,7 +186,7 @@ class QSOFit:
         return "result"
 
     @staticmethod
-    def _predictive_return_sites(custom_components=None):
+    def _predictive_return_sites(custom_components=None, custom_line_components=None):
         """Return posterior predictive sites needed for summaries and plots."""
         return_sites = [
             'f_pl_model',
@@ -212,6 +216,7 @@ class QSOFit:
             'psf_model',
         ]
         return_sites += custom_component_site_names(custom_components)
+        return_sites += custom_line_component_site_names(custom_line_components)
         return return_sites
 
     def _prepare_psf_photometry(
@@ -340,6 +345,8 @@ class QSOFit:
         """Recursively convert model state into pickle-friendly Python objects."""
         if isinstance(value, CustomComponentSpec):
             return value.to_state()
+        if isinstance(value, CustomLineComponentSpec):
+            return value.to_state()
         if isinstance(value, dict):
             return {k: QSOFit._serialize_for_pickle(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):
@@ -356,6 +363,8 @@ class QSOFit:
         if isinstance(value, dict):
             if value.get("__custom_component__", False):
                 return CustomComponentSpec.from_state(value)
+            if value.get("__custom_line_component__", False):
+                return CustomLineComponentSpec.from_state(value)
             return {k: QSOFit._deserialize_from_pickle(v) for k, v in value.items()}
         if isinstance(value, list):
             return [QSOFit._deserialize_from_pickle(v) for v in value]
@@ -377,6 +386,34 @@ class QSOFit:
             pickle.dump(state, fh, protocol=pickle.HIGHEST_PROTOCOL)
         print(f"Saved posterior bundle: {out_file}")
         return out_file
+
+    @staticmethod
+    def _build_fsps_grid_for_fit(wave, age_grid_gyr, logzsol_grid, dsps_ssp_fn, decompose_host):
+        """Build the host-template grid only when host decomposition is enabled."""
+        if decompose_host:
+            return build_fsps_template_grid(
+                wave_out=wave,
+                age_grid_gyr=age_grid_gyr,
+                logzsol_grid=logzsol_grid,
+                dsps_ssp_fn=dsps_ssp_fn,
+            )
+
+        class _DummyFSPSGrid:
+            pass
+
+        grid = _DummyFSPSGrid()
+        grid.wave = np.asarray(wave, dtype=float)
+        grid.templates = np.zeros((len(wave), 1), dtype=float)
+        grid.template_meta = [{
+            'tage_gyr': float(np.asarray(age_grid_gyr, dtype=float)[0]),
+            'logzsol': float(np.asarray(logzsol_grid, dtype=float)[0]),
+            'norm': 1.0,
+            'dsps_lgmet': 0.0,
+            'dsps_lg_age_gyr': 0.0,
+        }]
+        grid.age_grid_gyr = np.asarray(age_grid_gyr, dtype=float)
+        grid.logzsol_grid = np.asarray(logzsol_grid, dtype=float)
+        return grid
 
     @classmethod
     def load_from_samples(
@@ -480,6 +517,7 @@ class QSOFit:
             psf_bands=None,
             use_psf_phot=False,
             custom_components=None,
+            custom_line_components=None,
             kwargs_plot=None):
         """Run end-to-end preprocessing, fitting, and optional plotting/saving.
 
@@ -558,6 +596,9 @@ class QSOFit:
             Optional additive continuum components. Use
             ``make_custom_component`` for general user-defined components or
             ``make_template_component`` for a template convenience wrapper.
+        custom_line_components : sequence[CustomLineComponentSpec] or None, optional
+            Optional additive emission-line components. Each component provides
+            its own evaluator and is tagged as ``broad`` or ``narrow``.
         kwargs_plot : dict or None, optional
             Extra keyword arguments passed to :meth:`plot_fig`.
         """
@@ -586,6 +627,7 @@ class QSOFit:
         self._fit_dsps_ssp_fn = str(dsps_ssp_fn)
         self._fit_use_psf_phot = bool(use_psf_phot)
         self._fit_custom_components = normalize_custom_components(custom_components)
+        self._fit_custom_line_components = normalize_custom_line_components(custom_line_components)
 
         self.wave_range = wave_range
         self.wave_mask = wave_mask
@@ -626,6 +668,11 @@ class QSOFit:
             flux=self.flux,
             custom_components=self._fit_custom_components,
         )
+        prior_config = inject_default_custom_line_component_priors(
+            prior_config=prior_config,
+            flux=self.flux,
+            custom_line_components=self._fit_custom_line_components,
+        )
         out_params = prior_config.get('out_params', {})
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
         self._fit_prior_config = prior_config
@@ -637,6 +684,7 @@ class QSOFit:
         if mask_lya_forest:
             self._mask_lya_forest(self.lam, self.flux, self.err, self.z)
         if deredden:
+            self._validate_deredden_coordinates(self.ra, self.dec)
             self._de_redden(self.lam, self.flux, self.err, self.ra, self.dec)
 
         self._rest_frame(self.lam, self.flux, self.err, self.z)
@@ -673,6 +721,7 @@ class QSOFit:
                 psf_filter_curves=psf_filter_curves_use,
                 use_psf_phot=use_psf_phot_use,
                 custom_components=self._fit_custom_components,
+                custom_line_components=self._fit_custom_line_components,
             )
         elif fit_method == 'optax':
             self.run_fsps_optax_fit(
@@ -695,6 +744,7 @@ class QSOFit:
                 psf_filter_curves=psf_filter_curves_use,
                 use_psf_phot=use_psf_phot_use,
                 custom_components=self._fit_custom_components,
+                custom_line_components=self._fit_custom_line_components,
             )
         elif fit_method == 'optax+nuts':
             self.run_fsps_optax_nuts_fit(
@@ -721,6 +771,7 @@ class QSOFit:
                 psf_filter_curves=psf_filter_curves_use,
                 use_psf_phot=use_psf_phot_use,
                 custom_components=self._fit_custom_components,
+                custom_line_components=self._fit_custom_line_components,
             )
         else:
             raise ValueError(f"Unknown fit_method='{fit_method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
@@ -752,6 +803,7 @@ class QSOFit:
                              psf_filter_curves=None,
                              use_psf_phot=False,
                              custom_components=None,
+                             custom_line_components=None,
                              init_values=None):
         """Fit the full model using NUTS MCMC and store posterior summaries.
 
@@ -783,16 +835,18 @@ class QSOFit:
         err = np.asarray(self.err, dtype=float)
 
         custom_components = normalize_custom_components(custom_components)
+        custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
             prior_config = build_default_prior_config(flux)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
+        prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
         conti_priors = prior_config.get('conti_priors', {})
         line_table = _extract_line_table_from_prior_config(prior_config)
 
-        if use_lines and line_table is None:
+        if use_lines and line_table is None and len(custom_line_components) == 0:
             raise ValueError(
-                "fit_lines=True requires line priors/table in prior_config. "
-                "Pass prior_config['line_priors'] (or prior_config['line']['table'])."
+                "fit_lines=True requires either line priors/table in prior_config "
+                "or at least one custom_line_component."
             )
 
         if line_table is not None:
@@ -821,11 +875,12 @@ class QSOFit:
                 'compnames': [],
                 'line_lambda': np.array([], dtype=float),
             }
-        fsps_grid = build_fsps_template_grid(
-            wave_out=wave,
+        fsps_grid = self._build_fsps_grid_for_fit(
+            wave=wave,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             dsps_ssp_fn=dsps_ssp_fn,
+            decompose_host=decompose_host,
         )
         self.tied_line_meta = tied_line_meta
 
@@ -861,13 +916,14 @@ class QSOFit:
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
             custom_components=custom_components,
+            custom_line_components=custom_line_components,
         )
         samples = mcmc.get_samples()
 
         pred = Predictive(
             qso_fsps_joint_model,
             posterior_samples=samples,
-            return_sites=self._predictive_return_sites(custom_components=custom_components),
+            return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
         )
         pred_out = pred(
             rng_key,
@@ -896,6 +952,7 @@ class QSOFit:
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
             custom_components=custom_components,
+            custom_line_components=custom_line_components,
         )
 
         self.numpyro_mcmc = mcmc
@@ -925,7 +982,8 @@ class QSOFit:
                            psf_mag_errs=None,
                            psf_filter_curves=None,
                            use_psf_phot=False,
-                           custom_components=None):
+                           custom_components=None,
+                           custom_line_components=None):
         """Fit a MAP approximation using staged SVI with an Optax optimizer.
 
         Parameters
@@ -952,16 +1010,18 @@ class QSOFit:
         err = np.asarray(self.err, dtype=float)
 
         custom_components = normalize_custom_components(custom_components)
+        custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
             prior_config = build_default_prior_config(flux)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
+        prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
         conti_priors = prior_config.get('conti_priors', {})
         line_table = _extract_line_table_from_prior_config(prior_config)
 
-        if use_lines and line_table is None:
+        if use_lines and line_table is None and len(custom_line_components) == 0:
             raise ValueError(
-                "fit_lines=True requires line priors/table in prior_config. "
-                "Pass prior_config['line_priors'] (or prior_config['line']['table'])."
+                "fit_lines=True requires either line priors/table in prior_config "
+                "or at least one custom_line_component."
             )
 
         if line_table is not None:
@@ -990,11 +1050,12 @@ class QSOFit:
                 'compnames': [],
                 'line_lambda': np.array([], dtype=float),
             }
-        fsps_grid = build_fsps_template_grid(
-            wave_out=wave,
+        fsps_grid = self._build_fsps_grid_for_fit(
+            wave=wave,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             dsps_ssp_fn=dsps_ssp_fn,
+            decompose_host=decompose_host,
         )
         self.tied_line_meta = tied_line_meta
 
@@ -1031,6 +1092,7 @@ class QSOFit:
                 psf_filter_curves=psf_filter_curves,
                 use_psf_phot=use_psf_phot,
                 custom_components=custom_components,
+                custom_line_components=custom_line_components,
                 progress_bar=self.verbose,
             )
             return svi, result
@@ -1084,7 +1146,7 @@ class QSOFit:
         pred = Predictive(
             qso_fsps_joint_model,
             posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
-            return_sites=self._predictive_return_sites(custom_components=custom_components),
+            return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
         )
         pred_out = pred(
             rng_key,
@@ -1113,6 +1175,7 @@ class QSOFit:
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
             custom_components=custom_components,
+            custom_line_components=custom_line_components,
         )
 
         self.numpyro_mcmc = None
@@ -1149,7 +1212,8 @@ class QSOFit:
                                 psf_mag_errs=None,
                                 psf_filter_curves=None,
                                 use_psf_phot=False,
-                                custom_components=None):
+                                custom_components=None,
+                                custom_line_components=None):
         """Warm-start with Optax MAP, then run NUTS as final inference.
 
         Parameters
@@ -1197,6 +1261,7 @@ class QSOFit:
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
             custom_components=custom_components,
+            custom_line_components=custom_line_components,
         )
         init_values = getattr(self, 'optax_map_point', None)
         self.run_fsps_numpyro_fit(
@@ -1221,6 +1286,7 @@ class QSOFit:
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
             custom_components=custom_components,
+            custom_line_components=custom_line_components,
             init_values=init_values,
         )
 
@@ -1254,6 +1320,8 @@ class QSOFit:
         self._pred_psf_draws = np.asarray(pred_out['psf_model']) if 'psf_model' in pred_out else None
         self.custom_components = {}
         self._pred_custom_draws = {}
+        self.custom_line_components = {}
+        self._pred_custom_line_draws = {}
 
         self.f_pl_model = np.median(np.asarray(pred_out['f_pl_model']), axis=0)
         self.f_fe_mgii_model = np.median(np.asarray(pred_out['f_fe_mgii_model']), axis=0)
@@ -1279,6 +1347,11 @@ class QSOFit:
                 draws = np.asarray(pred_out[comp.deterministic_site_name])
                 self._pred_custom_draws[comp.output_name] = draws
                 self.custom_components[comp.output_name] = np.median(draws, axis=0)
+        for comp in normalize_custom_line_components(getattr(self, '_fit_custom_line_components', ())):
+            if comp.deterministic_site_name in pred_out:
+                draws = np.asarray(pred_out[comp.deterministic_site_name])
+                self._pred_custom_line_draws[comp.output_name] = draws
+                self.custom_line_components[comp.output_name] = np.median(draws, axis=0)
         self.line_flux = flux - self.f_conti_model
         self.decomposed = True
         if 'delta_m_psf_raw' in samples:
@@ -1318,6 +1391,8 @@ class QSOFit:
         }
         for name, draws in self._pred_custom_draws.items():
             self.pred_bands[name] = _band(draws)
+        for name, draws in self._pred_custom_line_draws.items():
+            self.pred_bands[name] = _band(draws)
         if self.verbose:
             print("max data        :", np.nanmax(self.flux))
             print("max total model :", np.nanmax(self.model_total))
@@ -1328,6 +1403,8 @@ class QSOFit:
             print("max Balmer cont :", np.nanmax(self.f_bc_model))
             print("max lines       :", np.nanmax(self.f_line_model))
             for name, model in self.custom_components.items():
+                print(f"max {name:<11}:", np.nanmax(model))
+            for name, model in self.custom_line_components.items():
                 print(f"max {name:<11}:", np.nanmax(model))
 
         if decompose_host and 'gal_v_kms' in samples and 'gal_sigma_kms' in samples:
@@ -1545,6 +1622,22 @@ class QSOFit:
         self.flux = flux_unred
         self.err = err_unred
         return self.flux
+
+    @staticmethod
+    def _validate_deredden_coordinates(ra, dec):
+        """Validate sky coordinates before Galactic dereddening."""
+        ra_f = float(ra)
+        dec_f = float(dec)
+        invalid_placeholder = (ra_f == -999.0 and dec_f == -999.0)
+        invalid_range = (not np.isfinite(ra_f)) or (not np.isfinite(dec_f)) or (dec_f < -90.0) or (dec_f > 90.0)
+        if invalid_placeholder or invalid_range:
+            raise ValueError(
+                "Galactic dereddening requires valid sky coordinates: "
+                f"received ra={ra_f}, dec={dec_f}. "
+                "Pass real source coordinates to `QSOFit(...)` or call `fit(deredden=False)` "
+                "for synthetic data or spectra without sky positions."
+            )
+        return ra_f, dec_f
 
     def _rest_frame(self, lam, flux, err, z):
         """Convert observed-frame spectra to rest-frame convention.

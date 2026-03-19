@@ -111,6 +111,35 @@ def test_prepare_psf_photometry_zero_ebv_keeps_mags_unchanged():
     assert np.allclose(q.psf_mag_errs_dered, mag_errs)
 
 
+def test_de_redden_invalid_placeholder_coordinates_raise_clear_error():
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    with pytest.raises(ValueError, match="fit\\(deredden=False\\)|valid sky coordinates"):
+        q._validate_deredden_coordinates(ra=-999, dec=-999)
+
+
+def test_build_fsps_grid_for_fit_skips_template_load_when_host_disabled(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    def _boom(**kwargs):
+        raise AssertionError("FSPS templates should not be loaded when decompose_host=False")
+
+    monkeypatch.setattr(coremod, "build_fsps_template_grid", _boom)
+
+    grid = q._build_fsps_grid_for_fit(
+        wave=lam,
+        age_grid_gyr=(0.1, 1.0),
+        logzsol_grid=(-0.5, 0.0),
+        dsps_ssp_fn="missing.h5",
+        decompose_host=False,
+    )
+
+    assert grid.templates.shape == (lam.size, 1)
+    assert np.allclose(grid.templates, 0.0)
+
+
 def test_fit_dispatch_nuts(monkeypatch):
     lam, flux, err = _make_wide_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)

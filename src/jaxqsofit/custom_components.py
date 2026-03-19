@@ -109,6 +109,65 @@ class CustomComponentSpec:
         )
 
 
+@dataclass(frozen=True)
+class CustomLineComponentSpec:
+    """Generic additive emission-line component."""
+
+    name: str
+    parameter_priors: Mapping[str, Mapping[str, Any]]
+    evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any]
+    line_kind: str = "broad"
+    metadata: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self):
+        safe_name = _sanitize_component_name(self.name)
+        object.__setattr__(self, "name", safe_name)
+        if not callable(self.evaluate):
+            raise TypeError("Custom line component evaluate must be callable.")
+        priors = {str(k): dict(v) for k, v in dict(self.parameter_priors).items()}
+        object.__setattr__(self, "parameter_priors", priors)
+        kind = str(self.line_kind).strip().lower()
+        if kind not in {"broad", "narrow"}:
+            raise ValueError("Custom line component line_kind must be 'broad' or 'narrow'.")
+        object.__setattr__(self, "line_kind", kind)
+        object.__setattr__(self, "metadata", dict(self.metadata))
+
+    @property
+    def prefix(self) -> str:
+        return f"custom_line_{self.name}"
+
+    @property
+    def output_name(self) -> str:
+        return self.name
+
+    @property
+    def deterministic_site_name(self) -> str:
+        return f"{self.prefix}_model"
+
+    def site_name(self, param_name: str) -> str:
+        return f"{self.prefix}_{param_name}"
+
+    def to_state(self) -> dict[str, Any]:
+        return {
+            "__custom_line_component__": True,
+            "name": self.name,
+            "parameter_priors": copy.deepcopy(dict(self.parameter_priors)),
+            "evaluate_ref": _callable_to_ref(self.evaluate),
+            "line_kind": self.line_kind,
+            "metadata": copy.deepcopy(dict(self.metadata)),
+        }
+
+    @classmethod
+    def from_state(cls, state: Mapping[str, Any]) -> "CustomLineComponentSpec":
+        return cls(
+            name=str(state["name"]),
+            parameter_priors=dict(state["parameter_priors"]),
+            evaluate=_callable_from_ref(str(state["evaluate_ref"])),
+            line_kind=str(state.get("line_kind", "broad")),
+            metadata=dict(state.get("metadata", {})),
+        )
+
+
 def make_custom_component(
     name: str,
     parameter_priors: Mapping[str, Mapping[str, Any]],
@@ -121,6 +180,24 @@ def make_custom_component(
         name=name,
         parameter_priors=parameter_priors,
         evaluate=evaluate,
+        metadata={} if metadata is None else dict(metadata),
+    )
+
+
+def make_custom_line_component(
+    name: str,
+    parameter_priors: Mapping[str, Mapping[str, Any]],
+    evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any],
+    *,
+    line_kind: str = "broad",
+    metadata: Mapping[str, Any] | None = None,
+) -> CustomLineComponentSpec:
+    """Build a generic additive custom line component."""
+    return CustomLineComponentSpec(
+        name=name,
+        parameter_priors=parameter_priors,
+        evaluate=evaluate,
+        line_kind=line_kind,
         metadata={} if metadata is None else dict(metadata),
     )
 
@@ -206,6 +283,24 @@ def normalize_custom_components(custom_components: Iterable[CustomComponentSpec]
     return tuple(normalized)
 
 
+def normalize_custom_line_components(
+    custom_line_components: Iterable[CustomLineComponentSpec] | None,
+) -> tuple[CustomLineComponentSpec, ...]:
+    """Validate and normalize custom line-component definitions."""
+    if custom_line_components is None:
+        return ()
+    normalized = []
+    seen = set()
+    for comp in custom_line_components:
+        if not isinstance(comp, CustomLineComponentSpec):
+            raise TypeError("custom_line_components entries must be CustomLineComponentSpec objects.")
+        if comp.name in seen:
+            raise ValueError(f"Duplicate custom line component name: {comp.name}")
+        seen.add(comp.name)
+        normalized.append(comp)
+    return tuple(normalized)
+
+
 def inject_default_custom_component_priors(
     prior_config: dict[str, Any],
     flux: np.ndarray,
@@ -238,6 +333,43 @@ def inject_default_custom_component_priors(
     return cfg
 
 
+def inject_default_custom_line_component_priors(
+    prior_config: dict[str, Any],
+    flux: np.ndarray,
+    custom_line_components: Iterable[CustomLineComponentSpec] | None,
+) -> dict[str, Any]:
+    """Return a prior config with default keys added for custom line components."""
+    comps = normalize_custom_line_components(custom_line_components)
+    if len(comps) == 0:
+        return prior_config
+
+    cfg = copy.deepcopy(prior_config)
+    f = np.asarray(flux, dtype=float)
+    finite = np.isfinite(f)
+    fscale = float(np.nanmedian(np.abs(f[finite]))) if np.any(finite) else 1.0
+    if (not np.isfinite(fscale)) or fscale <= 0:
+        fscale = 1.0
+
+    for comp in comps:
+        for param_name, param_cfg in comp.parameter_priors.items():
+            out_cfg = dict(param_cfg)
+            scale = float(out_cfg.get("scale", 1.0))
+            loc = float(out_cfg.get("loc", 0.0))
+            if str(out_cfg.get("dist", "Normal")).lower() == "lognormal" and loc <= np.log(1e-8):
+                out_cfg["loc"] = np.log(max(1e-3 * fscale, 1e-10))
+            elif scale == 0.0:
+                out_cfg["scale"] = 0.05 * fscale
+            cfg.setdefault(comp.site_name(param_name), out_cfg)
+    return cfg
+
+
 def custom_component_site_names(custom_components: Iterable[CustomComponentSpec] | None) -> list[str]:
     """Return deterministic-site names used by Predictive for custom components."""
     return [comp.deterministic_site_name for comp in normalize_custom_components(custom_components)]
+
+
+def custom_line_component_site_names(
+    custom_line_components: Iterable[CustomLineComponentSpec] | None,
+) -> list[str]:
+    """Return deterministic-site names used by Predictive for custom line components."""
+    return [comp.deterministic_site_name for comp in normalize_custom_line_components(custom_line_components)]

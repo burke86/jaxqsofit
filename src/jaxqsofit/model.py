@@ -14,7 +14,12 @@ import numpyro.distributions as dist
 
 from dsps import load_ssp_templates
 from dustmaps.sfd import SFDQuery
-from .custom_components import CustomComponentSpec, normalize_custom_components
+from .custom_components import (
+    CustomComponentSpec,
+    CustomLineComponentSpec,
+    normalize_custom_components,
+    normalize_custom_line_components,
+)
 
 warnings.filterwarnings("ignore")
 
@@ -210,6 +215,15 @@ def _sample_from_prior_config(key, cfg):
 
 def _evaluate_custom_component_jax(wave, samples_or_values, comp, sample_value):
     """Evaluate one custom component from a sample/value mapping."""
+    params = {
+        param_name: sample_value(samples_or_values, comp.site_name(param_name), default=0.0)
+        for param_name in comp.parameter_priors
+    }
+    return comp.evaluate(wave, params, comp.metadata)
+
+
+def _evaluate_custom_line_component_jax(wave, samples_or_values, comp, sample_value):
+    """Evaluate one custom line component from a sample/value mapping."""
     params = {
         param_name: sample_value(samples_or_values, comp.site_name(param_name), default=0.0)
         for param_name in comp.parameter_priors
@@ -693,7 +707,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          fit_poly_order=2,
                          fit_poly_edge_flex=True, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
                          psf_filter_curves=None, use_psf_phot=False,
-                         custom_components: Sequence[CustomComponentSpec] | None = None):
+                         custom_components: Sequence[CustomComponentSpec] | None = None,
+                         custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
     """Joint AGN+host spectral forward model for NumPyro inference."""
     wave = _np_to_jnp(wave)
     flux = _np_to_jnp(flux)
@@ -707,6 +722,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     z_qso = jnp.asarray(float(z_qso))
     prior_config = {} if prior_config is None else prior_config
     custom_components = normalize_custom_components(custom_components)
+    custom_line_components = normalize_custom_line_components(custom_line_components)
     _cfg_norm = lambda key: _cfg_norm_from_prior_config(prior_config, key)
 
     def _cfg_halfnorm(key, ref_scale=None):
@@ -864,6 +880,23 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         fsps_weights = jnp.zeros((ntemp,))
         gal_model_intrinsic = jnp.zeros_like(wave)
 
+    custom_line_models = {}
+    custom_line_broad_intrinsic = jnp.zeros_like(wave)
+    custom_line_narrow_intrinsic = jnp.zeros_like(wave)
+    for comp in custom_line_components:
+        def _sample_line_value(sample_dict, key, default=0.0):
+            cfg = prior_config.get(key, None)
+            if cfg is None:
+                return default
+            return _sample_from_prior_config(key, cfg)
+
+        custom_line_model = _evaluate_custom_line_component_jax(wave, prior_config, comp, _sample_line_value)
+        custom_line_models[comp.output_name] = custom_line_model
+        if comp.line_kind == 'broad':
+            custom_line_broad_intrinsic = custom_line_broad_intrinsic + custom_line_model
+        else:
+            custom_line_narrow_intrinsic = custom_line_narrow_intrinsic + custom_line_model
+
     if use_lines and tied_line_meta['n_lines'] > 0:
         n_v = tied_line_meta['n_vgroups']
         n_w = tied_line_meta['n_wgroups']
@@ -910,14 +943,16 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         broad_mask = _np_to_jnp(_broad_line_mask(tied_line_meta.get('names', [])))
         line_model_broad_intrinsic = _many_gauss_lnlam(lnwave, amps * broad_mask, mus, sigs)
         line_model_narrow_intrinsic = _many_gauss_lnlam(lnwave, amps * (1.0 - broad_mask), mus, sigs)
+        line_model_broad_intrinsic = line_model_broad_intrinsic + custom_line_broad_intrinsic
+        line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
         line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
         numpyro.deterministic('line_amp_per_component', amps)
         numpyro.deterministic('line_mu_per_component', mus)
         numpyro.deterministic('line_sig_per_component', sigs)
     else:
-        line_model_broad_intrinsic = jnp.zeros_like(wave)
-        line_model_narrow_intrinsic = jnp.zeros_like(wave)
-        line_model_intrinsic = jnp.zeros_like(wave)
+        line_model_broad_intrinsic = custom_line_broad_intrinsic
+        line_model_narrow_intrinsic = custom_line_narrow_intrinsic
+        line_model_intrinsic = custom_line_broad_intrinsic + custom_line_narrow_intrinsic
 
     gal_model = gal_model_intrinsic
     line_model_broad = line_model_broad_intrinsic
@@ -928,6 +963,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         line_model_broad = line_model_broad * poly_model
         line_model_narrow = line_model_narrow * poly_model
         line_model = line_model_broad + line_model_narrow
+        custom_line_models = {name: model * poly_model for name, model in custom_line_models.items()}
 
     frac_jitter = numpyro.sample('frac_jitter', dist.HalfNormal(_cfg_halfnorm('frac_jitter')))
     add_jitter = numpyro.sample('add_jitter', dist.HalfNormal(_cfg_halfnorm('add_jitter', ref_scale=jnp.mean(err))))
@@ -982,6 +1018,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('f_poly_model', poly_model)
     for comp in custom_components:
         numpyro.deterministic(comp.deterministic_site_name, custom_models[comp.output_name])
+    for comp in custom_line_components:
+        numpyro.deterministic(comp.deterministic_site_name, custom_line_models[comp.output_name])
     numpyro.deterministic('agn_model', agn_model)
     numpyro.deterministic('gal_model_intrinsic', gal_model_intrinsic)
     numpyro.deterministic('gal_model', gal_model)
