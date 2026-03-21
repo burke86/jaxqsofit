@@ -1,10 +1,10 @@
 from __future__ import annotations
 
 import os
-import pickle
 import glob
 
 import extinction
+import h5py
 import matplotlib
 import matplotlib.pyplot as plt
 import numpy as np
@@ -103,6 +103,8 @@ def _mw_band_attenuation_factor(wave_obs, filt_trans, ebv, r_v=3.1):
     return numer / denom
 
 class QSOFit:
+    _POSTERIOR_BUNDLE_SUFFIX = ".h5"
+
     def __init__(self, lam, flux, err=None, z=0.0, ra=-999, dec=-999, filename=None, output_path=None,
                  wdisp=None, psf_mags=None, psf_mag_errs=None, psf_bands=None):
         """Initialize a spectral fitting object with observed-frame inputs.
@@ -332,25 +334,86 @@ class QSOFit:
         )
 
     def _posterior_bundle_path(self, save_name=None, save_path=None):
-        """Return the default on-disk path for a saved posterior bundle."""
-        out_name = f"{self.filename}_samples.pkl" if save_name is None else save_name
+        """Return the compressed on-disk path for a saved posterior bundle."""
+        out_name = self._normalize_posterior_bundle_name(
+            f"{self.filename}_samples" if save_name is None else save_name
+        )
         out_dir = self.output_path if save_path is None else save_path
         if out_dir is None:
             out_dir = '.'
         os.makedirs(out_dir, exist_ok=True)
         return os.path.join(out_dir, out_name)
 
+    @classmethod
+    def _normalize_posterior_bundle_name(cls, name):
+        """Normalize posterior bundle names to the enforced ``.h5`` suffix."""
+        name = str(name)
+        if name.endswith(cls._POSTERIOR_BUNDLE_SUFFIX):
+            return name
+        if name.endswith(".pkl.gz"):
+            return name[:-len(".pkl.gz")] + cls._POSTERIOR_BUNDLE_SUFFIX
+        if name.endswith(".pkl"):
+            return name[:-len(".pkl")] + cls._POSTERIOR_BUNDLE_SUFFIX
+        return name + cls._POSTERIOR_BUNDLE_SUFFIX
+
     @staticmethod
-    def _serialize_for_pickle(value):
-        """Recursively convert model state into pickle-friendly Python objects."""
+    def _bundle_excluded_keys():
+        """Return object attributes intentionally omitted from saved bundles."""
+        return {
+            "numpyro_mcmc",
+            "svi",
+            "svi_state",
+            "fig",
+            "trace_fig",
+            "corner_fig",
+            "fsps_grid",
+            "fe_uv",
+            "fe_op",
+            "pred_out",
+        }
+
+    @staticmethod
+    def _is_matplotlib_state(value):
+        """Return True when value is a matplotlib figure/axes object."""
+        classes = []
+        fig_cls = getattr(getattr(matplotlib, "figure", None), "Figure", None)
+        axes_cls = getattr(getattr(matplotlib, "axes", None), "Axes", None)
+        if isinstance(fig_cls, type):
+            classes.append(fig_cls)
+        if isinstance(axes_cls, type):
+            classes.append(axes_cls)
+        if len(classes) == 0:
+            return False
+        return isinstance(value, tuple(classes))
+
+    @classmethod
+    def _exclude_from_posterior_bundle(cls, key, value):
+        """Return True when an attribute should be skipped during bundle save."""
+        if key in cls._bundle_excluded_keys():
+            return True
+        if key.startswith("_pred_"):
+            return True
+        if cls._is_matplotlib_state(value):
+            return True
+        return False
+
+    @staticmethod
+    def _serialize_for_hdf5(value):
+        """Recursively convert model state into HDF5-serializable objects."""
         if isinstance(value, CustomComponentSpec):
             return value.to_state()
         if isinstance(value, CustomLineComponentSpec):
             return value.to_state()
         if isinstance(value, dict):
-            return {k: QSOFit._serialize_for_pickle(v) for k, v in value.items()}
+            return {str(k): QSOFit._serialize_for_hdf5(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):
-            return type(value)(QSOFit._serialize_for_pickle(v) for v in value)
+            return type(value)(QSOFit._serialize_for_hdf5(v) for v in value)
+        if isinstance(value, np.ndarray) and value.dtype == object:
+            return {
+                "__ndarray_object__": True,
+                "shape": tuple(int(x) for x in value.shape),
+                "items": [QSOFit._serialize_for_hdf5(v) for v in value.ravel(order="C").tolist()],
+            }
         if isinstance(value, (np.ndarray, np.generic)):
             return np.asarray(value)
         if hasattr(value, "shape") and hasattr(value, "dtype"):
@@ -358,32 +421,344 @@ class QSOFit:
         return value
 
     @staticmethod
-    def _deserialize_from_pickle(value):
-        """Rebuild custom serialized objects after unpickling."""
+    def _deserialize_from_hdf5(value):
+        """Rebuild custom serialized objects after reading HDF5 state."""
         if isinstance(value, dict):
             if value.get("__custom_component__", False):
                 return CustomComponentSpec.from_state(value)
             if value.get("__custom_line_component__", False):
                 return CustomLineComponentSpec.from_state(value)
-            return {k: QSOFit._deserialize_from_pickle(v) for k, v in value.items()}
+            if value.get("__ndarray_object__", False):
+                items = [QSOFit._deserialize_from_hdf5(v) for v in value["items"]]
+                arr = np.asarray(items, dtype=object)
+                return arr.reshape(tuple(value["shape"]))
+            return {k: QSOFit._deserialize_from_hdf5(v) for k, v in value.items()}
         if isinstance(value, list):
-            return [QSOFit._deserialize_from_pickle(v) for v in value]
+            return [QSOFit._deserialize_from_hdf5(v) for v in value]
         if isinstance(value, tuple):
-            return tuple(QSOFit._deserialize_from_pickle(v) for v in value)
+            return tuple(QSOFit._deserialize_from_hdf5(v) for v in value)
         return value
 
-    def save_posterior_bundle(self, save_name=None, save_path=None):
-        """Persist the fitted object state needed to reload posterior results."""
-        state = {}
-        excluded = {"numpyro_mcmc", "svi", "svi_state"}
-        for key, value in self.__dict__.items():
-            if key in excluded:
+    @staticmethod
+    def _hdf5_scalar_string_dtype():
+        return h5py.string_dtype(encoding="utf-8")
+
+    @classmethod
+    def _write_hdf5_node(cls, parent, name, value):
+        value = cls._serialize_for_hdf5(value)
+        if value is None:
+            grp = parent.create_group(name)
+            grp.attrs["node_type"] = "none"
+            return
+
+        if isinstance(value, dict):
+            grp = parent.create_group(name)
+            grp.attrs["node_type"] = "dict"
+            for idx, (k, v) in enumerate(value.items()):
+                item_grp = grp.create_group(f"item_{idx:08d}")
+                cls._write_hdf5_node(item_grp, "key", str(k))
+                cls._write_hdf5_node(item_grp, "value", v)
+            return
+
+        if isinstance(value, list):
+            grp = parent.create_group(name)
+            grp.attrs["node_type"] = "list"
+            for idx, item in enumerate(value):
+                cls._write_hdf5_node(grp, f"item_{idx:08d}", item)
+            return
+
+        if isinstance(value, tuple):
+            grp = parent.create_group(name)
+            grp.attrs["node_type"] = "tuple"
+            for idx, item in enumerate(value):
+                cls._write_hdf5_node(grp, f"item_{idx:08d}", item)
+            return
+
+        if isinstance(value, np.ndarray):
+            ds_kwargs = {}
+            if value.ndim > 0:
+                ds_kwargs["compression"] = "gzip"
+                ds_kwargs["shuffle"] = True
+            ds = parent.create_dataset(name, data=value, **ds_kwargs)
+            ds.attrs["node_type"] = "ndarray"
+            return
+
+        if isinstance(value, bool):
+            ds = parent.create_dataset(name, data=np.bool_(value))
+            ds.attrs["node_type"] = "scalar_bool"
+            return
+
+        if isinstance(value, int):
+            ds = parent.create_dataset(name, data=np.int64(value))
+            ds.attrs["node_type"] = "scalar_int"
+            return
+
+        if isinstance(value, float):
+            ds = parent.create_dataset(name, data=np.float64(value))
+            ds.attrs["node_type"] = "scalar_float"
+            return
+
+        if isinstance(value, str):
+            ds = parent.create_dataset(name, data=np.array(value, dtype=cls._hdf5_scalar_string_dtype()))
+            ds.attrs["node_type"] = "scalar_str"
+            return
+
+        raise TypeError(f"Unsupported value type in posterior bundle: {type(value)!r}")
+
+    @classmethod
+    def _read_hdf5_node(cls, parent, name):
+        node = parent[name]
+        if isinstance(node, h5py.Dataset):
+            node_type = node.attrs.get("node_type", "ndarray")
+            if isinstance(node_type, bytes):
+                node_type = node_type.decode("utf-8")
+            if node_type == "scalar_str":
+                return node.asstr()[()]
+            value = node[()]
+            if node_type == "scalar_bool":
+                return bool(value)
+            if node_type == "scalar_int":
+                return int(value)
+            if node_type == "scalar_float":
+                return float(value)
+            return np.asarray(value)
+
+        node_type = node.attrs.get("node_type", "")
+        if isinstance(node_type, bytes):
+            node_type = node_type.decode("utf-8")
+        if node_type == "none":
+            return None
+        if node_type == "dict":
+            out = {}
+            for item_name in sorted(node.keys()):
+                item_grp = node[item_name]
+                key = cls._read_hdf5_node(item_grp, "key")
+                out[str(key)] = cls._read_hdf5_node(item_grp, "value")
+            return out
+        if node_type == "list":
+            return [cls._read_hdf5_node(node, item_name) for item_name in sorted(node.keys())]
+        if node_type == "tuple":
+            return tuple(cls._read_hdf5_node(node, item_name) for item_name in sorted(node.keys()))
+        raise TypeError(f"Unsupported HDF5 node type in posterior bundle: {node_type!r}")
+
+    @staticmethod
+    def _sample_bundle_meta_keys():
+        """Return metadata keys persisted in sample-only bundles."""
+        return {
+            "lam_in",
+            "flux_in",
+            "err_in",
+            "z",
+            "ra",
+            "dec",
+            "filename",
+            "output_path",
+            "wdisp",
+            "wave",
+            "flux",
+            "err",
+            "wave_prereduced",
+            "flux_prereduced",
+            "fe_uv_wave",
+            "fe_uv_flux",
+            "fe_op_wave",
+            "fe_op_flux",
+            "psf_mags",
+            "psf_mag_errs",
+            "psf_mags_raw",
+            "psf_mag_errs_raw",
+            "psf_mags_dered",
+            "psf_mag_errs_dered",
+            "psf_bands",
+            "psf_filter_curves",
+            "use_psf_phot",
+            "verbose",
+            "save_fig",
+            "_fit_deredden",
+            "_fit_decompose_host",
+            "_fit_fit_lines",
+            "_fit_fit_pl",
+            "_fit_fit_fe",
+            "_fit_fit_bc",
+            "_fit_fit_poly",
+            "_fit_fit_poly_order",
+            "_fit_fit_poly_edge_flex",
+            "_fit_mask_lya_forest",
+            "_fit_method",
+            "_fit_fsps_age_grid",
+            "_fit_fsps_logzsol_grid",
+            "_fit_prior_config",
+            "_fit_dsps_ssp_fn",
+            "_fit_use_psf_phot",
+            "_fit_custom_components",
+            "_fit_custom_line_components",
+        }
+
+    def _collect_sample_bundle_meta(self):
+        """Collect minimal metadata for sample-only bundle persistence."""
+        if not hasattr(self, "numpyro_samples") or self.numpyro_samples is None:
+            raise RuntimeError("No posterior samples available. Run fit() before saving a posterior bundle.")
+        keys = self._sample_bundle_meta_keys()
+        meta = {}
+        for key in keys:
+            if key not in self.__dict__:
                 continue
-            state[key] = self._serialize_for_pickle(value)
+            value = self.__dict__[key]
+            if self._exclude_from_posterior_bundle(key, value):
+                continue
+            meta[key] = self._serialize_for_hdf5(value)
+        return meta
+
+    @staticmethod
+    def _empty_tied_line_meta():
+        """Return an empty tied-line metadata payload."""
+        return {
+            'n_lines': 0,
+            'n_vgroups': 0,
+            'n_wgroups': 0,
+            'n_fgroups': 0,
+            'ln_lambda0': _np_to_jnp(np.array([], dtype=float)),
+            'vgroup': np.array([], dtype=int),
+            'wgroup': np.array([], dtype=int),
+            'fgroup': np.array([], dtype=int),
+            'flux_ratio': np.array([], dtype=float),
+            'dmu_init_group': np.array([], dtype=float),
+            'dmu_min_group': np.array([], dtype=float),
+            'dmu_max_group': np.array([], dtype=float),
+            'sig_init_group': np.array([], dtype=float),
+            'sig_min_group': np.array([], dtype=float),
+            'sig_max_group': np.array([], dtype=float),
+            'amp_init_group': np.array([], dtype=float),
+            'amp_min_group': np.array([], dtype=float),
+            'amp_max_group': np.array([], dtype=float),
+            'names': [],
+            'compnames': [],
+            'line_lambda': np.array([], dtype=float),
+        }
+
+    def _ensure_hydrated_from_samples(self):
+        """Rebuild posterior-derived component products from saved samples."""
+        if bool(getattr(self, "_posterior_hydrated", False)):
+            return
+        has_cached = (
+            hasattr(self, "model_total")
+            and hasattr(self, "f_conti_model")
+            and hasattr(self, "f_line_model")
+            and hasattr(self, "host")
+            and hasattr(self, "pred_bands")
+        )
+        if has_cached:
+            self._posterior_hydrated = True
+            return
+        if not hasattr(self, "numpyro_samples") or self.numpyro_samples is None:
+            raise RuntimeError("No posterior samples available for hydration.")
+        if not hasattr(self, "wave") or not hasattr(self, "flux") or not hasattr(self, "err"):
+            raise RuntimeError("Missing fitted spectrum context (wave/flux/err) for hydration.")
+
+        wave = np.asarray(self.wave, dtype=float)
+        flux = np.asarray(self.flux, dtype=float)
+        err = np.asarray(self.err, dtype=float)
+        if wave.ndim != 1 or wave.size < 2:
+            raise RuntimeError("Invalid fitted wavelength grid for hydration.")
+
+        prior_config = getattr(self, "_fit_prior_config", None)
+        if prior_config is None:
+            prior_config = build_default_prior_config(flux)
+        custom_components = normalize_custom_components(getattr(self, "_fit_custom_components", ()))
+        custom_line_components = normalize_custom_line_components(getattr(self, "_fit_custom_line_components", ()))
+        prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
+        prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
+        conti_priors = prior_config.get("conti_priors", {})
+
+        use_lines = bool(getattr(self, "_fit_fit_lines", True))
+        line_table = _extract_line_table_from_prior_config(prior_config)
+        if line_table is not None:
+            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+        else:
+            tied_line_meta = self._empty_tied_line_meta()
+        if use_lines and line_table is None and len(custom_line_components) == 0:
+            raise RuntimeError("Hydration requires line priors/table when fit_lines=True.")
+
+        age_grid_gyr = getattr(self, "_fit_fsps_age_grid", (0.1, 0.3, 1.0, 3.0, 10.0))
+        logzsol_grid = getattr(self, "_fit_fsps_logzsol_grid", (-1.0, -0.5, 0.0, 0.2))
+        dsps_ssp_fn = getattr(self, "_fit_dsps_ssp_fn", "tempdata.h5")
+        decompose_host = bool(getattr(self, "_fit_decompose_host", True))
+        fsps_grid = self._build_fsps_grid_for_fit(
+            wave=wave,
+            age_grid_gyr=age_grid_gyr,
+            logzsol_grid=logzsol_grid,
+            dsps_ssp_fn=dsps_ssp_fn,
+            decompose_host=decompose_host,
+        )
+        self.tied_line_meta = tied_line_meta
+
+        pred = Predictive(
+            qso_fsps_joint_model,
+            posterior_samples={k: jnp.asarray(v) for k, v in self.numpyro_samples.items()},
+            return_sites=self._predictive_return_sites(
+                custom_components=custom_components,
+                custom_line_components=custom_line_components,
+            ),
+        )
+        rng_key = jax.random.PRNGKey(0)
+        pred_out = pred(
+            rng_key,
+            wave=wave,
+            flux=None,
+            err=err,
+            conti_priors=conti_priors,
+            tied_line_meta=tied_line_meta,
+            fsps_grid=fsps_grid,
+            fe_uv_wave=self.fe_uv_wave,
+            fe_uv_flux=self.fe_uv_flux,
+            fe_op_wave=self.fe_op_wave,
+            fe_op_flux=self.fe_op_flux,
+            use_lines=use_lines,
+            prior_config=prior_config,
+            decompose_host=decompose_host,
+            fit_pl=bool(getattr(self, "_fit_fit_pl", True)),
+            fit_fe=bool(getattr(self, "_fit_fit_fe", True)),
+            fit_bc=bool(getattr(self, "_fit_fit_bc", True)),
+            fit_poly=bool(getattr(self, "_fit_fit_poly", False)),
+            fit_poly_order=int(getattr(self, "_fit_fit_poly_order", 2)),
+            fit_poly_edge_flex=bool(getattr(self, "_fit_fit_poly_edge_flex", True)),
+            z_qso=float(getattr(self, "z", 0.0)),
+            psf_mags=getattr(self, "psf_mags", None),
+            psf_mag_errs=getattr(self, "psf_mag_errs", None),
+            psf_filter_curves=getattr(self, "psf_filter_curves", None),
+            use_psf_phot=bool(getattr(self, "_fit_use_psf_phot", getattr(self, "use_psf_phot", False))),
+            custom_components=custom_components,
+            custom_line_components=custom_line_components,
+        )
+        self._consume_posterior_outputs(
+            samples=self.numpyro_samples,
+            pred_out=pred_out,
+            fsps_grid=fsps_grid,
+            tied_line_meta=tied_line_meta,
+            use_lines=use_lines,
+            decompose_host=decompose_host,
+        )
+
+    def save_posterior_bundle(self, save_name=None, save_path=None):
+        """Persist posterior samples plus minimal metadata for compact reloads."""
+        if not hasattr(self, "numpyro_samples") or self.numpyro_samples is None:
+            raise RuntimeError("No posterior samples available. Run fit() before saving a posterior bundle.")
+        meta = self._collect_sample_bundle_meta()
 
         out_file = self._posterior_bundle_path(save_name=save_name, save_path=save_path)
-        with open(out_file, "wb") as fh:
-            pickle.dump(state, fh, protocol=pickle.HIGHEST_PROTOCOL)
+        with h5py.File(out_file, "w") as h5f:
+            h5f.attrs["posterior_bundle_format"] = "jaxqsofit_samples_meta_v1"
+            samples_grp = h5f.create_group("samples")
+            for name, draws in self.numpyro_samples.items():
+                arr = np.asarray(draws)
+                ds_kwargs = {}
+                if arr.ndim > 0:
+                    ds_kwargs["compression"] = "gzip"
+                    ds_kwargs["shuffle"] = True
+                samples_grp.create_dataset(str(name), data=arr, **ds_kwargs)
+            meta_grp = h5f.create_group("meta")
+            for key, value in meta.items():
+                self._write_hdf5_node(meta_grp, str(key), value)
         print(f"Saved posterior bundle: {out_file}")
         return out_file
 
@@ -426,40 +801,52 @@ class QSOFit:
         kwargs_plot=None,
         diagnostics_kwargs=None,
     ):
-        """Load a saved posterior bundle, optionally recreate figures, and return a QSOFit object."""
+        """Load a compressed HDF5 posterior bundle and return a QSOFit object."""
         if save_name is not None:
-            bundle_name = save_name
+            bundle_name = cls._normalize_posterior_bundle_name(save_name)
             bundle_dir = '.' if output_path is None else output_path
             bundle_path = os.path.join(bundle_dir, bundle_name)
             resolved_name = cls._resolve_filename(filename=filename)
         elif filename is not None:
             resolved_name = cls._resolve_filename(filename=filename)
-            bundle_name = f"{resolved_name}_samples.pkl"
+            bundle_name = cls._normalize_posterior_bundle_name(f"{resolved_name}_samples")
             bundle_dir = '.' if output_path is None else output_path
             bundle_path = os.path.join(bundle_dir, bundle_name)
         else:
             bundle_dir = '.' if output_path is None else output_path
-            matches = sorted(glob.glob(os.path.join(bundle_dir, "*_samples.pkl")))
+            matches = sorted(glob.glob(os.path.join(bundle_dir, f"*_samples{cls._POSTERIOR_BUNDLE_SUFFIX}")))
             if len(matches) == 0:
                 raise FileNotFoundError(
-                    f"No posterior bundle found under: {bundle_dir}. "
+                    f"No compressed posterior bundle (*.h5) found under: {bundle_dir}. "
                     "Pass filename=..., output_path=..., or save_name=... explicitly."
                 )
             if len(matches) > 1:
                 raise FileNotFoundError(
-                    f"Multiple posterior bundles found under: {bundle_dir}. "
+                    f"Multiple compressed posterior bundles (*.h5) found under: {bundle_dir}. "
                     "Pass filename=... or save_name=... explicitly."
                 )
             bundle_path = matches[0]
             bundle_name = os.path.basename(bundle_path)
-            resolved_name = bundle_name[: -len("_samples.pkl")] if bundle_name.endswith("_samples.pkl") else bundle_name
+            suffix = f"_samples{cls._POSTERIOR_BUNDLE_SUFFIX}"
+            resolved_name = bundle_name[: -len(suffix)] if bundle_name.endswith(suffix) else bundle_name
 
         if not os.path.exists(bundle_path):
             raise FileNotFoundError(f"Posterior bundle not found: {bundle_path}")
 
-        with open(bundle_path, "rb") as fh:
-            state = pickle.load(fh)
-        state = cls._deserialize_from_pickle(state)
+        with h5py.File(bundle_path, "r") as h5f:
+            if "samples" in h5f and "meta" in h5f:
+                samples = {k: np.asarray(h5f["samples"][k][()]) for k in h5f["samples"].keys()}
+                meta = {k: cls._read_hdf5_node(h5f["meta"], k) for k in h5f["meta"].keys()}
+                meta = cls._deserialize_from_hdf5(meta)
+                state = dict(meta)
+                state["numpyro_samples"] = samples
+                state["_posterior_hydrated"] = False
+            elif "state" in h5f:
+                # Backward-compatible read for older .h5 bundles.
+                state = cls._read_hdf5_node(h5f, "state")
+                state = cls._deserialize_from_hdf5(state)
+            else:
+                raise ValueError(f"Unsupported posterior bundle schema: {bundle_path}")
 
         obj = cls(
             lam=state["lam_in"],
@@ -477,6 +864,13 @@ class QSOFit:
         )
         obj.__dict__.update(state)
         obj.install_path = os.path.dirname(os.path.abspath(__file__))
+        if not hasattr(obj, "verbose"):
+            obj.verbose = False
+        if not hasattr(obj, "save_fig"):
+            obj.save_fig = False
+        if not hasattr(obj, "SN_ratio_conti"):
+            obj.SN_ratio_conti = np.nan
+        obj._ensure_hydrated_from_samples()
 
         if plot_fig:
             plot_kwargs = {} if kwargs_plot is None else dict(kwargs_plot)
@@ -1549,6 +1943,7 @@ class QSOFit:
             self.line_component_amp_median = np.array([])
             self.line_component_mu_median = np.array([])
             self.line_component_sig_median = np.array([])
+        self._posterior_hydrated = True
 
     def _wave_trim(self, lam, flux, err, z):
         """Apply rest-frame wavelength range trimming.
@@ -1773,8 +2168,14 @@ class QSOFit:
             If True, include per-component draws and medians in the return value.
             This includes any fitted custom components.
         """
-        if not hasattr(self, 'numpyro_samples') or not hasattr(self, 'fsps_grid'):
+        if not hasattr(self, 'numpyro_samples') or self.numpyro_samples is None:
             raise RuntimeError("No posterior samples available. Run fit() first.")
+        self._ensure_hydrated_from_samples()
+        has_age_grid = hasattr(self, '_fit_fsps_age_grid')
+        has_logz_grid = hasattr(self, '_fit_fsps_logzsol_grid')
+        has_fsps_grid = hasattr(self, 'fsps_grid')
+        if not (has_age_grid and has_logz_grid) and not has_fsps_grid:
+            raise RuntimeError("No template-grid metadata available for reconstruction.")
         if not hasattr(self, 'wave') or len(self.wave) < 2:
             raise RuntimeError("No fitted rest-frame wavelength grid available.")
 
@@ -1798,12 +2199,20 @@ class QSOFit:
         prior_config = getattr(self, '_fit_prior_config', None)
         if prior_config is None:
             prior_config = build_default_prior_config(np.asarray(self.flux, dtype=float))
+        age_grid_gyr = getattr(self, '_fit_fsps_age_grid', None)
+        logzsol_grid = getattr(self, '_fit_fsps_logzsol_grid', None)
+        if age_grid_gyr is None or logzsol_grid is None:
+            fsps_grid = getattr(self, 'fsps_grid', None)
+            age_grid_gyr = getattr(fsps_grid, 'age_grid_gyr', None)
+            logzsol_grid = getattr(fsps_grid, 'logzsol_grid', None)
+            if age_grid_gyr is None or logzsol_grid is None:
+                raise RuntimeError("Missing age/metallicity grid metadata for reconstruction.")
         return reconstruct_posterior_components(
             wave_out=wave_out,
             samples=self.numpyro_samples,
             pred_out=getattr(self, 'pred_out', None),
-            age_grid_gyr=getattr(self, '_fit_fsps_age_grid', self.fsps_grid.age_grid_gyr),
-            logzsol_grid=getattr(self, '_fit_fsps_logzsol_grid', self.fsps_grid.logzsol_grid),
+            age_grid_gyr=age_grid_gyr,
+            logzsol_grid=logzsol_grid,
             dsps_ssp_fn=getattr(self, '_fit_dsps_ssp_fn', 'tempdata.h5'),
             prior_config=prior_config,
             fit_poly=bool(getattr(self, '_fit_fit_poly', False)),
@@ -1932,6 +2341,7 @@ class QSOFit:
         line_key : str
             Line-name prefix (for example ``'Hb_br'``).
         """
+        self._ensure_hydrated_from_samples()
         if not hasattr(self, 'pred_out') or self.pred_out is None:
             return np.zeros_like(self.wave, dtype=float)
         if 'line_amp_per_component' not in self.pred_out:
@@ -2418,6 +2828,7 @@ class QSOFit:
             residual panel is suppressed because the observed spectrum remains
             on the fiber scale.
         """
+        self._ensure_hydrated_from_samples()
         matplotlib.rc('xtick', labelsize=20)
         matplotlib.rc('ytick', labelsize=20)
         psf_total_model = np.asarray(getattr(self, 'psf_model', []), dtype=float)
