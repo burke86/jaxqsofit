@@ -1,3 +1,6 @@
+import os
+import h5py
+
 import numpy as np
 import pytest
 
@@ -279,36 +282,40 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
         output_path=str(tmp_path),
     )
 
-    # Minimal fitted state needed for plotting/diagnostics reload.
+    # Minimal fitted state needed for sample+meta reload/hydration.
     q.wave = lam
     q.wave_prereduced = lam
     q.flux = flux
     q.flux_prereduced = flux
     q.err = err
-    q.model_total = flux * 0.98
-    q.host = flux * 0.1
-    q.f_pl_model = flux * 0.6
-    q.f_fe_mgii_model = np.zeros_like(flux)
-    q.f_fe_balmer_model = np.zeros_like(flux)
-    q.f_bc_model = np.zeros_like(flux)
-    q.f_line_model = np.zeros_like(flux)
-    q.f_conti_model = q.host + q.f_pl_model
-    q.pred_bands = {}
-    q.decomposed = True
-    q.line_result = np.array([], dtype=object)
-    q.line_result_type = np.array([], dtype=object)
-    q.line_result_name = np.array([], dtype=object)
-    q.conti_result = np.array([], dtype=object)
-    q.conti_result_type = np.array([], dtype=object)
-    q.conti_result_name = np.array([], dtype=object)
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q._fit_fit_lines = False
+    q._fit_decompose_host = False
+    q._fit_fit_pl = True
+    q._fit_fit_fe = False
+    q._fit_fit_bc = False
+    q._fit_fit_poly = False
+    q._fit_fit_poly_order = 2
+    q._fit_fit_poly_edge_flex = False
+    q._fit_use_psf_phot = False
+    q._fit_custom_components = ()
+    q._fit_custom_line_components = ()
     q.numpyro_samples = {
-        "PL_norm": np.array([1.0, 1.1, 0.9]),
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+        "log_frac_host": np.array([0.0, 0.1, -0.1]),
         "PL_slope": np.array([-1.5, -1.4, -1.6]),
     }
     q.save_fig = False
 
     saved_path = q.save_posterior_bundle()
-    assert saved_path.endswith("unit_test_fit_samples.pkl")
+    assert saved_path.endswith("unit_test_fit_samples.h5")
 
     called = {"plot_fig": 0, "plot_mcmc_diagnostics": 0}
 
@@ -331,8 +338,9 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert loaded.output_path == str(tmp_path)
     assert np.allclose(loaded.lam_in, lam)
     assert np.allclose(loaded.flux_in, flux)
-    assert np.allclose(loaded.model_total, q.model_total)
-    assert set(loaded.numpyro_samples.keys()) == {"PL_norm", "PL_slope"}
+    assert hasattr(loaded, "model_total")
+    assert loaded.model_total.shape == lam.shape
+    assert set(loaded.numpyro_samples.keys()) == {"cont_norm", "log_frac_host", "PL_slope"}
     assert called["plot_fig"] == 1
     assert called["plot_mcmc_diagnostics"] == 1
 
@@ -355,24 +363,28 @@ def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
     q.flux = flux
     q.flux_prereduced = flux
     q.err = err
-    q.model_total = flux * 0.98
-    q.host = flux * 0.1
-    q.f_pl_model = flux * 0.6
-    q.f_fe_mgii_model = np.zeros_like(flux)
-    q.f_fe_balmer_model = np.zeros_like(flux)
-    q.f_bc_model = np.zeros_like(flux)
-    q.f_line_model = np.zeros_like(flux)
-    q.f_conti_model = q.host + q.f_pl_model
-    q.pred_bands = {}
-    q.decomposed = True
-    q.line_result = np.array([], dtype=object)
-    q.line_result_type = np.array([], dtype=object)
-    q.line_result_name = np.array([], dtype=object)
-    q.conti_result = np.array([], dtype=object)
-    q.conti_result_type = np.array([], dtype=object)
-    q.conti_result_name = np.array([], dtype=object)
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q._fit_fit_lines = False
+    q._fit_decompose_host = False
+    q._fit_fit_pl = True
+    q._fit_fit_fe = False
+    q._fit_fit_bc = False
+    q._fit_fit_poly = False
+    q._fit_fit_poly_order = 2
+    q._fit_fit_poly_edge_flex = False
+    q._fit_use_psf_phot = False
+    q._fit_custom_components = ()
+    q._fit_custom_line_components = ()
     q.numpyro_samples = {
-        "PL_norm": np.array([1.0, 1.1, 0.9]),
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+        "log_frac_host": np.array([0.0, 0.1, -0.1]),
         "PL_slope": np.array([-1.5, -1.4, -1.6]),
     }
     q.save_fig = False
@@ -386,6 +398,112 @@ def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
     assert isinstance(loaded, QSOFit)
     assert loaded.filename == "unit_test_fit_auto"
     assert loaded.output_path == str(tmp_path)
+
+
+def test_save_posterior_bundle_excludes_figures_transient_and_duplicate_caches(tmp_path):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(
+        lam=lam,
+        flux=flux,
+        err=err,
+        z=0.1,
+        filename="unit_test_prune",
+        output_path=str(tmp_path),
+    )
+
+    q.wave = lam
+    q.flux = flux
+    q.err = err
+    q.numpyro_samples = {"PL_norm": np.array([1.0, 0.9])}
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fit_lines = False
+    q._fit_decompose_host = False
+    q._fit_fit_pl = True
+    q._fit_fit_fe = False
+    q._fit_fit_bc = False
+    q._fit_fit_poly = False
+    q._fit_fit_poly_order = 2
+    q._fit_fit_poly_edge_flex = False
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._pred_total_draws = np.ones((2, lam.size))
+    q._pred_line_draws = np.ones((2, lam.size))
+    q.numpyro_mcmc = object()
+    q.svi = object()
+    q.svi_state = object()
+    q.fig = "fake-figure-state"
+    q.trace_fig = "fake-trace-state"
+    q.corner_fig = "fake-corner-state"
+    q.fe_uv = np.ones((12, 2))
+    q.fe_op = np.ones((12, 2))
+    q.fsps_grid = type(
+        "Grid",
+        (),
+        {
+            "templates": np.ones((lam.size, 8)),
+            "age_grid_gyr": np.array([0.1, 1.0]),
+            "logzsol_grid": np.array([-0.5, 0.0]),
+        },
+    )()
+    saved_path = q.save_posterior_bundle()
+    with h5py.File(saved_path, "r") as h5f:
+        assert "samples" in h5f
+        assert "meta" in h5f
+        assert "state" not in h5f
+        assert "PL_norm" in h5f["samples"]
+        assert "lam_in" in h5f["meta"]
+        assert "flux_in" in h5f["meta"]
+        assert "wave" in h5f["meta"]
+        assert "pred_out" not in h5f["meta"]
+        assert "_pred_total_draws" not in h5f["meta"]
+        assert "_pred_line_draws" not in h5f["meta"]
+
+
+def test_save_posterior_bundle_normalizes_explicit_name_to_h5(tmp_path):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(
+        lam=lam,
+        flux=flux,
+        err=err,
+        z=0.1,
+        filename="unit_test_named",
+        output_path=str(tmp_path),
+    )
+    q.numpyro_samples = {"PL_norm": np.array([1.0, 0.9])}
+
+    saved_path = q.save_posterior_bundle(save_name="manual_bundle")
+    assert saved_path.endswith("manual_bundle.h5")
+    assert os.path.exists(saved_path)
+
+
+def test_load_from_samples_rejects_legacy_only_pkl(tmp_path):
+    legacy_path = tmp_path / "legacy_only_samples.pkl"
+    legacy_path.write_bytes(b"legacy-pickle-placeholder")
+
+    with pytest.raises(FileNotFoundError, match="Posterior bundle not found"):
+        jaxqsofit.load_from_samples(
+            filename="legacy_only",
+            output_path=str(tmp_path),
+            plot_fig=False,
+            plot_diagnostics=False,
+        )
+
+
+def test_load_from_samples_autodiscovery_ignores_legacy_pkl(tmp_path):
+    legacy_path = tmp_path / "legacy_auto_samples.pkl"
+    legacy_path.write_bytes(b"legacy-pickle-placeholder")
+
+    with pytest.raises(FileNotFoundError, match="compressed posterior bundle"):
+        jaxqsofit.load_from_samples(
+            output_path=str(tmp_path),
+            plot_fig=False,
+            plot_diagnostics=False,
+        )
 
 
 def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
@@ -418,6 +536,7 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
     q._fit_fit_poly = True
     q._fit_fit_poly_order = 3
     q._fit_fit_poly_edge_flex = False
+    q._posterior_hydrated = True
 
     captured = {}
 

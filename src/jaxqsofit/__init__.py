@@ -9,7 +9,7 @@ from .custom_components import (
 from .defaults import DEFAULT_LINE_CONFIG, DEFAULT_LINE_PRIOR_ROWS, build_default_prior_config
 
 def load_from_samples(*args, **kwargs):
-    """Load a saved posterior bundle and return a QSOFit object."""
+    """Load a saved compressed HDF5 posterior bundle and return a QSOFit object."""
     return QSOFit.load_from_samples(*args, **kwargs)
 
 __all__ = [
