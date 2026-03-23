@@ -2509,6 +2509,15 @@ class QSOFit:
         fe_label = 'Fe II (PSF)' if use_psf_space else 'Fe II'
         bc_label = 'Balmer continuum (PSF)' if use_psf_space else 'Balmer continuum'
         line_label = 'total lines (PSF)' if use_psf_space else 'total lines'
+        custom_component_colors = [
+            'darkorange',
+            'crimson',
+            'slateblue',
+            'seagreen',
+            'saddlebrown',
+            'deeppink',
+        ]
+        custom_components = list(getattr(self, 'custom_components', {}).items())
 
         def _show_component(arr):
             arr = np.asarray(arr, dtype=float)
@@ -2542,6 +2551,22 @@ class QSOFit:
                         zorder=0,
                         rasterized=True,
                     )
+            for idx, (name, model) in enumerate(custom_components):
+                if name not in self.pred_bands:
+                    continue
+                lo, hi = self.pred_bands[name]
+                if len(lo) != len(self.wave) or not _show_component(model):
+                    continue
+                ax.fill_between(
+                    self.wave,
+                    lo,
+                    hi,
+                    color=custom_component_colors[idx % len(custom_component_colors)],
+                    alpha=sigma_alpha,
+                    linewidth=0,
+                    zorder=0,
+                    rasterized=True,
+                )
         if bool(plot_intrinsic_powerlaw) and hasattr(self, 'pred_bands') and not use_psf_space:
             if 'PL_intrinsic' in self.pred_bands:
                 lo, hi = self.pred_bands['PL_intrinsic']
@@ -2598,6 +2623,13 @@ class QSOFit:
             ax.plot(self.wave, bc_plot, color='y', lw=1.2, label=bc_label, zorder=5, rasterized=True)
         else:
             ax.plot(self.wave, bc_plot, color='y', lw=1.2, zorder=5, rasterized=True)
+        for idx, (name, model) in enumerate(custom_components):
+            color = custom_component_colors[idx % len(custom_component_colors)]
+            label = name.replace('_', ' ')
+            if _show_component(model):
+                ax.plot(self.wave, model, color=color, lw=1.4, label=label, zorder=5, rasterized=True)
+            else:
+                ax.plot(self.wave, model, color=color, lw=1.4, zorder=5, rasterized=True)
         if len(line_plot) == len(self.wave):
             if _show_component(line_plot):
                 ax.plot(
