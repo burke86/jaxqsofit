@@ -78,7 +78,6 @@ conda activate jaxqsofit
 CPU example:
 
 ```bash
-pip install -U pip
 pip install numpy scipy matplotlib pandas astropy astroquery extinction dustmaps dsps numpyro
 pip install "jax[cpu]"
 ```
