@@ -111,8 +111,8 @@ def test_custom_line_components_add_to_broad_and_narrow_models():
         fit_fe=False,
         fit_bc=False,
         fit_poly=False,
+        fit_reddening=False,
         fit_poly_order=0,
-        fit_poly_edge_flex=False,
         custom_components=(),
         custom_line_components=(broad_comp, narrow_comp),
     )

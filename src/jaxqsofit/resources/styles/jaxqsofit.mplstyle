@@ -1,0 +1,38 @@
+font.size: 16
+axes.labelsize: 16
+axes.titlesize: 16
+legend.fontsize: 14
+xtick.labelsize: 14
+ytick.labelsize: 14
+figure.titlesize: 16
+text.usetex: False
+
+figure.figsize: 6, 6
+axes.linewidth: 1.8
+axes.facecolor: white
+axes.grid: False
+
+xtick.direction: in
+xtick.top: True
+xtick.minor.visible: True
+xtick.major.size: 6
+xtick.major.width: 1.8
+xtick.minor.size: 3
+xtick.minor.width: 1.2
+
+ytick.direction: in
+ytick.right: True
+ytick.minor.visible: True
+ytick.major.size: 6
+ytick.major.width: 1.8
+ytick.minor.size: 3
+ytick.minor.width: 1.2
+
+lines.linewidth: 1.5
+lines.markersize: 4
+errorbar.capsize: 3
+
+savefig.dpi: 300
+savefig.bbox: tight
+savefig.facecolor: white
+savefig.pad_inches: 0.1

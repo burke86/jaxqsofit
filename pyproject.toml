@@ -15,6 +15,7 @@ dependencies = [
   "numpy",
   "scipy",
   "matplotlib",
+  "corner",
   "pandas",
   "astropy",
   "speclite",
@@ -36,4 +37,4 @@ include-package-data = true
 where = ["src"]
 
 [tool.setuptools.package-data]
-jaxqsofit = ["data/*.txt"]
+jaxqsofit = ["data/*.txt", "resources/styles/*.mplstyle"]

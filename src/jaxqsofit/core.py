@@ -347,30 +347,23 @@ class QSOFit:
     def _intrinsic_powerlaw_draws(self, wave_out=None, apply_psf_scale=False):
         """Return posterior draws for the intrinsic AGN power law on ``wave_out``."""
         samples = getattr(self, 'numpyro_samples', None)
-        if samples is None or 'cont_norm' not in samples or 'PL_slope' not in samples:
+        if samples is None or 'PL_slope' not in samples:
             return None
 
         wave_eval = np.asarray(self.wave if wave_out is None else wave_out, dtype=float)
         if wave_eval.ndim != 1 or wave_eval.size == 0 or not np.all(np.isfinite(wave_eval)):
             return None
 
-        cont_norm = np.asarray(samples['cont_norm'], dtype=float).reshape(-1)
+        pl_norm = np.asarray(samples['PL_norm'], dtype=float).reshape(-1)
         pl_slope = np.asarray(samples['PL_slope'], dtype=float).reshape(-1)
-        if cont_norm.size == 0 or pl_slope.size == 0:
+        if pl_norm.size == 0 or pl_slope.size == 0:
             return None
 
-        if 'log_frac_host' in samples:
-            log_frac_host = np.asarray(samples['log_frac_host'], dtype=float).reshape(-1)
-            frac_host = 1.0 / (1.0 + np.exp(-log_frac_host))
-        else:
-            frac_host = np.zeros_like(cont_norm)
-
-        n = min(cont_norm.size, pl_slope.size, frac_host.size)
+        n = min(pl_norm.size, pl_slope.size)
         if n == 0:
             return None
-        cont_norm = cont_norm[:n]
+        pl_norm = pl_norm[:n]
         pl_slope = pl_slope[:n]
-        frac_host = frac_host[:n]
 
         prior_config = getattr(self, '_fit_prior_config', None) or {}
         pivot = prior_config.get('PL_pivot', None)
@@ -379,8 +372,7 @@ class QSOFit:
         pivot = max(float(pivot), 1e-8)
 
         x = np.clip(wave_eval / pivot, 1e-8, None)
-        agn_amp = cont_norm * (1.0 - frac_host)
-        draws = agn_amp[:, None] * (x[None, :] ** pl_slope[:, None])
+        draws = pl_norm[:, None] * (x[None, :] ** pl_slope[:, None])
         if apply_psf_scale:
             psf_scale = float(getattr(self, 'scale_psf', np.nan))
             if np.isfinite(psf_scale):
@@ -619,8 +611,8 @@ class QSOFit:
             "_fit_fit_fe",
             "_fit_fit_bc",
             "_fit_fit_poly",
+            "_fit_fit_reddening",
             "_fit_fit_poly_order",
-            "_fit_fit_poly_edge_flex",
             "_fit_mask_lya_forest",
             "_fit_method",
             "_fit_fsps_age_grid",
@@ -758,8 +750,8 @@ class QSOFit:
             fit_fe=bool(getattr(self, "_fit_fit_fe", True)),
             fit_bc=bool(getattr(self, "_fit_fit_bc", True)),
             fit_poly=bool(getattr(self, "_fit_fit_poly", False)),
+            fit_reddening=bool(getattr(self, "_fit_fit_reddening", False)),
             fit_poly_order=int(getattr(self, "_fit_fit_poly_order", 2)),
-            fit_poly_edge_flex=bool(getattr(self, "_fit_fit_poly_edge_flex", True)),
             z_qso=float(getattr(self, "z", 0.0)),
             psf_mags=getattr(self, "psf_mags", None),
             psf_mag_errs=getattr(self, "psf_mag_errs", None),
@@ -930,8 +922,8 @@ class QSOFit:
             fit_fe=True,
             fit_bc=False,
             fit_poly=True,
+            fit_reddening=False,
             fit_poly_order=2,
-            fit_poly_edge_flex=True,
             mask_lya_forest=True,
             fit_method='optax+nuts',
             verbose=True,
@@ -990,9 +982,9 @@ class QSOFit:
         fit_poly_order : int, optional
             Polynomial order for the multiplicative continuum tilt. Uses
             coefficients ``poly_c1`` through ``poly_cN``.
-        fit_poly_edge_flex : bool, optional
-            If True, enable localized blue/red exponential edge correction
-            terms within the polynomial model.
+        fit_reddening : bool, optional
+            If True, apply a built-in smooth SMC-like reddening curve to the
+            AGN power-law continuum.
         mask_lya_forest : bool, optional
             If True, mask pixels with rest-frame wavelength below Ly-alpha
             (1215.67 Angstrom) before fitting.
@@ -1050,8 +1042,8 @@ class QSOFit:
         self._fit_fit_fe = bool(fit_fe)
         self._fit_fit_bc = bool(fit_bc)
         self._fit_fit_poly = bool(fit_poly)
+        self._fit_fit_reddening = bool(fit_reddening)
         self._fit_fit_poly_order = int(fit_poly_order)
-        self._fit_fit_poly_edge_flex = bool(fit_poly_edge_flex)
         self._fit_mask_lya_forest = bool(mask_lya_forest)
         self._fit_method = str(fit_method)
         self._fit_fsps_age_grid = tuple(fsps_age_grid)
@@ -1152,8 +1144,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_reddening=fit_reddening,
                 fit_poly_order=fit_poly_order,
-                fit_poly_edge_flex=fit_poly_edge_flex,
                 psf_mags=psf_mags_use,
                 psf_mag_errs=psf_mag_errs_use,
                 psf_filter_curves=psf_filter_curves_use,
@@ -1175,8 +1167,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_reddening=fit_reddening,
                 fit_poly_order=fit_poly_order,
-                fit_poly_edge_flex=fit_poly_edge_flex,
                 psf_mags=psf_mags_use,
                 psf_mag_errs=psf_mag_errs_use,
                 psf_filter_curves=psf_filter_curves_use,
@@ -1202,8 +1194,8 @@ class QSOFit:
                 fit_fe=fit_fe,
                 fit_bc=fit_bc,
                 fit_poly=fit_poly,
+                fit_reddening=fit_reddening,
                 fit_poly_order=fit_poly_order,
-                fit_poly_edge_flex=fit_poly_edge_flex,
                 psf_mags=psf_mags_use,
                 psf_mag_errs=psf_mag_errs_use,
                 psf_filter_curves=psf_filter_curves_use,
@@ -1234,8 +1226,8 @@ class QSOFit:
                              fit_fe=True,
                              fit_bc=True,
                              fit_poly=False,
+                             fit_reddening=False,
                              fit_poly_order=2,
-                             fit_poly_edge_flex=True,
                              psf_mags=None,
                              psf_mag_errs=None,
                              psf_filter_curves=None,
@@ -1261,7 +1253,7 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_reddening : bool, optional
             Component toggles for model blocks.
         fit_poly_order : int, optional
             Polynomial order for the multiplicative continuum tilt.
@@ -1346,8 +1338,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
             fit_poly_order=fit_poly_order,
-            fit_poly_edge_flex=fit_poly_edge_flex,
             z_qso=self.z,
             psf_mags=psf_mags,
             psf_mag_errs=psf_mag_errs,
@@ -1382,8 +1374,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
             fit_poly_order=fit_poly_order,
-            fit_poly_edge_flex=fit_poly_edge_flex,
             z_qso=self.z,
             psf_mags=psf_mags,
             psf_mag_errs=psf_mag_errs,
@@ -1414,8 +1406,8 @@ class QSOFit:
                            fit_fe=True,
                            fit_bc=True,
                            fit_poly=False,
+                           fit_reddening=False,
                            fit_poly_order=2,
-                           fit_poly_edge_flex=True,
                            psf_mags=None,
                            psf_mag_errs=None,
                            psf_filter_curves=None,
@@ -1438,7 +1430,7 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_reddening : bool, optional
             Component toggles for model blocks.
         fit_poly_order : int, optional
             Polynomial order for the multiplicative continuum tilt.
@@ -1497,7 +1489,7 @@ class QSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _run_svi(guide, steps, use_lines_i, fit_pl_i, fit_fe_i, fit_bc_i, fit_poly_i, fit_poly_order_i, fit_poly_edge_flex_i, decompose_host_i):
+        def _run_svi(guide, steps, use_lines_i, fit_pl_i, fit_fe_i, fit_bc_i, fit_poly_i, fit_reddening_i, fit_poly_order_i, decompose_host_i):
             """Run an SVI stage and return optimizer state/results."""
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
             svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
@@ -1522,8 +1514,8 @@ class QSOFit:
                 fit_fe=fit_fe_i,
                 fit_bc=fit_bc_i,
                 fit_poly=fit_poly_i,
+                fit_reddening=fit_reddening_i,
                 fit_poly_order=fit_poly_order_i,
-                fit_poly_edge_flex=fit_poly_edge_flex_i,
                 z_qso=self.z,
                 psf_mags=psf_mags,
                 psf_mag_errs=psf_mag_errs,
@@ -1549,8 +1541,8 @@ class QSOFit:
             fit_fe_i=False,
             fit_bc_i=False,
             fit_poly_i=False,
+            fit_reddening_i=False,
             fit_poly_order_i=2,
-            fit_poly_edge_flex_i=False,
             decompose_host_i=decompose_host,
         )
         map1 = guide1.median(res1.params)
@@ -1569,8 +1561,8 @@ class QSOFit:
             fit_fe_i=fit_fe,
             fit_bc_i=fit_bc,
             fit_poly_i=fit_poly,
+            fit_reddening_i=fit_reddening,
             fit_poly_order_i=fit_poly_order,
-            fit_poly_edge_flex_i=fit_poly_edge_flex,
             decompose_host_i=decompose_host,
         )
 
@@ -1605,8 +1597,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
             fit_poly_order=fit_poly_order,
-            fit_poly_edge_flex=fit_poly_edge_flex,
             z_qso=self.z,
             psf_mags=psf_mags,
             psf_mag_errs=psf_mag_errs,
@@ -1644,8 +1636,8 @@ class QSOFit:
                                 fit_fe=True,
                                 fit_bc=True,
                                 fit_poly=False,
+                                fit_reddening=False,
                                 fit_poly_order=2,
-                                fit_poly_edge_flex=True,
                                 psf_mags=None,
                                 psf_mag_errs=None,
                                 psf_filter_curves=None,
@@ -1674,7 +1666,7 @@ class QSOFit:
             Prior/config dictionary for model blocks.
         dsps_ssp_fn : str, optional
             DSPS SSP template HDF5 path.
-        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_poly_edge_flex : bool, optional
+        use_lines, decompose_host, fit_pl, fit_fe, fit_bc, fit_poly, fit_reddening : bool, optional
             Component toggles for model blocks.
         fit_poly_order : int, optional
             Polynomial order for the multiplicative continuum tilt.
@@ -1692,8 +1684,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
             fit_poly_order=fit_poly_order,
-            fit_poly_edge_flex=fit_poly_edge_flex,
             psf_mags=psf_mags,
             psf_mag_errs=psf_mag_errs,
             psf_filter_curves=psf_filter_curves,
@@ -1717,8 +1709,8 @@ class QSOFit:
             fit_fe=fit_fe,
             fit_bc=fit_bc,
             fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
             fit_poly_order=fit_poly_order,
-            fit_poly_edge_flex=fit_poly_edge_flex,
             psf_mags=psf_mags,
             psf_mag_errs=psf_mag_errs,
             psf_filter_curves=psf_filter_curves,
@@ -1908,15 +1900,7 @@ class QSOFit:
         self.frac_bc_2500 = self._bc_fraction_at_wave(2500.0)
 
         n_samp = int(np.asarray(next(iter(samples.values()))).shape[0]) if len(samples) > 0 else 1
-        if 'cont_norm' in samples:
-            cont_samp = np.asarray(samples['cont_norm'])
-            if decompose_host and 'log_frac_host' in samples:
-                frac_host_samp = 1.0 / (1.0 + np.exp(-np.asarray(samples['log_frac_host'])))
-                agn_samp = cont_samp * (1.0 - frac_host_samp)
-            else:
-                agn_samp = cont_samp
-            pl_norm_samp = agn_samp
-        elif 'PL_norm' in samples:
+        if 'PL_norm' in samples:
             pl_norm_samp = np.asarray(samples['PL_norm'])
         else:
             pl_norm_samp = np.full((n_samp,), np.nan)
@@ -1926,6 +1910,12 @@ class QSOFit:
         else:
             pl_slope_med = np.nan
             pl_slope_err = np.nan
+        if 'reddening_ebv' in samples:
+            reddening_ebv_med = float(np.nanmedian(np.asarray(samples['reddening_ebv'])))
+            reddening_ebv_err = float(np.nanstd(np.asarray(samples['reddening_ebv'])))
+        else:
+            reddening_ebv_med = np.nan
+            reddening_ebv_err = np.nan
         conti_entries = [
             ('ra', self.ra, 'float'),
             ('dec', self.dec, 'float'),
@@ -1936,6 +1926,8 @@ class QSOFit:
             ('PL_norm_err', float(np.nanstd(pl_norm_samp)), 'float'),
             ('PL_slope', pl_slope_med, 'float'),
             ('PL_slope_err', pl_slope_err, 'float'),
+            ('reddening_ebv', reddening_ebv_med, 'float'),
+            ('reddening_ebv_err', reddening_ebv_err, 'float'),
             ('pivot_wave', self.pivot_wave, 'float'),
             ('frac_host_pivot', self.frac_host_pivot, 'float'),
             ('frac_host_psf_pivot', self.frac_host_psf_pivot, 'float'),
@@ -2266,8 +2258,8 @@ class QSOFit:
             dsps_ssp_fn=getattr(self, '_fit_dsps_ssp_fn', 'tempdata.h5'),
             prior_config=prior_config,
             fit_poly=bool(getattr(self, '_fit_fit_poly', False)),
+            fit_reddening=bool(getattr(self, '_fit_fit_reddening', False)),
             fit_poly_order=int(getattr(self, '_fit_fit_poly_order', 2)),
-            fit_poly_edge_flex=bool(getattr(self, '_fit_fit_poly_edge_flex', False)),
             fe_uv_wave=self.fe_uv_wave,
             fe_uv_flux=self.fe_uv_flux,
             fe_op_wave=self.fe_op_wave,
@@ -2284,7 +2276,7 @@ class QSOFit:
         ----------
         component, reference : str, optional
             Component names. Supported reconstructed names are ``host``, ``PL``,
-            ``Fe_uv``, ``Fe_op``, ``Balmer_cont``, ``edge_additive``, and ``continuum``.
+            ``Fe_uv``, ``Fe_op``, ``Balmer_cont``, and ``continuum``.
             Any fitted custom component names are also accepted.
         wave0 : float, optional
             Rest-frame wavelength in Angstrom.
@@ -2742,7 +2734,7 @@ class QSOFit:
         return fig
 
     def plot_corner(self, param_names=None, max_vector_elems=2, bins=30, max_points=2000, save_fig_path=None, save_fig_name=None):
-        """Plot a simple corner-style posterior projection matrix.
+        """Plot posterior projections with ``corner.corner``.
 
         Parameters
         ----------
@@ -2763,36 +2755,31 @@ class QSOFit:
         series = self._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
         if len(series) == 0:
             return None
+        try:
+            import corner
+        except ImportError as exc:
+            raise ImportError("plot_corner requires the 'corner' package to be installed.") from exc
 
         labels = [s[0] for s in series]
         data = np.column_stack([s[1] for s in series])
         if data.shape[0] > int(max_points):
             idx = np.linspace(0, data.shape[0] - 1, int(max_points), dtype=int)
             data = data[idx]
-        ndim = data.shape[1]
 
-        fig, axes = plt.subplots(ndim, ndim, figsize=(2.2 * ndim, 2.2 * ndim))
-        fig.subplots_adjust(wspace=0.03, hspace=0.03)
-        for i in range(ndim):
-            for j in range(ndim):
-                ax = axes[i, j]
-                if i < j:
-                    ax.axis('off')
-                    continue
-                if i == j:
-                    ax.hist(data[:, j], bins=bins, color='tab:blue', alpha=0.75)
-                else:
-                    ax.hist2d(data[:, j], data[:, i], bins=bins, cmap='Blues', cmin=1)
-                if i == ndim - 1:
-                    ax.set_xlabel(labels[j], fontsize=8)
-                else:
-                    ax.set_xticklabels([])
-                if j == 0 and i > 0:
-                    ax.set_ylabel(labels[i], fontsize=8)
-                else:
-                    ax.set_yticklabels([])
-                self._style_axis(ax)
-        fig.tight_layout(pad=0.35)
+        fig = corner.corner(
+            data,
+            labels=labels,
+            bins=bins,
+            show_titles=True,
+            plot_datapoints=True,
+            fill_contours=True,
+            labelpad=0.02,
+            label_kwargs={"fontsize": 10},
+            title_kwargs={"fontsize": 10},
+        )
+        for ax in fig.axes:
+            self._style_axis(ax)
+        fig.subplots_adjust(left=0.08, bottom=0.08, right=0.98, top=0.98, wspace=0.06, hspace=0.06)
         plt.show()
         if self.save_fig:
             out_name = f'{self.filename}_corner.pdf' if save_fig_name is None else save_fig_name

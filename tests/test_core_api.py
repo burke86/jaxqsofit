@@ -362,13 +362,14 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     q._fit_fit_bc = False
     q._fit_fit_poly = False
     q._fit_fit_poly_order = 2
-    q._fit_fit_poly_edge_flex = False
+    q._fit_fit_reddening = False
     q._fit_use_psf_phot = False
     q._fit_custom_components = ()
     q._fit_custom_line_components = ()
     q.numpyro_samples = {
         "cont_norm": np.array([1.0, 1.1, 0.9]),
         "log_frac_host": np.array([0.0, 0.1, -0.1]),
+        "PL_norm": np.array([1.0, 1.0, 1.0]),
         "PL_slope": np.array([-1.5, -1.4, -1.6]),
     }
     q.save_fig = False
@@ -399,7 +400,7 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert np.allclose(loaded.flux_in, flux)
     assert hasattr(loaded, "model_total")
     assert loaded.model_total.shape == lam.shape
-    assert set(loaded.numpyro_samples.keys()) == {"cont_norm", "log_frac_host", "PL_slope"}
+    assert set(loaded.numpyro_samples.keys()) == {"cont_norm", "log_frac_host", "PL_norm", "PL_slope"}
     assert called["plot_fig"] == 1
     assert called["plot_mcmc_diagnostics"] == 1
 
@@ -437,13 +438,14 @@ def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
     q._fit_fit_bc = False
     q._fit_fit_poly = False
     q._fit_fit_poly_order = 2
-    q._fit_fit_poly_edge_flex = False
+    q._fit_fit_reddening = False
     q._fit_use_psf_phot = False
     q._fit_custom_components = ()
     q._fit_custom_line_components = ()
     q.numpyro_samples = {
         "cont_norm": np.array([1.0, 1.1, 0.9]),
         "log_frac_host": np.array([0.0, 0.1, -0.1]),
+        "PL_norm": np.array([1.0, 1.0, 1.0]),
         "PL_slope": np.array([-1.5, -1.4, -1.6]),
     }
     q.save_fig = False
@@ -482,7 +484,7 @@ def test_save_posterior_bundle_excludes_figures_transient_and_duplicate_caches(t
     q._fit_fit_bc = False
     q._fit_fit_poly = False
     q._fit_fit_poly_order = 2
-    q._fit_fit_poly_edge_flex = False
+    q._fit_fit_reddening = False
     q._fit_fsps_age_grid = (0.1, 1.0)
     q._fit_fsps_logzsol_grid = (-0.5, 0.0)
     q._fit_dsps_ssp_fn = "fake_ssp.h5"
@@ -576,7 +578,7 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
     q._fit_dsps_ssp_fn = "fake_ssp.h5"
     q._fit_fit_poly = True
     q._fit_fit_poly_order = 3
-    q._fit_fit_poly_edge_flex = False
+    q._fit_fit_reddening = False
     q._posterior_hydrated = True
 
     captured = {}
@@ -601,7 +603,7 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
     assert captured["dsps_ssp_fn"] == "fake_ssp.h5"
     assert captured["fit_poly"] is True
     assert captured["fit_poly_order"] == 3
-    assert captured["fit_poly_edge_flex"] is False
+    assert captured["fit_reddening"] is False
     assert captured["n_draws"] == 2
     assert captured["return_components"] is False
     assert np.isclose(np.min(captured["wave_out"]), 2500.0)

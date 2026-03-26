@@ -71,6 +71,15 @@ def _powerlaw_jax(wave, pl_norm, pl_slope, pivot):
     return pl_norm * x ** pl_slope
 
 
+def _smc_like_reddening_jax(wave, ebv, uv_ref=2500.0, alpha=1.2):
+    """Return a smooth SMC-like attenuation curve."""
+    ebv = jnp.maximum(jnp.asarray(ebv), 0.0)
+    uv_ref = jnp.maximum(jnp.asarray(uv_ref), 1e-8)
+    alpha = jnp.asarray(alpha)
+    k_lambda = (jnp.clip(wave, 1e-8, None) / uv_ref) ** (-alpha)
+    return 10.0 ** (-0.4 * ebv * k_lambda)
+
+
 def _many_gauss_lnlam(lnlam, amps, mus, sigs):
     """Sum Gaussian components defined in log-wavelength space."""
     z = (lnlam[:, None] - mus[None, :]) / sigs[None, :]
@@ -338,7 +347,7 @@ def reconstruct_posterior_components(
     prior_config: Dict[str, Any],
     fit_poly: bool,
     fit_poly_order: int,
-    fit_poly_edge_flex: bool,
+    fit_reddening: bool,
     fe_uv_wave: np.ndarray,
     fe_uv_flux: np.ndarray,
     fe_op_wave: np.ndarray,
@@ -371,6 +380,7 @@ def reconstruct_posterior_components(
     cont_norm = np.asarray(samples.get('cont_norm', np.zeros(n_total)), dtype=float)[sl]
     log_frac_host = np.asarray(samples.get('log_frac_host', np.full(n_total, -np.inf)), dtype=float)[sl]
     frac_host = 1.0 / (1.0 + np.exp(-log_frac_host))
+    pl_norm = np.asarray(samples.get('PL_norm', np.zeros(n_total)), dtype=float)[sl]
     pl_slope = np.asarray(samples.get('PL_slope', np.zeros(n_total)), dtype=float)[sl]
     gal_v = np.asarray(samples.get('gal_v_kms', np.zeros(n_total)), dtype=float)[sl]
     gal_sigma = np.asarray(samples.get('gal_sigma_kms', np.full(n_total, 150.0)), dtype=float)[sl]
@@ -391,14 +401,6 @@ def reconstruct_posterior_components(
     balmer_tau = np.asarray(samples.get('Balmer_Tau', np.full(n_total, 0.5)), dtype=float)[sl]
     balmer_vel = np.asarray(samples.get('Balmer_vel', np.full(n_total, 3000.0)), dtype=float)[sl]
 
-    n_edge = int(prior_config.get('edge_rbf_n_per_side', 3))
-    frac_min = float(prior_config.get('edge_rbf_frac_min', 0.01))
-    frac_max = float(prior_config.get('edge_rbf_frac_max', 0.10))
-    span = max(wave_out[-1] - wave_out[0], 1.0)
-    frac_grid = np.linspace(frac_min, frac_max, max(n_edge, 1))
-    c_blue = wave_out[0] + frac_grid * span
-    c_red = wave_out[-1] - frac_grid * span
-
     component_draws = {
         'host': np.zeros((n_use, wave_out.size), dtype=float),
         'PL': np.zeros((n_use, wave_out.size), dtype=float),
@@ -406,11 +408,13 @@ def reconstruct_posterior_components(
         'Fe_op': np.zeros((n_use, wave_out.size), dtype=float),
         'Balmer_cont': np.zeros((n_use, wave_out.size), dtype=float),
         'continuum': np.zeros((n_use, wave_out.size), dtype=float),
-        'edge_additive': np.zeros((n_use, wave_out.size), dtype=float),
     }
     for comp in custom_components:
         component_draws[comp.output_name] = np.zeros((n_use, wave_out.size), dtype=float)
     pl_pivot = float(np.asarray(_resolve_pl_pivot(wave_out, prior_config), dtype=float))
+    reddening_ebv = np.asarray(samples.get('reddening_ebv', np.zeros(n_total)), dtype=float)[sl]
+    reddening_uv_ref = float(prior_config.get('reddening_uv_ref', 2500.0))
+    reddening_alpha = float(prior_config.get('reddening_alpha', 1.2))
 
     for i in range(n_use):
         host_intrinsic = templates @ fsps_weights[i]
@@ -419,16 +423,25 @@ def reconstruct_posterior_components(
             dtype=float,
         )
 
-        agn_amp = cont_norm[i] * (1.0 - frac_host[i])
         pl_model = np.asarray(
             _powerlaw_jax(
                 wave_out,
-                pl_norm=agn_amp,
+                pl_norm=pl_norm[i],
                 pl_slope=pl_slope[i],
                 pivot=pl_pivot,
             ),
             dtype=float,
         )
+        if fit_reddening:
+            pl_model = pl_model * np.asarray(
+                _smc_like_reddening_jax(
+                    wave_out,
+                    reddening_ebv[i],
+                    uv_ref=reddening_uv_ref,
+                    alpha=reddening_alpha,
+                ),
+                dtype=float,
+            )
         fe_uv_model = np.asarray(
             _fe_template_component(wave_out, fe_uv_wave, fe_uv_flux, fe_uv_norm[i], fe_uv_fwhm[i], fe_uv_shift[i]),
             dtype=float,
@@ -455,7 +468,6 @@ def reconstruct_posterior_components(
             custom_total = custom_total + custom_model
 
         poly_model = np.ones_like(wave_out)
-        edge_add = np.zeros_like(wave_out)
         if fit_poly:
             w0 = 0.5 * (wave_out[0] + wave_out[-1])
             x = (wave_out - w0) / max(w0, 1.0)
@@ -466,15 +478,6 @@ def reconstruct_posterior_components(
                     poly_base = poly_base + float(np.asarray(samples[key], dtype=float)[sl][i]) * (x ** k)
             poly_model = np.clip(poly_base, 0.2, 5.0)
 
-            if fit_poly_edge_flex and 'edge_rbf_amp_blue' in samples and 'edge_rbf_amp_red' in samples:
-                sigma_blue = float(np.asarray(samples.get('edge_rbf_sigma_blue', np.array([1.0])), dtype=float)[sl][i])
-                sigma_red = float(np.asarray(samples.get('edge_rbf_sigma_red', np.array([1.0])), dtype=float)[sl][i])
-                amps_blue = np.asarray(samples['edge_rbf_amp_blue'], dtype=float)[sl][i]
-                amps_red = np.asarray(samples['edge_rbf_amp_red'], dtype=float)[sl][i]
-                phi_blue = np.exp(-0.5 * ((wave_out[None, :] - c_blue[:, None]) / max(sigma_blue, 1.0)) ** 2)
-                phi_red = np.exp(-0.5 * ((wave_out[None, :] - c_red[:, None]) / max(sigma_red, 1.0)) ** 2)
-                edge_add = cont_norm[i] * (amps_blue @ phi_blue + amps_red @ phi_red)
-
         host_model = host_model * poly_model
         pl_model = pl_model * poly_model
         fe_uv_model = fe_uv_model * poly_model
@@ -483,14 +486,13 @@ def reconstruct_posterior_components(
         custom_total = custom_total * poly_model
         for comp in custom_components:
             component_draws[comp.output_name][i] = component_draws[comp.output_name][i] * poly_model
-        continuum_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total + host_model + edge_add
+        continuum_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total + host_model
 
         component_draws['host'][i] = host_model
         component_draws['PL'][i] = pl_model
         component_draws['Fe_uv'][i] = fe_uv_model
         component_draws['Fe_op'][i] = fe_op_model
         component_draws['Balmer_cont'][i] = bc_model
-        component_draws['edge_additive'][i] = edge_add
         component_draws['continuum'][i] = continuum_model
 
     output_draws = component_draws if return_components else {'continuum': component_draws['continuum']}
@@ -705,7 +707,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          fe_uv_wave, fe_uv_flux, fe_op_wave, fe_op_flux, use_lines=True,
                          prior_config=None, decompose_host=True, fit_pl=True, fit_fe=True, fit_bc=True, fit_poly=False,
                          fit_poly_order=2,
-                         fit_poly_edge_flex=True, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
+                         fit_reddening=False, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
                          psf_filter_curves=None, use_psf_phot=False,
                          custom_components: Sequence[CustomComponentSpec] | None = None,
                          custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
@@ -752,15 +754,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         frac_host = jax.nn.sigmoid(log_frac_host)
     else:
         frac_host = jnp.asarray(0.0)
-    agn_amp = cont_norm * (1.0 - frac_host)
+    host_amp = cont_norm * frac_host
     pl_pivot = _resolve_pl_pivot(wave, prior_config)
     if fit_pl:
-        pl_norm = agn_amp
+        pl_norm = numpyro.sample('PL_norm', dist.HalfNormal(_cfg_halfnorm('PL_norm')))
         pl_slope_loc, pl_slope_scale = _cfg_norm('PL_slope')
         pl_slope = numpyro.sample('PL_slope', dist.Normal(pl_slope_loc, pl_slope_scale))
+        reddening_ebv = numpyro.sample('reddening_ebv', dist.HalfNormal(_cfg_halfnorm('reddening_ebv'))) if fit_reddening else jnp.asarray(0.0)
     else:
         pl_norm = jnp.asarray(0.0)
         pl_slope = jnp.asarray(0.0)
+        reddening_ebv = jnp.asarray(0.0)
         if decompose_host:
             frac_host = jnp.asarray(1.0)
 
@@ -800,10 +804,19 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         )
     else:
         pl_model_intrinsic = jnp.zeros_like(wave)
+    reddening_atten = (
+        _smc_like_reddening_jax(
+            wave,
+            reddening_ebv,
+            uv_ref=float(prior_config.get('reddening_uv_ref', 2500.0)),
+            alpha=float(prior_config.get('reddening_alpha', 1.2)),
+        )
+        if fit_reddening else jnp.ones_like(wave)
+    )
     fe_uv_model_intrinsic = _fe_template_component(wave, fe_uv_wave, fe_uv_flux, fe_uv_norm, fe_uv_fwhm, fe_uv_shift)
     fe_op_model_intrinsic = _fe_template_component(wave, fe_op_wave, fe_op_flux, fe_op_norm, fe_op_fwhm, fe_op_shift)
     bc_model_intrinsic = _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel)
-    pl_model = pl_model_intrinsic
+    pl_model = pl_model_intrinsic * reddening_atten
     fe_uv_model = fe_uv_model_intrinsic
     fe_op_model = fe_op_model_intrinsic
     bc_model = bc_model_intrinsic
@@ -820,7 +833,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         custom_models[comp.output_name] = custom_model_intrinsic
         custom_total_model = custom_total_model + custom_model_intrinsic
     poly_model = jnp.ones_like(wave)
-    edge_additive_model = jnp.zeros_like(wave)
     if fit_poly:
         poly_order = int(max(fit_poly_order, 0))
         w0 = 0.5 * (wave[0] + wave[-1])
@@ -831,28 +843,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             ck = numpyro.sample(f'poly_c{k}', dist.Normal(*_cfg_norm(f'poly_c{k}')))
             poly_base = poly_base + ck * (x ** k)
 
-        if fit_poly_edge_flex:
-            # Localized edge corrections using an additive RBF basis on each edge.
-            n_edge = int(prior_config.get('edge_rbf_n_per_side', 3))
-            n_edge = max(n_edge, 1)
-            frac_min = float(prior_config.get('edge_rbf_frac_min', 0.01))
-            frac_max = float(prior_config.get('edge_rbf_frac_max', 0.10))
-            span = jnp.maximum(wave[-1] - wave[0], 1.0)
-            frac_grid = jnp.linspace(frac_min, frac_max, n_edge)
-
-            c_blue = wave[0] + frac_grid * span
-            c_red = wave[-1] - frac_grid * span
-
-            amp_loc, amp_scale = _cfg_norm('edge_rbf_amp')
-            sigma_blue = numpyro.sample('edge_rbf_sigma_blue', dist.LogNormal(*_cfg_norm('log_edge_rbf_sigma_blue')))
-            sigma_red = numpyro.sample('edge_rbf_sigma_red', dist.LogNormal(*_cfg_norm('log_edge_rbf_sigma_red')))
-            amps_blue = numpyro.sample('edge_rbf_amp_blue', dist.Normal(jnp.full((n_edge,), amp_loc), amp_scale))
-            amps_red = numpyro.sample('edge_rbf_amp_red', dist.Normal(jnp.full((n_edge,), amp_loc), amp_scale))
-
-            phi_blue = jnp.exp(-0.5 * ((wave[None, :] - c_blue[:, None]) / jnp.maximum(sigma_blue, 1.0)) ** 2)
-            phi_red = jnp.exp(-0.5 * ((wave[None, :] - c_red[:, None]) / jnp.maximum(sigma_red, 1.0)) ** 2)
-            edge_add = jnp.dot(amps_blue, phi_blue) + jnp.dot(amps_red, phi_red)
-            edge_additive_model = cont_norm * edge_add
         poly_model = jnp.clip(poly_base, 0.2, 5.0)
         pl_model = pl_model * poly_model
         fe_uv_model = fe_uv_model * poly_model
@@ -869,7 +859,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         raw_w_loc, _ = _cfg_norm('raw_w')
         raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(jnp.full((ntemp,), raw_w_loc), tau_host_eff))
         fsps_weights_frac = jax.nn.softmax(raw_w)
-        host_amp = cont_norm * frac_host
         fsps_weights = host_amp * fsps_weights_frac
         gal_v_kms = numpyro.sample('gal_v_kms', dist.Normal(*_cfg_norm('gal_v_kms')))
         gal_sigma_kms = numpyro.sample('gal_sigma_kms', dist.HalfNormal(_cfg_halfnorm('gal_sigma_kms')))
@@ -968,7 +957,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     frac_jitter = numpyro.sample('frac_jitter', dist.HalfNormal(_cfg_halfnorm('frac_jitter')))
     add_jitter = numpyro.sample('add_jitter', dist.HalfNormal(_cfg_halfnorm('add_jitter', ref_scale=jnp.mean(err))))
 
-    continuum_model = agn_model + gal_model + edge_additive_model
+    continuum_model = agn_model + gal_model
     model = continuum_model + line_model
     sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
     fiber_model = model
@@ -1030,7 +1019,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('line_model_narrow', line_model_narrow)
     numpyro.deterministic('line_model', line_model)
     numpyro.deterministic('continuum_model', continuum_model)
-    numpyro.deterministic('edge_additive_model', edge_additive_model)
     numpyro.deterministic('model', model)
     numpyro.deterministic('delta_m_psf', delta_m_psf)
     numpyro.deterministic('eta_psf', eta_psf)
@@ -1041,7 +1029,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('line_model_narrow_psf', line_model_narrow_psf)
     numpyro.deterministic('line_model_psf', line_model_psf)
     numpyro.deterministic('psf_model', psf_model)
-    numpyro.deterministic('PL_norm_eff', pl_norm)
     numpyro.deterministic('frac_host', frac_host)
     numpyro.deterministic('fsps_weights', fsps_weights)
     numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)

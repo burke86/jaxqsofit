@@ -9,8 +9,10 @@ def test_build_default_prior_config_has_expected_keys():
 
     required = [
         'log_cont_norm',
+        'PL_norm',
         'PL_slope',
         'PL_pivot',
+        'reddening_ebv',
         'log_frac_host',
         'tau_host',
         'raw_w',

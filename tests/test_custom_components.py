@@ -83,8 +83,8 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
         dsps_ssp_fn="fake.h5",
         prior_config={},
         fit_poly=False,
+        fit_reddening=False,
         fit_poly_order=0,
-        fit_poly_edge_flex=False,
         fe_uv_wave=np.array([2000.0, 3000.0]),
         fe_uv_flux=np.zeros(2),
         fe_op_wave=np.array([2000.0, 3000.0]),
@@ -117,8 +117,8 @@ def test_reconstruct_posterior_spectrum_passes_custom_components(monkeypatch):
     q._fit_fsps_logzsol_grid = (0.0,)
     q._fit_dsps_ssp_fn = "fake_ssp.h5"
     q._fit_fit_poly = False
+    q._fit_fit_reddening = False
     q._fit_fit_poly_order = 0
-    q._fit_fit_poly_edge_flex = False
     q._fit_custom_components = (
         make_custom_component(
             name="blue_poly",
