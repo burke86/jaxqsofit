@@ -922,7 +922,7 @@ class QSOFit:
             fit_fe=True,
             fit_bc=False,
             fit_poly=True,
-            fit_reddening=False,
+            fit_reddening=True,
             fit_poly_order=2,
             mask_lya_forest=True,
             fit_method='optax+nuts',
