@@ -5,37 +5,122 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+MINSCA_DEFAULT = 0.0
+MAXSCA_DEFAULT = 1e10
+
+inisig_broad = 5e-3
+minsig_broad = 0.004
+maxsig_broad = 0.05
+
+inisig_narrow = 1e-3
+minsig_narrow = 2.3e-4
+maxsig_narrow = 0.00169
+
+inisig_narrow_relaxed = 1e-3
+minsig_narrow_relaxed = 5e-4
+maxsig_narrow_relaxed = maxsig_narrow
+
+inisig_narrow_uv = 1e-3
+minsig_narrow_uv = 3.333e-4
+maxsig_narrow_uv = maxsig_narrow
+
+inisig_oiii_wing = 3e-3
+minsig_oiii_wing = minsig_narrow
+maxsig_oiii_wing = 0.004
+
+inisig_uv_broad = 5e-3
+minsig_uv_broad = 0.002
+maxsig_uv_broad = 0.05
+
+inisig_nv = 2e-3
+minsig_nv = 0.001
+maxsig_nv = 0.01
+
+voff_broad = 0.015
+voff_broad_balmer = 0.01
+voff_narrow = 0.01
+voff_narrow_tight = 5e-3
+voff_uv_broad = 0.015
+voff_lya = 0.02
+voff_nv = 0.005
+voff_elg = 0.01
+voff_elg_red = 0.008
+
+
+def _line_row(
+    *,
+    lam: float,
+    compname: str,
+    minwav: float,
+    maxwav: float,
+    linename: str,
+    ngauss: int = 1,
+    inisca: float = 0.0,
+    minsca: float = MINSCA_DEFAULT,
+    maxsca: float = MAXSCA_DEFAULT,
+    inisig: float,
+    minsig: float,
+    maxsig: float,
+    voff: float,
+    vindex: int,
+    windex: int,
+    findex: int,
+    fvalue: float,
+    vary: int = 1,
+) -> Dict[str, Any]:
+    return {
+        "lambda": lam,
+        "compname": compname,
+        "minwav": minwav,
+        "maxwav": maxwav,
+        "linename": linename,
+        "ngauss": ngauss,
+        "inisca": inisca,
+        "minsca": minsca,
+        "maxsca": maxsca,
+        "inisig": inisig,
+        "minsig": minsig,
+        "maxsig": maxsig,
+        "voff": voff,
+        "vindex": vindex,
+        "windex": windex,
+        "findex": findex,
+        "fvalue": fvalue,
+        "vary": vary,
+    }
+
+
 # Default line table in plain dict rows (same schema as notebook line config).
 DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     # Halpha complex
-    {'lambda': 6564.61, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'Ha_br', 'ngauss': 2, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.015, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.05, 'vary': 1},
-    {'lambda': 6564.61, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'Ha_na', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 5e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
-    {'lambda': 6549.85, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'NII6549', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 5e-3, 'vindex': 1, 'windex': 1, 'findex': 1, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6585.28, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'NII6585', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 5e-3, 'vindex': 1, 'windex': 1, 'findex': 1, 'fvalue': 0.003, 'vary': 1},
-    {'lambda': 6718.29, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'SII6718', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 5e-3, 'vindex': 1, 'windex': 1, 'findex': 2, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6732.67, 'compname': 'Ha', 'minwav': 6400, 'maxwav': 6800, 'linename': 'SII6732', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 5e-3, 'vindex': 1, 'windex': 1, 'findex': 2, 'fvalue': 0.001, 'vary': 1},
+    _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=6549.85, compname='Ha', minwav=6400, maxwav=6800, linename='NII6549', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=0.001),
+    _line_row(lam=6585.28, compname='Ha', minwav=6400, maxwav=6800, linename='NII6585', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=0.003),
+    _line_row(lam=6718.29, compname='Ha', minwav=6400, maxwav=6800, linename='SII6718', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
+    _line_row(lam=6732.67, compname='Ha', minwav=6400, maxwav=6800, linename='SII6732', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
     # Hbeta / [OIII]
-    {'lambda': 4862.68, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'Hb_br', 'ngauss': 2, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.01, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.01, 'vary': 1},
-    {'lambda': 4862.68, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'Hb_na', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
-    {'lambda': 4960.30, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'OIII4959c', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
-    {'lambda': 5008.24, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'OIII5007c', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.004, 'vary': 1},
-    {'lambda': 4960.30, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'OIII4959w', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 3e-3, 'minsig': 2.3e-4, 'maxsig': 0.004, 'voff': 0.01, 'vindex': 2, 'windex': 2, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 5008.24, 'compname': 'Hb', 'minwav': 4640, 'maxwav': 5100, 'linename': 'OIII5007w', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 3e-3, 'minsig': 2.3e-4, 'maxsig': 0.004, 'voff': 0.01, 'vindex': 2, 'windex': 2, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
+    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=4960.30, compname='Hb', minwav=4640, maxwav=5100, linename='OIII4959c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=5008.24, compname='Hb', minwav=4640, maxwav=5100, linename='OIII5007c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.004),
+    _line_row(lam=4960.30, compname='Hb', minwav=4640, maxwav=5100, linename='OIII4959w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=5008.24, compname='Hb', minwav=4640, maxwav=5100, linename='OIII5007w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.002),
     # Higher-order Balmer
-    {'lambda': 4341.68, 'compname': 'Hg', 'minwav': 4200, 'maxwav': 4400, 'linename': 'Hg_br', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.01, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.01, 'vary': 1},
-    {'lambda': 4341.68, 'compname': 'Hg', 'minwav': 4200, 'maxwav': 4400, 'linename': 'Hg_na', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
-    {'lambda': 4102.89, 'compname': 'Hd', 'minwav': 4000, 'maxwav': 4150, 'linename': 'Hd_br', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.01, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.01, 'vary': 1},
-    {'lambda': 4102.89, 'compname': 'Hd', 'minwav': 4000, 'maxwav': 4150, 'linename': 'Hd_na', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
+    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4400, linename='Hg_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4400, linename='Hg_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # Other optical/UV
-    {'lambda': 3728.48, 'compname': 'OII', 'minwav': 3650, 'maxwav': 3800, 'linename': 'OII3728', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 3.333e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 3426.84, 'compname': 'NeV', 'minwav': 3380, 'maxwav': 3480, 'linename': 'NeV3426', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 3.333e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 2798.75, 'compname': 'MgII', 'minwav': 2700, 'maxwav': 2900, 'linename': 'MgII_br', 'ngauss': 2, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.015, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.05, 'vary': 1},
-    {'lambda': 2798.75, 'compname': 'MgII', 'minwav': 2700, 'maxwav': 2900, 'linename': 'MgII_na', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 5e-4, 'maxsig': 0.00169, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
-    {'lambda': 1908.73, 'compname': 'CIII', 'minwav': 1700, 'maxwav': 1970, 'linename': 'CIII_br', 'ngauss': 2, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.015, 'vindex': 99, 'windex': 0, 'findex': 0, 'fvalue': 0.01, 'vary': 1},
-    {'lambda': 1549.06, 'compname': 'CIV', 'minwav': 1500, 'maxwav': 1700, 'linename': 'CIV_br', 'ngauss': 2, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.004, 'maxsig': 0.05, 'voff': 0.015, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.05, 'vary': 1},
-    {'lambda': 1402.06, 'compname': 'SiIV', 'minwav': 1290, 'maxwav': 1450, 'linename': 'SiIV_OIV1', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.002, 'maxsig': 0.05, 'voff': 0.015, 'vindex': 1, 'windex': 1, 'findex': 0, 'fvalue': 0.05, 'vary': 1},
-    {'lambda': 1215.67, 'compname': 'Lya', 'minwav': 1150, 'maxwav': 1290, 'linename': 'Lya_br', 'ngauss': 3, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 5e-3, 'minsig': 0.002, 'maxsig': 0.05, 'voff': 0.02, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.05, 'vary': 1},
-    {'lambda': 1240.14, 'compname': 'Lya', 'minwav': 1150, 'maxwav': 1290, 'linename': 'NV1240', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 2e-3, 'minsig': 0.001, 'maxsig': 0.01, 'voff': 0.005, 'vindex': 0, 'windex': 0, 'findex': 0, 'fvalue': 0.002, 'vary': 1},
+    _line_row(lam=3728.48, compname='OII', minwav=3650, maxwav=3800, linename='OII3728', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=0, windex=0, findex=0, fvalue=0.001),
+    _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_uv_broad, vindex=99, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1402.06, compname='SiIV', minwav=1290, maxwav=1450, linename='SiIV_OIV1', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
+    _line_row(lam=1215.67, compname='Lya', minwav=1150, maxwav=1290, linename='Lya_br', ngauss=3, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_lya, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1240.14, compname='Lya', minwav=1150, maxwav=1290, linename='NV1240', inisig=inisig_nv, minsig=minsig_nv, maxsig=maxsig_nv, voff=voff_nv, vindex=0, windex=0, findex=0, fvalue=0.002),
 ]
 
 DEFAULT_LINE_CONFIG: Dict[str, Any] = {
@@ -49,54 +134,54 @@ DEFAULT_LINE_CONFIG: Dict[str, Any] = {
 # These can be appended to the default line list via
 # build_default_prior_config(..., include_elg_narrow_lines=True).
 DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
-    {'lambda': 3726.03, 'compname': 'OII',   'minwav': 3650, 'maxwav': 3800, 'linename': 'OII3726',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 31, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 3728.82, 'compname': 'OII',   'minwav': 3650, 'maxwav': 3800, 'linename': 'OII3729',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 31, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 3869.86, 'compname': 'NeIII', 'minwav': 3800, 'maxwav': 4020, 'linename': 'NeIII3869',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 3968.59, 'compname': 'NeIII', 'minwav': 3900, 'maxwav': 4100, 'linename': 'NeIII3968',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4102.89, 'compname': 'Hd',    'minwav': 4000, 'maxwav': 4150, 'linename': 'Hd_na_elg',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4341.68, 'compname': 'Hg',    'minwav': 4200, 'maxwav': 4450, 'linename': 'Hg_na_elg',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4364.44, 'compname': 'OIII',  'minwav': 4300, 'maxwav': 4450, 'linename': 'OIII4363',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4862.68, 'compname': 'Hb',    'minwav': 4640, 'maxwav': 5100, 'linename': 'Hb_na_elg',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4687.02, 'compname': 'HeII',  'minwav': 4620, 'maxwav': 4760, 'linename': 'HeII4686',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 4960.30, 'compname': 'OIII',  'minwav': 4870, 'maxwav': 5050, 'linename': 'OIII4959',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 32, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 5008.24, 'compname': 'OIII',  'minwav': 4920, 'maxwav': 5100, 'linename': 'OIII5007',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 32, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 5877.25, 'compname': 'HeI',   'minwav': 5800, 'maxwav': 5950, 'linename': 'HeI5876',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6302.05, 'compname': 'OI',    'minwav': 6200, 'maxwav': 6420, 'linename': 'OI6300',     'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 33, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 6365.54, 'compname': 'OI',    'minwav': 6280, 'maxwav': 6460, 'linename': 'OI6363',     'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 33, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 6549.85, 'compname': 'NII',   'minwav': 6460, 'maxwav': 6640, 'linename': 'NII6548',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 34, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 6564.61, 'compname': 'Ha',    'minwav': 6480, 'maxwav': 6660, 'linename': 'Ha_na_elg',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6585.28, 'compname': 'NII',   'minwav': 6500, 'maxwav': 6680, 'linename': 'NII6583',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 34, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 6718.29, 'compname': 'SII',   'minwav': 6640, 'maxwav': 6800, 'linename': 'SII6716',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 35, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 6732.67, 'compname': 'SII',   'minwav': 6660, 'maxwav': 6820, 'linename': 'SII6731',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 35, 'fvalue': 1.0,  'vary': 1},
+    _line_row(lam=3726.03, compname='OII', minwav=3650, maxwav=3800, linename='OII3726', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
+    _line_row(lam=3728.82, compname='OII', minwav=3650, maxwav=3800, linename='OII3729', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
+    _line_row(lam=3869.86, compname='NeIII', minwav=3800, maxwav=4020, linename='NeIII3869', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=3968.59, compname='NeIII', minwav=3900, maxwav=4100, linename='NeIII3968', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4450, linename='Hg_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4364.44, compname='OIII', minwav=4300, maxwav=4450, linename='OIII4363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4687.02, compname='HeII', minwav=4620, maxwav=4760, linename='HeII4686', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4960.30, compname='OIII', minwav=4870, maxwav=5050, linename='OIII4959', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=1.0),
+    _line_row(lam=5008.24, compname='OIII', minwav=4920, maxwav=5100, linename='OIII5007', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=1.0),
+    _line_row(lam=5877.25, compname='HeI', minwav=5800, maxwav=5950, linename='HeI5876', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=6302.05, compname='OI', minwav=6200, maxwav=6420, linename='OI6300', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=1.0),
+    _line_row(lam=6365.54, compname='OI', minwav=6280, maxwav=6460, linename='OI6363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=1.0),
+    _line_row(lam=6549.85, compname='NII', minwav=6460, maxwav=6640, linename='NII6548', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=1.0),
+    _line_row(lam=6564.61, compname='Ha', minwav=6480, maxwav=6660, linename='Ha_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=6585.28, compname='NII', minwav=6500, maxwav=6680, linename='NII6583', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=1.0),
+    _line_row(lam=6718.29, compname='SII', minwav=6640, maxwav=6800, linename='SII6716', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
+    _line_row(lam=6732.67, compname='SII', minwav=6660, maxwav=6820, linename='SII6731', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
     # Red optical / far-red forbidden + He I
-    {'lambda': 7067.17, 'compname': 'HeI',   'minwav': 7000, 'maxwav': 7125, 'linename': 'HeI7065',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 7137.77, 'compname': 'ArIII', 'minwav': 7050, 'maxwav': 7220, 'linename': 'ArIII7138', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 7322.19, 'compname': 'OII',   'minwav': 7260, 'maxwav': 7375, 'linename': 'OII7320',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 22, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 7332.97, 'compname': 'OII',   'minwav': 7270, 'maxwav': 7385, 'linename': 'OII7330',   'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 22, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 7753.19, 'compname': 'ArIII', 'minwav': 7680, 'maxwav': 7820, 'linename': 'ArIII7751', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
+    _line_row(lam=7067.17, compname='HeI', minwav=7000, maxwav=7125, linename='HeI7065', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=7137.77, compname='ArIII', minwav=7050, maxwav=7220, linename='ArIII7138', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=7322.19, compname='OII', minwav=7260, maxwav=7375, linename='OII7320', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
+    _line_row(lam=7332.97, compname='OII', minwav=7270, maxwav=7385, linename='OII7330', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
+    _line_row(lam=7753.19, compname='ArIII', minwav=7680, maxwav=7820, linename='ArIII7751', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
     # Paschen series (vacuum wavelengths, narrow by default)
-    {'lambda': 8752.87, 'compname': 'Paschen', 'minwav': 8690, 'maxwav': 8815, 'linename': 'Pa12', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 8865.22, 'compname': 'Paschen', 'minwav': 8800, 'maxwav': 8930, 'linename': 'Pa11', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 9017.38, 'compname': 'Paschen', 'minwav': 8950, 'maxwav': 9085, 'linename': 'Pa10', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 9231.55, 'compname': 'Paschen', 'minwav': 9160, 'maxwav': 9300, 'linename': 'Pa9',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 9548.59, 'compname': 'Paschen', 'minwav': 9480, 'maxwav': 9620, 'linename': 'Pae',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 10052.13,'compname': 'Paschen', 'minwav': 9980, 'maxwav': 10130,'linename': 'Pad',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 10941.09,'compname': 'Paschen', 'minwav': 10850,'maxwav': 11040,'linename': 'Pag',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 12821.67,'compname': 'Paschen', 'minwav': 12700,'maxwav': 12950,'linename': 'Pab',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 18756.13,'compname': 'Paschen', 'minwav': 18600,'maxwav': 18920,'linename': 'Paa',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0, 'fvalue': 0.001, 'vary': 1},
+    _line_row(lam=8752.87, compname='Paschen', minwav=8690, maxwav=8815, linename='Pa12', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=8865.22, compname='Paschen', minwav=8800, maxwav=8930, linename='Pa11', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=9017.38, compname='Paschen', minwav=8950, maxwav=9085, linename='Pa10', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=9231.55, compname='Paschen', minwav=9160, maxwav=9300, linename='Pa9', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=9548.59, compname='Paschen', minwav=9480, maxwav=9620, linename='Pae', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=10052.13, compname='Paschen', minwav=9980, maxwav=10130, linename='Pad', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=10941.09, compname='Paschen', minwav=10850, maxwav=11040, linename='Pag', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=12821.67, compname='Paschen', minwav=12700, maxwav=12950, linename='Pab', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=18756.13, compname='Paschen', minwav=18600, maxwav=18920, linename='Paa', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
     # Strong red/NIR forbidden lines
-    {'lambda': 9071.09, 'compname': 'SIII', 'minwav': 9000, 'maxwav': 9135, 'linename': 'SIII9069', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 23, 'fvalue': 0.001, 'vary': 1},
-    {'lambda': 9533.20, 'compname': 'SIII', 'minwav': 9460, 'maxwav': 9605, 'linename': 'SIII9531', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 11, 'windex': 11, 'findex': 23, 'fvalue': 0.0025, 'vary': 1},
+    _line_row(lam=9071.09, compname='SIII', minwav=9000, maxwav=9135, linename='SIII9069', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=0.001),
+    _line_row(lam=9533.20, compname='SIII', minwav=9460, maxwav=9605, linename='SIII9531', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=0.0025),
 ]
 
 # Optional high-ionization/coronal narrow-line set.
 DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
-    {'lambda': 3346.79, 'compname': 'NeV',   'minwav': 3300, 'maxwav': 3385, 'linename': 'NeV3346',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 12, 'windex': 12, 'findex': 41, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 3426.84, 'compname': 'NeV',   'minwav': 3380, 'maxwav': 3480, 'linename': 'NeV3426_hi', 'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.01,  'vindex': 12, 'windex': 12, 'findex': 41, 'fvalue': 1.0,  'vary': 1},
-    {'lambda': 5721.0,  'compname': 'FeVII', 'minwav': 5660, 'maxwav': 5785, 'linename': 'FeVII5721',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6087.0,  'compname': 'FeVII', 'minwav': 6030, 'maxwav': 6145, 'linename': 'FeVII6087',  'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 6374.0,  'compname': 'FeX',   'minwav': 6320, 'maxwav': 6430, 'linename': 'FeX6374',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
-    {'lambda': 7065.0,  'compname': 'HeI',   'minwav': 7000, 'maxwav': 7125, 'linename': 'HeI7065',    'ngauss': 1, 'inisca': 0.0, 'minsca': 0.0, 'maxsca': 1e10, 'inisig': 1e-3, 'minsig': 2.3e-4, 'maxsig': 0.00169, 'voff': 0.008, 'vindex': 12, 'windex': 12, 'findex': 0,  'fvalue': 0.001, 'vary': 1},
+    _line_row(lam=3346.79, compname='NeV', minwav=3300, maxwav=3385, linename='NeV3346', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=1.0),
+    _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426_hi', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=1.0),
+    _line_row(lam=5721.0, compname='FeVII', minwav=5660, maxwav=5785, linename='FeVII5721', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=6087.0, compname='FeVII', minwav=6030, maxwav=6145, linename='FeVII6087', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=6374.0, compname='FeX', minwav=6320, maxwav=6430, linename='FeX6374', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=7065.0, compname='HeI', minwav=7000, maxwav=7125, linename='HeI7065', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
 ]
 
 
