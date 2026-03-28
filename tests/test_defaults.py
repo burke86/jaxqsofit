@@ -14,6 +14,7 @@ def test_build_default_prior_config_has_expected_keys():
         'PL_pivot',
         'reddening_ebv',
         'log_frac_host',
+        'host_luminosity_penalty',
         'tau_host',
         'raw_w',
         'line_dmu_scale_mult',
@@ -54,3 +55,15 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     assert cfg["Fe_uv_shift"]["dist"] == "Normal"
     assert cfg["frac_jitter"]["dist"] == "HalfNormal"
     assert cfg["add_jitter"]["dist"] == "HalfNormal"
+
+
+def test_build_default_prior_config_includes_host_luminosity_penalty_defaults():
+    flux = np.array([1.0, 2.0, 3.0], dtype=float)
+    cfg = build_default_prior_config(flux)
+
+    penalty = cfg["host_luminosity_penalty"]
+    assert penalty["enabled"] is True
+    assert penalty["wave"] == 2500.0
+    assert penalty["log_lambda_Llambda_mid"] == 45.2
+    assert penalty["width_dex"] == 0.3
+    assert penalty["max_logit_shift"] == 4.0

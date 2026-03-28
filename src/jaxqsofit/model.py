@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import warnings
 from dataclasses import dataclass
+from functools import lru_cache
 from typing import Any, Dict, List, Sequence, Tuple
 
 import numpy as np
 import extinction
+from astropy.cosmology import FlatLambdaCDM
 
 import jax
 import jax.numpy as jnp
@@ -25,6 +27,7 @@ warnings.filterwarnings("ignore")
 
 C_KMS = 299792.458
 _SFD_QUERY_CACHE: Dict[str, Any] = {}
+_LUMINOSITY_COSMO = FlatLambdaCDM(H0=70.0, Om0=0.3)
 
 
 def unred(wave, flux, ebv, R_V=3.1):
@@ -63,6 +66,31 @@ def _resolve_pl_pivot(wave, prior_config):
         if pivot is not None:
             return jnp.maximum(jnp.asarray(float(pivot)), 1e-8)
     return _spectrum_center_pivot(wave)
+
+
+@lru_cache(maxsize=256)
+def _luminosity_distance_cm(z: float) -> float:
+    """Return luminosity distance in cm for a fixed flat LCDM cosmology."""
+    return float(_LUMINOSITY_COSMO.luminosity_distance(float(z)).to("cm").value)
+
+
+def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
+    """Return log10(lambda Llambda) using rest-frame f_lambda in 1e-17 cgs units."""
+    wave_rest = jnp.maximum(jnp.asarray(wave_rest), 1e-8)
+    flam_rest_cgs = 1e-17 * jnp.asarray(flam_rest)
+    d_l_cm = jnp.asarray(_luminosity_distance_cm(float(z)))
+    lambda_llambda = 4.0 * jnp.pi * d_l_cm**2 * wave_rest * flam_rest_cgs
+    return jnp.log10(jnp.clip(lambda_llambda, 1e-300, None))
+
+
+def _host_luminosity_penalty_terms(log_frac_host, log_lambda_llambda_agn, penalty_cfg):
+    """Compute deterministic logistic gating and a soft high-host penalty."""
+    log_lambda_mid = float(penalty_cfg.get("log_lambda_Llambda_mid", 46.0))
+    width_dex = max(float(penalty_cfg.get("width_dex", 0.3)), 1e-6)
+    max_logit_shift = float(penalty_cfg.get("max_logit_shift", 4.0))
+    lum_weight = jax.nn.sigmoid((log_lambda_llambda_agn - log_lambda_mid) / width_dex)
+    penalty_value = -lum_weight * jax.nn.softplus(jnp.asarray(log_frac_host) + max_logit_shift)
+    return lum_weight, penalty_value
 
 
 def _powerlaw_jax(wave, pl_norm, pl_slope, pivot):
@@ -721,8 +749,10 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_uv_flux = _np_to_jnp(fe_uv_flux)
     fe_op_wave = _np_to_jnp(fe_op_wave)
     fe_op_flux = _np_to_jnp(fe_op_flux)
-    z_qso = jnp.asarray(float(z_qso))
+    z_qso_float = float(z_qso)
+    z_qso = jnp.asarray(z_qso_float)
     prior_config = {} if prior_config is None else prior_config
+    host_luminosity_penalty_cfg = prior_config.get("host_luminosity_penalty", {})
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
     _cfg_norm = lambda key: _cfg_norm_from_prior_config(prior_config, key)
@@ -851,6 +881,38 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         custom_models = {name: model * poly_model for name, model in custom_models.items()}
         custom_total_model = custom_total_model * poly_model
     agn_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total_model
+
+    host_penalty_wave = float(host_luminosity_penalty_cfg.get("wave", 2500.0))
+    if fit_pl:
+        pl_flux_penalty = _powerlaw_jax(
+            jnp.asarray(host_penalty_wave),
+            pl_norm=pl_norm,
+            pl_slope=pl_slope,
+            pivot=pl_pivot,
+        )
+        if fit_reddening:
+            pl_flux_penalty = pl_flux_penalty * _smc_like_reddening_jax(
+                jnp.asarray(host_penalty_wave),
+                reddening_ebv,
+                uv_ref=float(prior_config.get('reddening_uv_ref', 2500.0)),
+                alpha=float(prior_config.get('reddening_alpha', 1.2)),
+            )
+        log_lambda_llambda_2500_agn = _rest_log_lambda_llambda_from_flam(
+            host_penalty_wave,
+            pl_flux_penalty,
+            z_qso_float,
+        )
+    else:
+        log_lambda_llambda_2500_agn = jnp.asarray(jnp.nan)
+    host_luminosity_penalty_weight = jnp.asarray(0.0)
+    host_luminosity_penalty_value = jnp.asarray(0.0)
+    if decompose_host and fit_pl and bool(host_luminosity_penalty_cfg.get("enabled", False)):
+        host_luminosity_penalty_weight, host_luminosity_penalty_value = _host_luminosity_penalty_terms(
+            log_frac_host,
+            log_lambda_llambda_2500_agn,
+            host_luminosity_penalty_cfg,
+        )
+        numpyro.factor("host_luminosity_penalty", host_luminosity_penalty_value)
 
     ntemp = fsps_grid.templates.shape[1]
     if decompose_host:
@@ -1030,6 +1092,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('line_model_psf', line_model_psf)
     numpyro.deterministic('psf_model', psf_model)
     numpyro.deterministic('frac_host', frac_host)
+    numpyro.deterministic('log_lambda_Llambda_2500_agn', log_lambda_llambda_2500_agn)
+    numpyro.deterministic('host_luminosity_penalty_weight', host_luminosity_penalty_weight)
+    numpyro.deterministic('host_luminosity_penalty_value', host_luminosity_penalty_value)
     numpyro.deterministic('fsps_weights', fsps_weights)
     numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 

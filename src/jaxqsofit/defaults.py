@@ -290,6 +290,13 @@ def build_default_prior_config(
         "reddening_uv_ref": 2500.0,
         "reddening_alpha": 1.2,
         "log_frac_host": {"dist": "StudentT", "loc": 0.0, "scale": 2.0, "df": 3.0},
+        "host_luminosity_penalty": {
+            "enabled": True,
+            "wave": 2500.0,
+            "log_lambda_Llambda_mid": 45.2,
+            "width_dex": 0.3,
+            "max_logit_shift": 4.0,
+        },
         "tau_host": {"dist": "HalfNormal", "scale": 1.0},
         "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
         "gal_v_kms": {"dist": "Normal", "loc": 0.0, "scale": 120.0},

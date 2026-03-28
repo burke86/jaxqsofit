@@ -1806,6 +1806,24 @@ class QSOFit:
         self.eta_psf = float(np.nanmedian(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
         self.eta_psf_err = float(np.nanstd(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
         self.scale_psf = 10.0 ** (-0.4 * self.delta_m_psf) if np.isfinite(self.delta_m_psf) else np.nan
+        if 'log_lambda_Llambda_2500_agn' in pred_out:
+            log_l2500_draws = np.asarray(pred_out['log_lambda_Llambda_2500_agn'], dtype=float)
+        else:
+            log_l2500_draws = np.array([np.nan], dtype=float)
+        if 'host_luminosity_penalty_weight' in pred_out:
+            penalty_weight_draws = np.asarray(pred_out['host_luminosity_penalty_weight'], dtype=float)
+        else:
+            penalty_weight_draws = np.array([np.nan], dtype=float)
+        if 'host_luminosity_penalty_value' in pred_out:
+            penalty_value_draws = np.asarray(pred_out['host_luminosity_penalty_value'], dtype=float)
+        else:
+            penalty_value_draws = np.array([np.nan], dtype=float)
+        self.log_lambda_Llambda_2500_agn = float(np.nanmedian(log_l2500_draws)) if log_l2500_draws.size > 0 else np.nan
+        self.log_lambda_Llambda_2500_agn_err = float(np.nanstd(log_l2500_draws)) if log_l2500_draws.size > 0 else np.nan
+        self.host_luminosity_penalty_weight = float(np.nanmedian(penalty_weight_draws)) if penalty_weight_draws.size > 0 else np.nan
+        self.host_luminosity_penalty_weight_err = float(np.nanstd(penalty_weight_draws)) if penalty_weight_draws.size > 0 else np.nan
+        self.host_luminosity_penalty_value = float(np.nanmedian(penalty_value_draws)) if penalty_value_draws.size > 0 else np.nan
+        self.host_luminosity_penalty_value_err = float(np.nanstd(penalty_value_draws)) if penalty_value_draws.size > 0 else np.nan
 
         def _band(x):
             """Compute 16th/84th percentile uncertainty band across samples."""
@@ -1943,6 +1961,12 @@ class QSOFit:
         conti_entries += [
             ('fsps_age_weighted_gyr', age_weighted, 'float'),
             ('fsps_logzsol_weighted', metal_weighted, 'float'),
+            ('log_lambda_Llambda_2500_agn', self.log_lambda_Llambda_2500_agn, 'float'),
+            ('log_lambda_Llambda_2500_agn_err', self.log_lambda_Llambda_2500_agn_err, 'float'),
+            ('host_luminosity_penalty_weight', self.host_luminosity_penalty_weight, 'float'),
+            ('host_luminosity_penalty_weight_err', self.host_luminosity_penalty_weight_err, 'float'),
+            ('host_luminosity_penalty_value', self.host_luminosity_penalty_value, 'float'),
+            ('host_luminosity_penalty_value_err', self.host_luminosity_penalty_value_err, 'float'),
             ('delta_m_psf', self.delta_m_psf, 'float'),
             ('delta_m_psf_err', self.delta_m_psf_err, 'float'),
             ('eta_psf', self.eta_psf, 'float'),
