@@ -980,7 +980,8 @@ class QSOFit:
             Enable/disable Balmer continuum.
         fit_bal : bool, optional
             If True, append built-in BAL trough custom components for
-            N V, Si IV, C IV, C III], and Mg II.
+            N V, Si IV, C IV, C III], FeLoBAL troughs near 2000/2200 A,
+            and Mg II.
         fit_poly : bool, optional
             Enable/disable multiplicative polynomial tilt.
         fit_poly_order : int, optional

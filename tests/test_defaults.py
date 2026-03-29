@@ -69,7 +69,7 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     comps = build_default_bal_components(np.array([1.0, 2.0, 3.0], dtype=float))
 
     names = [comp.name for comp in comps]
-    assert names == ["bal_nv", "bal_siiv", "bal_civ", "bal_ciii", "bal_mgii"]
+    assert names == ["bal_nv", "bal_siiv", "bal_civ", "bal_ciii", "bal_fe1", "bal_fe2", "bal_mgii"]
     depth_cfg = comps[2].parameter_priors["depth"]
     assert depth_cfg["dist"] == "HalfNormal"
     assert np.isclose(depth_cfg["scale"], 8.0 * 0.05 * 2.0)

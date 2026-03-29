@@ -256,7 +256,7 @@ def test_fit_bal_appends_builtin_bal_components(monkeypatch):
 
     assert called['optax'] == 1
     names = [comp.name for comp in called['kwargs']['custom_components']]
-    assert names == ["bal_nv", "bal_siiv", "bal_civ", "bal_ciii", "bal_mgii"]
+    assert names == ["bal_nv", "bal_siiv", "bal_civ", "bal_ciii", "bal_fe1", "bal_fe2", "bal_mgii"]
 
 
 def test_fit_dispatch_optax_nuts(monkeypatch):
