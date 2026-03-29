@@ -83,22 +83,45 @@ def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
     return jnp.log10(jnp.clip(lambda_llambda, 1e-300, None))
 
 
-def _host_luminosity_penalty_terms(host_fraction_value, log_lambda_llambda_agn, penalty_cfg):
-    """Compute deterministic logistic gating and a soft high-host penalty."""
-    log_lambda_mid = float(penalty_cfg.get("log_lambda_Llambda_mid", 46.0))
-    width_dex = max(float(penalty_cfg.get("width_dex", 0.3)), 1e-6)
-    max_logit_shift = float(penalty_cfg.get("max_logit_shift", 100.0))
-    host_fraction_value = jnp.clip(jnp.asarray(host_fraction_value), 1e-8, 1.0 - 1e-8)
-    host_fraction_logit = jnp.log(host_fraction_value) - jnp.log1p(-host_fraction_value)
-    lum_weight = jax.nn.sigmoid((log_lambda_llambda_agn - log_lambda_mid) / width_dex)
-    penalty_value = -lum_weight * jax.nn.softplus(host_fraction_logit + max_logit_shift)
-    return lum_weight, penalty_value
-
-
 def _powerlaw_jax(wave, pl_norm, pl_slope, pivot):
     """Evaluate a power-law continuum at input wavelengths."""
     x = jnp.clip(wave / pivot, 1e-8, None)
     return pl_norm * x ** pl_slope
+
+
+def _host_redshift_prior_params(prior_config, z_qso):
+    """Return smooth redshift-dependent host prior weight, loc shift, scale multiplier, and df."""
+    cfg = prior_config.get("host_redshift_prior", {}) if isinstance(prior_config, dict) else {}
+    if not bool(cfg.get("enabled", True)):
+        return jnp.asarray(0.0), jnp.asarray(0.0), jnp.asarray(1.0), None
+    z_mid = jnp.asarray(float(cfg.get("z_mid", 1.0)))
+    width = jnp.maximum(jnp.asarray(float(cfg.get("width", 0.2))), 1e-6)
+    lowz_loc_offset = jnp.asarray(float(cfg.get("lowz_loc_offset", 0.0)))
+    highz_loc_offset = jnp.asarray(float(cfg.get("highz_loc_offset", -8.0)))
+    lowz_scale_mult = jnp.maximum(jnp.asarray(float(cfg.get("lowz_scale_mult", 1.0))), 1e-6)
+    highz_scale_mult = jnp.maximum(jnp.asarray(float(cfg.get("highz_scale_mult", 0.05))), 1e-6)
+    lowz_df = cfg.get("lowz_df", None)
+    highz_df = cfg.get("highz_df", None)
+    z_qso = jnp.asarray(z_qso)
+    weight = jax.nn.sigmoid((z_qso - z_mid) / width)
+    loc_offset = (1.0 - weight) * lowz_loc_offset + weight * highz_loc_offset
+    scale_mult = (1.0 - weight) * lowz_scale_mult + weight * highz_scale_mult
+    if lowz_df is None or highz_df is None:
+        df_eff = None
+    else:
+        df_eff = (1.0 - weight) * jnp.asarray(float(lowz_df)) + weight * jnp.asarray(float(highz_df))
+    return weight, loc_offset, scale_mult, df_eff
+
+
+def negative_gaussian_bal_component(wave, params, metadata):
+    """Additive negative BAL trough with optional super-Gaussian boxiness."""
+    center = params["center"]
+    sigma = jnp.maximum(params["sigma"], 1e-3)
+    depth = jnp.maximum(params["depth"], 0.0)
+    # ``shape_power=2`` reproduces the legacy Gaussian profile exactly.
+    shape_power = jnp.maximum(params.get("shape_power", 2.0), 2.0)
+    x = (wave - center) / sigma
+    return -depth * jnp.exp(-0.5 * jnp.abs(x) ** shape_power)
 
 
 def _smc_like_reddening_jax(wave, ebv, uv_ref=2500.0, alpha=1.2):
@@ -754,7 +777,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     z_qso_float = float(z_qso)
     z_qso = jnp.asarray(z_qso_float)
     prior_config = {} if prior_config is None else prior_config
-    host_luminosity_penalty_cfg = prior_config.get("host_luminosity_penalty", {})
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
     _cfg_norm = lambda key: _cfg_norm_from_prior_config(prior_config, key)
@@ -773,18 +795,30 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
 
     # Continuum amplitude + host fraction parameterization
     cont_norm = numpyro.sample('cont_norm', dist.LogNormal(*_cfg_norm('log_cont_norm')))
+    if isinstance(prior_config.get('log_frac_host', None), dict) and ('df' in prior_config['log_frac_host']):
+        log_frac_host_df = float(prior_config['log_frac_host']['df'])
+    else:
+        log_frac_host_df = float(prior_config.get('log_frac_host_df', 3.0))
     if decompose_host:
         log_frac_host_loc, log_frac_host_scale = _cfg_norm('log_frac_host')
-        if isinstance(prior_config.get('log_frac_host', None), dict) and ('df' in prior_config['log_frac_host']):
-            log_frac_host_df = float(prior_config['log_frac_host']['df'])
-        else:
-            log_frac_host_df = float(prior_config.get('log_frac_host_df', 3.0))
+        host_redshift_prior_weight, host_redshift_prior_loc_offset, host_redshift_prior_scale_mult, host_redshift_prior_df_eff = _host_redshift_prior_params(prior_config, z_qso)
+        log_frac_host_loc_eff = log_frac_host_loc + host_redshift_prior_loc_offset
+        log_frac_host_scale_eff = jnp.maximum(log_frac_host_scale * host_redshift_prior_scale_mult, 1e-6)
+        log_frac_host_df_eff = jnp.asarray(log_frac_host_df) if host_redshift_prior_df_eff is None else jnp.maximum(host_redshift_prior_df_eff, 1e-6)
         log_frac_host = numpyro.sample(
             'log_frac_host',
-            dist.StudentT(df=log_frac_host_df, loc=log_frac_host_loc, scale=log_frac_host_scale),
+            dist.StudentT(df=log_frac_host_df_eff, loc=log_frac_host_loc_eff, scale=log_frac_host_scale_eff),
         )
+        numpyro.deterministic('host_redshift_prior_weight', host_redshift_prior_weight)
+        numpyro.deterministic('host_redshift_prior_loc_eff', log_frac_host_loc_eff)
+        numpyro.deterministic('host_redshift_prior_scale_eff', log_frac_host_scale_eff)
+        numpyro.deterministic('host_redshift_prior_df_eff', log_frac_host_df_eff)
         frac_host = jax.nn.sigmoid(log_frac_host)
     else:
+        numpyro.deterministic('host_redshift_prior_weight', jnp.asarray(0.0))
+        numpyro.deterministic('host_redshift_prior_loc_eff', jnp.asarray(0.0))
+        numpyro.deterministic('host_redshift_prior_scale_eff', jnp.asarray(1.0))
+        numpyro.deterministic('host_redshift_prior_df_eff', jnp.asarray(float(log_frac_host_df)))
         frac_host = jnp.asarray(0.0)
     host_amp = cont_norm * frac_host
     pl_pivot = _resolve_pl_pivot(wave, prior_config)
@@ -884,24 +918,23 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         custom_total_model = custom_total_model * poly_model
     agn_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total_model
 
-    host_penalty_wave = float(host_luminosity_penalty_cfg.get("wave", 2500.0))
     if fit_pl:
-        pl_flux_penalty = _powerlaw_jax(
-            jnp.asarray(host_penalty_wave),
+        pl_flux_2500 = _powerlaw_jax(
+            jnp.asarray(2500.0),
             pl_norm=pl_norm,
             pl_slope=pl_slope,
             pivot=pl_pivot,
         )
         if fit_reddening:
-            pl_flux_penalty = pl_flux_penalty * _smc_like_reddening_jax(
-                jnp.asarray(host_penalty_wave),
+            pl_flux_2500 = pl_flux_2500 * _smc_like_reddening_jax(
+                jnp.asarray(2500.0),
                 reddening_ebv,
                 uv_ref=float(prior_config.get('reddening_uv_ref', 2500.0)),
                 alpha=float(prior_config.get('reddening_alpha', 1.2)),
             )
         log_lambda_llambda_2500_agn = _rest_log_lambda_llambda_from_flam(
-            host_penalty_wave,
-            pl_flux_penalty,
+            2500.0,
+            pl_flux_2500,
             z_qso_float,
         )
     else:
@@ -1016,29 +1049,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
     fiber_model = model
 
-    host_luminosity_penalty_target = jnp.asarray(0.0)
-    host_luminosity_penalty_weight = jnp.asarray(0.0)
-    host_luminosity_penalty_value = jnp.asarray(0.0)
-    if decompose_host and fit_pl and bool(host_luminosity_penalty_cfg.get("enabled", False)):
-        penalty_target = str(host_luminosity_penalty_cfg.get("target", "f_host_center")).lower()
-        if penalty_target == "frac_host":
-            host_luminosity_penalty_target = jnp.clip(jnp.asarray(frac_host), 0.0, 1.0)
-        else:
-            center_wave = _spectrum_center_pivot(wave)
-            gal_center = jnp.interp(center_wave, wave, gal_model, left=jnp.nan, right=jnp.nan)
-            cont_center = jnp.interp(center_wave, wave, continuum_model, left=jnp.nan, right=jnp.nan)
-            host_luminosity_penalty_target = jnp.clip(
-                gal_center / jnp.maximum(cont_center, 1e-30),
-                0.0,
-                1.0,
-            )
-        host_luminosity_penalty_weight, host_luminosity_penalty_value = _host_luminosity_penalty_terms(
-            host_luminosity_penalty_target,
-            log_lambda_llambda_2500_agn,
-            host_luminosity_penalty_cfg,
-        )
-        numpyro.factor("host_luminosity_penalty", host_luminosity_penalty_value)
-
     delta_m_psf = jnp.asarray(0.0)
     eta_psf = jnp.asarray(1.0)
     scale_psf = jnp.asarray(1.0)
@@ -1108,9 +1118,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('psf_model', psf_model)
     numpyro.deterministic('frac_host', frac_host)
     numpyro.deterministic('log_lambda_Llambda_2500_agn', log_lambda_llambda_2500_agn)
-    numpyro.deterministic('host_luminosity_penalty_target', host_luminosity_penalty_target)
-    numpyro.deterministic('host_luminosity_penalty_weight', host_luminosity_penalty_weight)
-    numpyro.deterministic('host_luminosity_penalty_value', host_luminosity_penalty_value)
     numpyro.deterministic('fsps_weights', fsps_weights)
     numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 

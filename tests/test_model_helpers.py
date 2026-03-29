@@ -1,12 +1,13 @@
 import numpy as np
 import jax
+import jax.numpy as jnp
+import numpyro.distributions as dist
 from numpyro.handlers import seed, substitute, trace
-from numpyro.infer.util import log_density
 
 from jaxqsofit.defaults import build_default_prior_config
 from jaxqsofit.model import (
+    _host_redshift_prior_params,
     _extract_line_table_from_prior_config,
-    _host_luminosity_penalty_terms,
     build_tied_line_meta_from_linelist,
     qso_fsps_joint_model,
 )
@@ -75,36 +76,7 @@ def test_build_tied_line_meta_from_linelist_minimal():
     assert np.all(np.isfinite(meta['line_lambda']))
 
 
-def test_host_luminosity_penalty_terms_transition_with_luminosity():
-    cfg = {
-        "log_lambda_Llambda_mid": 45.0,
-        "width_dex": 0.3,
-        "max_logit_shift": 100.0,
-    }
-    weight_low, penalty_low = _host_luminosity_penalty_terms(0.5, 44.2, cfg)
-    weight_mid, penalty_mid = _host_luminosity_penalty_terms(0.5, 45.0, cfg)
-    weight_high, penalty_high = _host_luminosity_penalty_terms(0.5, 46.0, cfg)
-
-    assert float(weight_low) < 0.1
-    assert np.isclose(float(weight_mid), 0.5, atol=1e-6)
-    assert float(weight_high) > 0.9
-    assert float(penalty_high) < float(penalty_mid) < float(penalty_low) <= 0.0
-
-
-def test_host_luminosity_penalty_terms_increase_with_host_fraction():
-    cfg = {
-        "log_lambda_Llambda_mid": 45.0,
-        "width_dex": 0.3,
-        "max_logit_shift": 100.0,
-    }
-    weight_low, penalty_low = _host_luminosity_penalty_terms(0.01, 46.0, cfg)
-    weight_high, penalty_high = _host_luminosity_penalty_terms(0.5, 46.0, cfg)
-
-    assert np.isclose(float(weight_low), float(weight_high))
-    assert float(penalty_high) < float(penalty_low) < 0.0
-
-
-def test_qso_fsps_joint_model_host_penalty_enabled_by_default():
+def test_qso_fsps_joint_model_reports_log_lambda_llambda_2500_agn():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -149,32 +121,77 @@ def test_qso_fsps_joint_model_host_penalty_enabled_by_default():
     )
 
     assert np.isfinite(float(tr["log_lambda_Llambda_2500_agn"]["value"]))
-    assert np.isfinite(float(tr["host_luminosity_penalty_target"]["value"]))
-    assert float(tr["host_luminosity_penalty_weight"]["value"]) > 0.0
-    assert float(tr["host_luminosity_penalty_value"]["value"]) < 0.0
 
 
-def test_qso_fsps_joint_model_host_penalty_increases_at_high_luminosity():
+def test_host_redshift_prior_params_shift_negative_at_high_z():
+    cfg = {
+        "host_redshift_prior": {
+            "enabled": True,
+            "z_mid": 1.0,
+            "width": 0.2,
+            "lowz_loc_offset": 0.0,
+            "highz_loc_offset": -8.0,
+            "lowz_scale_mult": 1.0,
+            "highz_scale_mult": 0.05,
+            "lowz_df": 3.0,
+            "highz_df": 20.0,
+        }
+    }
+    w_low, offset_low, scale_low, df_low = _host_redshift_prior_params(cfg, 0.2)
+    w_mid, offset_mid, scale_mid, df_mid = _host_redshift_prior_params(cfg, 1.0)
+    w_high, offset_high, scale_high, df_high = _host_redshift_prior_params(cfg, 2.0)
+
+    assert float(w_low) < 0.1
+    assert np.isclose(float(offset_low), 0.0, atol=0.15)
+    assert np.isclose(float(scale_low), 1.0, atol=0.1)
+    assert np.isclose(float(df_low), 3.0, atol=1.0)
+    assert np.isclose(float(w_mid), 0.5, atol=1e-6)
+    assert np.isclose(float(offset_mid), -4.0, atol=1e-6)
+    assert np.isclose(float(scale_mid), 0.525, atol=1e-6)
+    assert np.isclose(float(df_mid), 11.5, atol=1e-6)
+    assert float(w_high) > 0.99
+    assert np.isclose(float(offset_high), -7.95, atol=0.05)
+    assert np.isclose(float(scale_high), 0.056, atol=0.02)
+    assert np.isclose(float(df_high), 19.9, atol=0.2)
+
+
+def test_host_redshift_prior_params_disable_restores_zero_offset():
+    w, offset, scale_mult, df_eff = _host_redshift_prior_params({"host_redshift_prior": {"enabled": False}}, 2.0)
+    assert float(w) == 0.0
+    assert float(offset) == 0.0
+    assert float(scale_mult) == 1.0
+    assert df_eff is None
+
+
+def test_host_redshift_prior_penalizes_same_host_more_at_high_z():
+    cfg = build_default_prior_config(np.array([1.0, 2.0, 3.0], dtype=float))
+    cfg["host_redshift_prior"]["enabled"] = True
+    base = cfg["log_frac_host"]
+    _, offset_low, scale_low, df_low = _host_redshift_prior_params(cfg, 0.2)
+    _, offset_high, scale_high, df_high = _host_redshift_prior_params(cfg, 2.0)
+
+    x = jnp.asarray(1.5)
+    logp_low = dist.StudentT(df=float(df_low), loc=float(base["loc"] + offset_low), scale=float(base["scale"] * scale_low)).log_prob(x)
+    logp_high = dist.StudentT(df=float(df_high), loc=float(base["loc"] + offset_high), scale=float(base["scale"] * scale_high)).log_prob(x)
+
+    assert float(logp_high) < float(logp_low)
+
+
+def test_qso_fsps_joint_model_reports_host_redshift_prior_diagnostics():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
     cfg = build_default_prior_config(flux)
-    cfg["host_luminosity_penalty"] = {
-        "enabled": True,
-        "wave": 2500.0,
-        "target": "f_host_center",
-        "log_lambda_Llambda_mid": 45.0,
-        "width_dex": 0.3,
-        "max_logit_shift": 100.0,
-    }
+    cfg["host_redshift_prior"]["enabled"] = True
 
     class _Grid:
         templates = np.zeros((wave.size, 1), dtype=float)
         template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
 
-    base_params = {
+    params = {
         "cont_norm": np.array(1.0),
-        "log_frac_host": np.array(1.0),
+        "log_frac_host": np.array(-1.0),
+        "PL_norm": np.array(5.0e6),
         "PL_slope": np.array(0.0),
         "tau_host": np.array(1.0),
         "fsps_weights_raw": np.array([0.0]),
@@ -183,40 +200,7 @@ def test_qso_fsps_joint_model_host_penalty_increases_at_high_luminosity():
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
-
-    params = dict(base_params, PL_norm=np.array(5.0e3))
-
-    def _logp(z_qso):
-        lp, _ = log_density(
-            qso_fsps_joint_model,
-            (
-                wave,
-                flux,
-                err,
-                {},
-                {"n_lines": 0},
-                _Grid(),
-                np.array([2000.0, 6000.0]),
-                np.zeros(2),
-                np.array([2000.0, 6000.0]),
-                np.zeros(2),
-            ),
-            {
-                "use_lines": False,
-                "prior_config": cfg,
-                "decompose_host": True,
-                "fit_pl": True,
-                "fit_fe": False,
-                "fit_bc": False,
-                "fit_poly": False,
-                "fit_reddening": False,
-                "z_qso": z_qso,
-            },
-            params,
-        )
-        return float(lp)
-
-    tr_low = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,
@@ -235,32 +219,14 @@ def test_qso_fsps_joint_model_host_penalty_increases_at_high_luminosity():
         fit_bc=False,
         fit_poly=False,
         fit_reddening=False,
-        z_qso=0.01,
-    )
-    tr_high = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
-        wave=wave,
-        flux=flux,
-        err=err,
-        conti_priors={},
-        tied_line_meta={"n_lines": 0},
-        fsps_grid=_Grid(),
-        fe_uv_wave=np.array([2000.0, 6000.0]),
-        fe_uv_flux=np.zeros(2),
-        fe_op_wave=np.array([2000.0, 6000.0]),
-        fe_op_flux=np.zeros(2),
-        use_lines=False,
-        prior_config=cfg,
-        decompose_host=True,
-        fit_pl=True,
-        fit_fe=False,
-        fit_bc=False,
-        fit_poly=False,
-        fit_reddening=False,
-        z_qso=5.0,
+        z_qso=2.0,
     )
 
-    assert float(tr_low["host_luminosity_penalty_weight"]["value"]) < 0.1
-    assert np.isfinite(float(tr_high["log_lambda_Llambda_2500_agn"]["value"]))
-    assert float(tr_high["host_luminosity_penalty_weight"]["value"]) > 0.5
-    assert float(tr_high["host_luminosity_penalty_value"]["value"]) < float(tr_low["host_luminosity_penalty_value"]["value"])
-    assert _logp(5.0) < _logp(0.01)
+    assert "host_redshift_prior_weight" in tr
+    assert "host_redshift_prior_loc_eff" in tr
+    assert "host_redshift_prior_scale_eff" in tr
+    assert "host_redshift_prior_df_eff" in tr
+    assert float(tr["host_redshift_prior_weight"]["value"]) > 0.99
+    assert np.isclose(float(tr["host_redshift_prior_loc_eff"]["value"]), -7.95, atol=0.05)
+    assert np.isclose(float(tr["host_redshift_prior_scale_eff"]["value"]), 0.11, atol=0.05)
+    assert np.isclose(float(tr["host_redshift_prior_df_eff"]["value"]), 19.9, atol=0.2)

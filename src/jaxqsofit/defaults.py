@@ -5,6 +5,9 @@ from typing import Any, Dict, List
 
 import numpy as np
 
+from .custom_components import CustomComponentSpec, make_custom_component
+from .model import negative_gaussian_bal_component
+
 MINSCA_DEFAULT = 0.0
 MAXSCA_DEFAULT = 1e10
 
@@ -112,13 +115,30 @@ DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
     _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # Other optical/UV
+    # CaII3934
     _line_row(lam=3728.48, compname='OII', minwav=3650, maxwav=3800, linename='OII3728', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
     _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=0, windex=0, findex=0, fvalue=0.001),
+    # Mg II complex
     _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
     _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_uv_broad, vindex=99, windex=0, findex=0, fvalue=0.01),
-    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    # CIII complex
+    _line_row(lam=1892.03, compname='CIII', minwav=1700, maxwav=1970, linename='SiIII1892', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
+    _line_row(lam=1857.40, compname='CIII', minwav=1700, maxwav=1970, linename='AlIII1857', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
+    _line_row(lam=1816.98, compname='CIII', minwav=1700, maxwav=1970, linename='SiII1816', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.0002),
+    _line_row(lam=1750.26, compname='CIII', minwav=1700, maxwav=1970, linename='NIII1750', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1718.55, compname='CIII', minwav=1700, maxwav=1900, linename='NIV1718', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    # CIV complex
+    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_br', ngauss=3, inisig=inisig_uv_broad, minsig=0.001, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1663.48, compname='CIV', minwav=1500, maxwav=1700, linename='OIII1663', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
+    _line_row(lam=1663.48, compname='CIV', minwav=1500, maxwav=1700, linename='OIII1663_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
+    # SiIV complex
     _line_row(lam=1402.06, compname='SiIV', minwav=1290, maxwav=1450, linename='SiIV_OIV1', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
+    _line_row(lam=1396.76, compname='SiIV', minwav=1290, maxwav=1450, linename='SiIV_OIV2', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
+    _line_row(lam=1335.30, compname='SiIV', minwav=1290, maxwav=1450, linename='CII1335', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1304.35, compname='SiIV', minwav=1290, maxwav=1450, linename='OI1304', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    # Lya complex
     _line_row(lam=1215.67, compname='Lya', minwav=1150, maxwav=1290, linename='Lya_br', ngauss=3, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_lya, vindex=0, windex=0, findex=0, fvalue=0.05),
     _line_row(lam=1240.14, compname='Lya', minwav=1150, maxwav=1290, linename='NV1240', inisig=inisig_nv, minsig=minsig_nv, maxsig=maxsig_nv, voff=voff_nv, vindex=0, windex=0, findex=0, fvalue=0.002),
 ]
@@ -246,6 +266,65 @@ def _append_unique_by_wavelength(
     return out
 
 
+def build_default_bal_components(flux: np.ndarray) -> tuple[CustomComponentSpec, ...]:
+    """Return built-in BAL custom components with flux-scaled depth priors."""
+    f = np.asarray(flux, dtype=float)
+    finite = np.isfinite(f)
+    fscale = float(np.nanmedian(np.abs(f[finite]))) if np.any(finite) else 1.0
+    if not np.isfinite(fscale) or fscale <= 0:
+        fscale = 1.0
+
+    def _bal_component(
+        name: str,
+        depth_frac: float,
+        center: float,
+        scale: float,
+        low: float,
+        high: float,
+        sigma: float,
+        sigma_scale: float = 0.35,
+    ):
+        return make_custom_component(
+            name=name,
+            parameter_priors={
+                # Keep a zero-centered shrinkage prior, but with a broader scale so
+                # moderate-to-deep troughs are still available when the data support them.
+                "depth": {"dist": "HalfNormal", "scale": max(8.0 * depth_frac * fscale, 1e-6)},
+                "center": {
+                    # Force BAL trough centers to remain on the blue side of the
+                    # corresponding broad emission line.
+                    "dist": "TruncatedNormal",
+                    "loc": float(center),
+                    "scale": float(scale),
+                    "low": float(low),
+                    "high": float(high),
+                },
+                "sigma": {"dist": "LogNormal", "loc": np.log(float(sigma)), "scale": float(sigma_scale)},
+                "shape_power": {
+                    "dist": "TruncatedNormal",
+                    "loc": 2.0,
+                    "scale": 1.5,
+                    "low": 2.0,
+                    "high": 12.0,
+                },
+            },
+            evaluate=negative_gaussian_bal_component,
+        )
+
+    return (
+        _bal_component("bal_nv", depth_frac=0.04, center=1200.0, scale=70.0, low=1120.0, high=1240.0, sigma=22.0),
+        # _bal_component("bal_nv_2", depth_frac=0.025, center=1160.0, scale=90.0, low=1100.0, high=1240.0, sigma=40.0),
+        _bal_component("bal_siiv", depth_frac=0.04, center=1350.0, scale=70.0, low=1280.0, high=1397.0, sigma=22.0),
+        # _bal_component("bal_siiv_2", depth_frac=0.025, center=1320.0, scale=90.0, low=1260.0, high=1397.0, sigma=40.0),
+        _bal_component("bal_civ", depth_frac=0.05, center=1500.0, scale=80.0, low=1400.0, high=1549.0, sigma=24.0),
+        # _bal_component("bal_civ_2", depth_frac=0.03, center=1450.0, scale=100.0, low=1350.0, high=1549.0, sigma=45.0),
+        _bal_component("bal_ciii", depth_frac=0.03, center=1850.0, scale=80.0, low=1750.0, high=1909.0, sigma=30.0),
+        # _bal_component("bal_ciii_2", depth_frac=0.02, center=1800.0, scale=100.0, low=1700.0, high=1909.0, sigma=50.0),
+        _bal_component("bal_mgii", depth_frac=0.03, center=2798.0, scale=120.0, low=2750.0, high=2798.0, sigma=40.0),
+        # _bal_component("bal_mgii_2", depth_frac=0.02, center=2760.0, scale=120.0, low=2700.0, high=2798.0, sigma=55.0),
+    )
+
+
 def build_default_prior_config(
     flux: np.ndarray,
     line_config: Dict[str, Any] | None = None,
@@ -290,13 +369,16 @@ def build_default_prior_config(
         "reddening_uv_ref": 2500.0,
         "reddening_alpha": 1.2,
         "log_frac_host": {"dist": "StudentT", "loc": 0.0, "scale": 2.0, "df": 3.0},
-        "host_luminosity_penalty": {
-            "enabled": True,
-            "wave": 2500.0,
-            "target": "f_host_center",
-            "log_lambda_Llambda_mid": 45.0,
-            "width_dex": 0.3,
-            "max_logit_shift": 100.0,
+        "host_redshift_prior": {
+            "enabled": False,
+            "z_mid": 1.0,
+            "width": 0.2,
+            "lowz_loc_offset": 0.0,
+            "highz_loc_offset": -8.0,
+            "lowz_scale_mult": 1.0,
+            "highz_scale_mult": 0.05,
+            "lowz_df": 3.0,
+            "highz_df": 20.0,
         },
         "tau_host": {"dist": "HalfNormal", "scale": 1.0},
         "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},

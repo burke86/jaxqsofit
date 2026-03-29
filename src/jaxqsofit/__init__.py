@@ -6,7 +6,13 @@ from .custom_components import (
     make_custom_line_component,
     make_template_component,
 )
-from .defaults import DEFAULT_LINE_CONFIG, DEFAULT_LINE_PRIOR_ROWS, build_default_prior_config
+from .model import negative_gaussian_bal_component
+from .defaults import (
+    DEFAULT_LINE_CONFIG,
+    DEFAULT_LINE_PRIOR_ROWS,
+    build_default_bal_components,
+    build_default_prior_config,
+)
 from .mplstyle import style_path, use_style
 
 def load_from_samples(*args, **kwargs):
@@ -23,7 +29,9 @@ __all__ = [
     "make_template_component",
     "DEFAULT_LINE_CONFIG",
     "DEFAULT_LINE_PRIOR_ROWS",
+    "build_default_bal_components",
     "build_default_prior_config",
+    "negative_gaussian_bal_component",
     "style_path",
     "use_style",
 ]

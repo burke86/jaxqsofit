@@ -206,3 +206,51 @@ def test_plot_fig_includes_custom_component_trace():
     labels = [line.get_label() for line in ax.get_lines()]
     assert "smc like reddened pl" in labels
     plt.close(fig)
+
+
+def test_plot_fig_negative_custom_component_sets_negative_ylim():
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.wave_prereduced = lam
+    q.flux = flux
+    q.flux_prereduced = flux
+    q.err = err
+    q.model_total = np.full_like(lam, 1.1)
+    q.host = np.zeros_like(lam)
+    q.f_pl_model = np.zeros_like(lam)
+    q.f_pl_model_intrinsic = np.zeros_like(lam)
+    q.f_fe_mgii_model = np.zeros_like(lam)
+    q.f_fe_balmer_model = np.zeros_like(lam)
+    q.f_bc_model = np.zeros_like(lam)
+    q.f_line_model = np.zeros_like(lam)
+    q.custom_components = {"bal_civ": np.full_like(lam, -0.8)}
+    q.pred_bands = {
+        "total_model": (np.full_like(lam, 1.0), np.full_like(lam, 1.2)),
+        "host": (np.zeros_like(lam), np.zeros_like(lam)),
+        "PL": (np.zeros_like(lam), np.zeros_like(lam)),
+        "FeII": (np.zeros_like(lam), np.zeros_like(lam)),
+        "Balmer_cont": (np.zeros_like(lam), np.zeros_like(lam)),
+        "lines": (np.zeros_like(lam), np.zeros_like(lam)),
+        "bal_civ": (np.full_like(lam, -0.9), np.full_like(lam, -0.7)),
+    }
+    q.scale_psf = 1.0
+    q.save_fig = False
+    q.custom_line_components = {}
+    q.line_component_amp_median = np.array([])
+    q.line_component_mu_median = np.array([])
+    q.line_component_sig_median = np.array([])
+    q.tied_line_meta = {}
+    q.psf_model = np.full_like(lam, np.nan)
+    q.qso_psf = np.full_like(lam, np.nan)
+    q.host_psf = np.full_like(lam, np.nan)
+    q.line_psf = np.full_like(lam, np.nan)
+
+    q.plot_fig(show_plot=False, plot_legend=True, plot_1sigma=True)
+
+    fig = plt.gcf()
+    ax = fig.axes[0]
+    labels = [line.get_label() for line in ax.get_lines()]
+    assert "bal civ" in labels
+    assert ax.get_ylim()[0] < -0.7
+    plt.close(fig)

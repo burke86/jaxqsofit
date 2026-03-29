@@ -233,6 +233,32 @@ def test_fit_dispatch_optax(monkeypatch):
     assert called['optax'] == 1
 
 
+def test_fit_bal_appends_builtin_bal_components(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    called = {'optax': 0, 'kwargs': None}
+
+    def _stub_optax(**kwargs):
+        called['optax'] += 1
+        called['kwargs'] = kwargs
+
+    monkeypatch.setattr(q, 'run_fsps_optax_fit', _stub_optax)
+
+    q.fit(
+        deredden=False,
+        fit_method='optax',
+        plot_fig=False,
+        save_result=False,
+        fit_bal=True,
+        prior_config=build_default_prior_config(flux),
+    )
+
+    assert called['optax'] == 1
+    names = [comp.name for comp in called['kwargs']['custom_components']]
+    assert names == ["bal_nv", "bal_siiv", "bal_civ", "bal_ciii", "bal_mgii"]
+
+
 def test_fit_dispatch_optax_nuts(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)

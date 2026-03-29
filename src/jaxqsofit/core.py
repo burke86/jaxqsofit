@@ -30,7 +30,7 @@ from .custom_components import (
     normalize_custom_components,
     normalize_custom_line_components,
 )
-from .defaults import build_default_prior_config
+from .defaults import build_default_bal_components, build_default_prior_config
 from .model import (
     C_KMS,
     _extract_line_table_from_prior_config,
@@ -921,6 +921,7 @@ class QSOFit:
             fit_pl=True,
             fit_fe=True,
             fit_bc=False,
+            fit_bal=False,
             fit_poly=True,
             fit_reddening=True,
             fit_poly_order=2,
@@ -977,6 +978,9 @@ class QSOFit:
             Enable/disable FeII components.
         fit_bc : bool, optional
             Enable/disable Balmer continuum.
+        fit_bal : bool, optional
+            If True, append built-in BAL trough custom components for
+            N V, Si IV, C IV, C III], and Mg II.
         fit_poly : bool, optional
             Enable/disable multiplicative polynomial tilt.
         fit_poly_order : int, optional
@@ -1041,6 +1045,7 @@ class QSOFit:
         self._fit_fit_pl = bool(fit_pl)
         self._fit_fit_fe = bool(fit_fe)
         self._fit_fit_bc = bool(fit_bc)
+        self._fit_fit_bal = bool(fit_bal)
         self._fit_fit_poly = bool(fit_poly)
         self._fit_fit_reddening = bool(fit_reddening)
         self._fit_fit_poly_order = int(fit_poly_order)
@@ -1051,7 +1056,8 @@ class QSOFit:
         self._fit_prior_config = prior_config
         self._fit_dsps_ssp_fn = str(dsps_ssp_fn)
         self._fit_use_psf_phot = bool(use_psf_phot)
-        self._fit_custom_components = normalize_custom_components(custom_components)
+        requested_custom_components = normalize_custom_components(custom_components)
+        self._fit_custom_components = requested_custom_components
         self._fit_custom_line_components = normalize_custom_line_components(custom_line_components)
 
         self.wave_range = wave_range
@@ -1085,6 +1091,11 @@ class QSOFit:
         self.err = self.err_in[ind_gooderror]
         self.flux = self.flux_in[ind_gooderror]
         self.lam = self.lam_in[ind_gooderror]
+
+        bal_components = build_default_bal_components(self.flux) if bool(fit_bal) else ()
+        self._fit_custom_components = normalize_custom_components(
+            tuple(requested_custom_components) + tuple(bal_components)
+        )
 
         if prior_config_input is None:
             prior_config = build_default_prior_config(self.flux)
@@ -1810,20 +1821,32 @@ class QSOFit:
             log_l2500_draws = np.asarray(pred_out['log_lambda_Llambda_2500_agn'], dtype=float)
         else:
             log_l2500_draws = np.array([np.nan], dtype=float)
-        if 'host_luminosity_penalty_weight' in pred_out:
-            penalty_weight_draws = np.asarray(pred_out['host_luminosity_penalty_weight'], dtype=float)
-        else:
-            penalty_weight_draws = np.array([np.nan], dtype=float)
-        if 'host_luminosity_penalty_value' in pred_out:
-            penalty_value_draws = np.asarray(pred_out['host_luminosity_penalty_value'], dtype=float)
-        else:
-            penalty_value_draws = np.array([np.nan], dtype=float)
         self.log_lambda_Llambda_2500_agn = float(np.nanmedian(log_l2500_draws)) if log_l2500_draws.size > 0 else np.nan
         self.log_lambda_Llambda_2500_agn_err = float(np.nanstd(log_l2500_draws)) if log_l2500_draws.size > 0 else np.nan
-        self.host_luminosity_penalty_weight = float(np.nanmedian(penalty_weight_draws)) if penalty_weight_draws.size > 0 else np.nan
-        self.host_luminosity_penalty_weight_err = float(np.nanstd(penalty_weight_draws)) if penalty_weight_draws.size > 0 else np.nan
-        self.host_luminosity_penalty_value = float(np.nanmedian(penalty_value_draws)) if penalty_value_draws.size > 0 else np.nan
-        self.host_luminosity_penalty_value_err = float(np.nanstd(penalty_value_draws)) if penalty_value_draws.size > 0 else np.nan
+        if 'host_redshift_prior_weight' in pred_out:
+            host_prior_weight_draws = np.asarray(pred_out['host_redshift_prior_weight'], dtype=float)
+        else:
+            host_prior_weight_draws = np.array([np.nan], dtype=float)
+        if 'host_redshift_prior_loc_eff' in pred_out:
+            host_prior_loc_draws = np.asarray(pred_out['host_redshift_prior_loc_eff'], dtype=float)
+        else:
+            host_prior_loc_draws = np.array([np.nan], dtype=float)
+        if 'host_redshift_prior_scale_eff' in pred_out:
+            host_prior_scale_draws = np.asarray(pred_out['host_redshift_prior_scale_eff'], dtype=float)
+        else:
+            host_prior_scale_draws = np.array([np.nan], dtype=float)
+        if 'host_redshift_prior_df_eff' in pred_out:
+            host_prior_df_draws = np.asarray(pred_out['host_redshift_prior_df_eff'], dtype=float)
+        else:
+            host_prior_df_draws = np.array([np.nan], dtype=float)
+        self.host_redshift_prior_weight = float(np.nanmedian(host_prior_weight_draws)) if host_prior_weight_draws.size > 0 else np.nan
+        self.host_redshift_prior_weight_err = float(np.nanstd(host_prior_weight_draws)) if host_prior_weight_draws.size > 0 else np.nan
+        self.host_redshift_prior_loc_eff = float(np.nanmedian(host_prior_loc_draws)) if host_prior_loc_draws.size > 0 else np.nan
+        self.host_redshift_prior_loc_eff_err = float(np.nanstd(host_prior_loc_draws)) if host_prior_loc_draws.size > 0 else np.nan
+        self.host_redshift_prior_scale_eff = float(np.nanmedian(host_prior_scale_draws)) if host_prior_scale_draws.size > 0 else np.nan
+        self.host_redshift_prior_scale_eff_err = float(np.nanstd(host_prior_scale_draws)) if host_prior_scale_draws.size > 0 else np.nan
+        self.host_redshift_prior_df_eff = float(np.nanmedian(host_prior_df_draws)) if host_prior_df_draws.size > 0 else np.nan
+        self.host_redshift_prior_df_eff_err = float(np.nanstd(host_prior_df_draws)) if host_prior_df_draws.size > 0 else np.nan
 
         def _band(x):
             """Compute 16th/84th percentile uncertainty band across samples."""
@@ -1963,10 +1986,14 @@ class QSOFit:
             ('fsps_logzsol_weighted', metal_weighted, 'float'),
             ('log_lambda_Llambda_2500_agn', self.log_lambda_Llambda_2500_agn, 'float'),
             ('log_lambda_Llambda_2500_agn_err', self.log_lambda_Llambda_2500_agn_err, 'float'),
-            ('host_luminosity_penalty_weight', self.host_luminosity_penalty_weight, 'float'),
-            ('host_luminosity_penalty_weight_err', self.host_luminosity_penalty_weight_err, 'float'),
-            ('host_luminosity_penalty_value', self.host_luminosity_penalty_value, 'float'),
-            ('host_luminosity_penalty_value_err', self.host_luminosity_penalty_value_err, 'float'),
+            ('host_redshift_prior_weight', self.host_redshift_prior_weight, 'float'),
+            ('host_redshift_prior_weight_err', self.host_redshift_prior_weight_err, 'float'),
+            ('host_redshift_prior_loc_eff', self.host_redshift_prior_loc_eff, 'float'),
+            ('host_redshift_prior_loc_eff_err', self.host_redshift_prior_loc_eff_err, 'float'),
+            ('host_redshift_prior_scale_eff', self.host_redshift_prior_scale_eff, 'float'),
+            ('host_redshift_prior_scale_eff_err', self.host_redshift_prior_scale_eff_err, 'float'),
+            ('host_redshift_prior_df_eff', self.host_redshift_prior_df_eff, 'float'),
+            ('host_redshift_prior_df_eff_err', self.host_redshift_prior_df_eff_err, 'float'),
             ('delta_m_psf', self.delta_m_psf, 'float'),
             ('delta_m_psf_err', self.delta_m_psf_err, 'float'),
             ('eta_psf', self.eta_psf, 'float'),
@@ -2949,6 +2976,17 @@ class QSOFit:
                 return False
             return float(np.nanmax(np.abs(arr))) >= comp_floor
 
+        def _finite_component_values(*arrays):
+            vals = []
+            for arr in arrays:
+                if arr is None:
+                    continue
+                arr = np.asarray(arr, dtype=float)
+                arr = arr[np.isfinite(arr)]
+                if arr.size > 0:
+                    vals.append(arr)
+            return vals
+
         if plot_1sigma and hasattr(self, 'pred_bands') and not use_psf_space:
             band_colors = {
                 'total_model': 'b',
@@ -3173,17 +3211,25 @@ class QSOFit:
 
         ax.set_xlim(self.wave.min(), self.wave.max())
         if ylims is None:
-            yplot = np.concatenate([
-                self.flux[np.isfinite(self.flux)],
-                total_model_plot[np.isfinite(total_model_plot)]
-            ])
-            if yplot.size > 0:
-                y1, y2 = np.nanpercentile(yplot, [1, 99])
-                if np.isfinite(y1) and np.isfinite(y2) and y2 > y1:
-                    pad = 0.15 * (y2 - y1)
-                    ax.set_ylim(0, y2 + pad)
+            yvals = _finite_component_values(
+                self.flux,
+                total_model_plot,
+                host_plot,
+                pl_plot,
+                pl_intrinsic_plot,
+                fe_total_model,
+                bc_plot,
+                line_plot,
+                *[model for _, model in custom_components],
+            )
+            if yvals:
+                yplot = np.concatenate(yvals)
+                ymin, ymax = np.nanpercentile(yplot, [1, 99])
+                if np.isfinite(ymin) and np.isfinite(ymax) and ymax > ymin:
+                    pad = 0.15 * (ymax - ymin)
+                    ax.set_ylim(float(ymin - pad), float(ymax + pad))
         else:
-            ax.set_ylim(0, ylims[1])
+            ax.set_ylim(ylims[0], ylims[1])
 
         # Mark common broad-line AGN transitions on the spectrum panel.
         broad_line_markers = [
@@ -3234,10 +3280,10 @@ class QSOFit:
             self._style_axis(ax_resid)
 
         if residual_enabled and ax_resid is not None:
-            ax_resid.set_xlabel(r'Rest Wavelength ($\AA$)', fontsize=20)
+            ax_resid.set_xlabel('Rest Wavelength (Å)', fontsize=20)
         else:
-            ax.set_xlabel(r'Rest Wavelength ($\AA$)', fontsize=20)
-        ax.set_ylabel(r'$f_{\lambda}\ (10^{-17}\ \mathrm{erg}\ \mathrm{s}^{-1}\ \mathrm{cm}^{-2}\ \AA^{-1})$', fontsize=20)
+            ax.set_xlabel('Rest Wavelength (Å)', fontsize=20)
+        ax.set_ylabel(r'$f_{\lambda}$ (10$^{-17}$ erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$)', fontsize=20)
         self._style_axis(ax)
         if plot_legend:
             ax.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=12, ncol=2)
