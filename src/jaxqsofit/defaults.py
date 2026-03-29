@@ -293,7 +293,8 @@ def build_default_prior_config(
         "host_luminosity_penalty": {
             "enabled": True,
             "wave": 2500.0,
-            "log_lambda_Llambda_mid": 45.2,
+            "target": "f_host_center",
+            "log_lambda_Llambda_mid": 45.0,
             "width_dex": 0.3,
             "max_logit_shift": 100.0,
         },

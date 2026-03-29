@@ -77,18 +77,31 @@ def test_build_tied_line_meta_from_linelist_minimal():
 
 def test_host_luminosity_penalty_terms_transition_with_luminosity():
     cfg = {
-        "log_lambda_Llambda_mid": 45.2,
+        "log_lambda_Llambda_mid": 45.0,
         "width_dex": 0.3,
         "max_logit_shift": 100.0,
     }
-    weight_low, penalty_low = _host_luminosity_penalty_terms(0.0, 44.2, cfg)
-    weight_mid, penalty_mid = _host_luminosity_penalty_terms(0.0, 45.2, cfg)
-    weight_high, penalty_high = _host_luminosity_penalty_terms(0.0, 46.2, cfg)
+    weight_low, penalty_low = _host_luminosity_penalty_terms(0.5, 44.2, cfg)
+    weight_mid, penalty_mid = _host_luminosity_penalty_terms(0.5, 45.0, cfg)
+    weight_high, penalty_high = _host_luminosity_penalty_terms(0.5, 46.0, cfg)
 
     assert float(weight_low) < 0.1
     assert np.isclose(float(weight_mid), 0.5, atol=1e-6)
     assert float(weight_high) > 0.9
     assert float(penalty_high) < float(penalty_mid) < float(penalty_low) <= 0.0
+
+
+def test_host_luminosity_penalty_terms_increase_with_host_fraction():
+    cfg = {
+        "log_lambda_Llambda_mid": 45.0,
+        "width_dex": 0.3,
+        "max_logit_shift": 100.0,
+    }
+    weight_low, penalty_low = _host_luminosity_penalty_terms(0.01, 46.0, cfg)
+    weight_high, penalty_high = _host_luminosity_penalty_terms(0.5, 46.0, cfg)
+
+    assert np.isclose(float(weight_low), float(weight_high))
+    assert float(penalty_high) < float(penalty_low) < 0.0
 
 
 def test_qso_fsps_joint_model_host_penalty_enabled_by_default():
@@ -136,6 +149,7 @@ def test_qso_fsps_joint_model_host_penalty_enabled_by_default():
     )
 
     assert np.isfinite(float(tr["log_lambda_Llambda_2500_agn"]["value"]))
+    assert np.isfinite(float(tr["host_luminosity_penalty_target"]["value"]))
     assert float(tr["host_luminosity_penalty_weight"]["value"]) > 0.0
     assert float(tr["host_luminosity_penalty_value"]["value"]) < 0.0
 
@@ -148,7 +162,8 @@ def test_qso_fsps_joint_model_host_penalty_increases_at_high_luminosity():
     cfg["host_luminosity_penalty"] = {
         "enabled": True,
         "wave": 2500.0,
-        "log_lambda_Llambda_mid": 45.2,
+        "target": "f_host_center",
+        "log_lambda_Llambda_mid": 45.0,
         "width_dex": 0.3,
         "max_logit_shift": 100.0,
     }

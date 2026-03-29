@@ -64,6 +64,7 @@ def test_build_default_prior_config_includes_host_luminosity_penalty_defaults():
     penalty = cfg["host_luminosity_penalty"]
     assert penalty["enabled"] is True
     assert penalty["wave"] == 2500.0
-    assert penalty["log_lambda_Llambda_mid"] == 45.2
+    assert penalty["target"] == "f_host_center"
+    assert penalty["log_lambda_Llambda_mid"] == 45.0
     assert penalty["width_dex"] == 0.3
     assert penalty["max_logit_shift"] == 100.0

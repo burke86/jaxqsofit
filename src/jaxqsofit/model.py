@@ -83,13 +83,15 @@ def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
     return jnp.log10(jnp.clip(lambda_llambda, 1e-300, None))
 
 
-def _host_luminosity_penalty_terms(log_frac_host, log_lambda_llambda_agn, penalty_cfg):
+def _host_luminosity_penalty_terms(host_fraction_value, log_lambda_llambda_agn, penalty_cfg):
     """Compute deterministic logistic gating and a soft high-host penalty."""
     log_lambda_mid = float(penalty_cfg.get("log_lambda_Llambda_mid", 46.0))
     width_dex = max(float(penalty_cfg.get("width_dex", 0.3)), 1e-6)
     max_logit_shift = float(penalty_cfg.get("max_logit_shift", 100.0))
+    host_fraction_value = jnp.clip(jnp.asarray(host_fraction_value), 1e-8, 1.0 - 1e-8)
+    host_fraction_logit = jnp.log(host_fraction_value) - jnp.log1p(-host_fraction_value)
     lum_weight = jax.nn.sigmoid((log_lambda_llambda_agn - log_lambda_mid) / width_dex)
-    penalty_value = -lum_weight * jax.nn.softplus(jnp.asarray(log_frac_host) + max_logit_shift)
+    penalty_value = -lum_weight * jax.nn.softplus(host_fraction_logit + max_logit_shift)
     return lum_weight, penalty_value
 
 
@@ -904,16 +906,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         )
     else:
         log_lambda_llambda_2500_agn = jnp.asarray(jnp.nan)
-    host_luminosity_penalty_weight = jnp.asarray(0.0)
-    host_luminosity_penalty_value = jnp.asarray(0.0)
-    if decompose_host and fit_pl and bool(host_luminosity_penalty_cfg.get("enabled", False)):
-        host_luminosity_penalty_weight, host_luminosity_penalty_value = _host_luminosity_penalty_terms(
-            log_frac_host,
-            log_lambda_llambda_2500_agn,
-            host_luminosity_penalty_cfg,
-        )
-        numpyro.factor("host_luminosity_penalty", host_luminosity_penalty_value)
-
     ntemp = fsps_grid.templates.shape[1]
     if decompose_host:
         tau_host = numpyro.sample('tau_host', dist.HalfNormal(_cfg_halfnorm('tau_host')))
@@ -1024,6 +1016,29 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
     fiber_model = model
 
+    host_luminosity_penalty_target = jnp.asarray(0.0)
+    host_luminosity_penalty_weight = jnp.asarray(0.0)
+    host_luminosity_penalty_value = jnp.asarray(0.0)
+    if decompose_host and fit_pl and bool(host_luminosity_penalty_cfg.get("enabled", False)):
+        penalty_target = str(host_luminosity_penalty_cfg.get("target", "f_host_center")).lower()
+        if penalty_target == "frac_host":
+            host_luminosity_penalty_target = jnp.clip(jnp.asarray(frac_host), 0.0, 1.0)
+        else:
+            center_wave = _spectrum_center_pivot(wave)
+            gal_center = jnp.interp(center_wave, wave, gal_model, left=jnp.nan, right=jnp.nan)
+            cont_center = jnp.interp(center_wave, wave, continuum_model, left=jnp.nan, right=jnp.nan)
+            host_luminosity_penalty_target = jnp.clip(
+                gal_center / jnp.maximum(cont_center, 1e-30),
+                0.0,
+                1.0,
+            )
+        host_luminosity_penalty_weight, host_luminosity_penalty_value = _host_luminosity_penalty_terms(
+            host_luminosity_penalty_target,
+            log_lambda_llambda_2500_agn,
+            host_luminosity_penalty_cfg,
+        )
+        numpyro.factor("host_luminosity_penalty", host_luminosity_penalty_value)
+
     delta_m_psf = jnp.asarray(0.0)
     eta_psf = jnp.asarray(1.0)
     scale_psf = jnp.asarray(1.0)
@@ -1093,6 +1108,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     numpyro.deterministic('psf_model', psf_model)
     numpyro.deterministic('frac_host', frac_host)
     numpyro.deterministic('log_lambda_Llambda_2500_agn', log_lambda_llambda_2500_agn)
+    numpyro.deterministic('host_luminosity_penalty_target', host_luminosity_penalty_target)
     numpyro.deterministic('host_luminosity_penalty_weight', host_luminosity_penalty_weight)
     numpyro.deterministic('host_luminosity_penalty_value', host_luminosity_penalty_value)
     numpyro.deterministic('fsps_weights', fsps_weights)
