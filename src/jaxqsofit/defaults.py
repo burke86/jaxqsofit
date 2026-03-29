@@ -295,7 +295,7 @@ def build_default_prior_config(
             "wave": 2500.0,
             "log_lambda_Llambda_mid": 45.2,
             "width_dex": 0.3,
-            "max_logit_shift": 4.0,
+            "max_logit_shift": 100.0,
         },
         "tau_host": {"dist": "HalfNormal", "scale": 1.0},
         "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},

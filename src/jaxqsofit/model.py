@@ -87,7 +87,7 @@ def _host_luminosity_penalty_terms(log_frac_host, log_lambda_llambda_agn, penalt
     """Compute deterministic logistic gating and a soft high-host penalty."""
     log_lambda_mid = float(penalty_cfg.get("log_lambda_Llambda_mid", 46.0))
     width_dex = max(float(penalty_cfg.get("width_dex", 0.3)), 1e-6)
-    max_logit_shift = float(penalty_cfg.get("max_logit_shift", 4.0))
+    max_logit_shift = float(penalty_cfg.get("max_logit_shift", 100.0))
     lum_weight = jax.nn.sigmoid((log_lambda_llambda_agn - log_lambda_mid) / width_dex)
     penalty_value = -lum_weight * jax.nn.softplus(jnp.asarray(log_frac_host) + max_logit_shift)
     return lum_weight, penalty_value

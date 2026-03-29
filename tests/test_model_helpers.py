@@ -79,7 +79,7 @@ def test_host_luminosity_penalty_terms_transition_with_luminosity():
     cfg = {
         "log_lambda_Llambda_mid": 45.2,
         "width_dex": 0.3,
-        "max_logit_shift": 4.0,
+        "max_logit_shift": 100.0,
     }
     weight_low, penalty_low = _host_luminosity_penalty_terms(0.0, 44.2, cfg)
     weight_mid, penalty_mid = _host_luminosity_penalty_terms(0.0, 45.2, cfg)
@@ -150,7 +150,7 @@ def test_qso_fsps_joint_model_host_penalty_increases_at_high_luminosity():
         "wave": 2500.0,
         "log_lambda_Llambda_mid": 45.2,
         "width_dex": 0.3,
-        "max_logit_shift": 4.0,
+        "max_logit_shift": 100.0,
     }
 
     class _Grid:
