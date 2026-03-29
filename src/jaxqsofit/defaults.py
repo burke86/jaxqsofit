@@ -122,6 +122,9 @@ DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
     _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # CIII complex
+    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_br1', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=3, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_br2', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=3, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=4, windex=4, findex=0, fvalue=0.002),
     _line_row(lam=1892.03, compname='CIII', minwav=1700, maxwav=1970, linename='SiIII1892', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
     _line_row(lam=1857.40, compname='CIII', minwav=1700, maxwav=1970, linename='AlIII1857', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
     _line_row(lam=1816.98, compname='CIII', minwav=1700, maxwav=1970, linename='SiII1816', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.0002),
