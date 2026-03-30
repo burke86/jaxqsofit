@@ -91,6 +91,8 @@ def test_default_line_table_contains_expanded_uv_complexes():
     by_name = {row["linename"]: row for row in rows}
 
     expected_names = {
+        "CIII_br",
+        "CIII_na",
         "SiIII1892",
         "AlIII1857",
         "SiII1816",
