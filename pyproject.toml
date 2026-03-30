@@ -12,6 +12,7 @@ authors = [
   { name = "JaxQSOFit contributors" }
 ]
 dependencies = [
+  "setuptools",
   "numpy",
   "scipy",
   "matplotlib",
@@ -22,6 +23,7 @@ dependencies = [
   "extinction",
   "jax",
   "jaxlib",
+  "jax_cosmo",
   "numpyro",
   "optax",
   "h5py",

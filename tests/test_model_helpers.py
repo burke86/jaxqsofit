@@ -5,9 +5,11 @@ import numpyro.distributions as dist
 from numpyro.handlers import seed, substitute, trace
 
 from jaxqsofit.defaults import build_default_prior_config
+from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
     _host_redshift_prior_params,
     _extract_line_table_from_prior_config,
+    _luminosity_distance_cm_jax,
     build_tied_line_meta_from_linelist,
     qso_fsps_joint_model,
 )
@@ -121,6 +123,82 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_2500_agn():
     )
 
     assert np.isfinite(float(tr["log_lambda_Llambda_2500_agn"]["value"]))
+
+
+def test_luminosity_distance_cm_jax_is_finite_and_vectorizable(monkeypatch):
+    class _BG:
+        @staticmethod
+        def angular_diameter_distance(cosmo, a):
+            return 1000.0 * a
+
+    class _Cosmo:
+        h = 0.7
+
+    monkeypatch.setattr("jaxqsofit.model._get_jax_cosmo_backend", lambda: (_BG(), _Cosmo()))
+
+    z = jnp.asarray([0.1, 1.0, 2.0])
+    d_l = _luminosity_distance_cm_jax(z)
+
+    assert d_l.shape == (3,)
+    assert np.all(np.isfinite(np.asarray(d_l)))
+    assert np.all(np.asarray(d_l) > 0.0)
+
+
+def test_qso_fsps_joint_model_custom_component_returns_jax_array():
+    wave = np.linspace(2000.0, 6000.0, 32)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+    cfg = build_default_prior_config(flux)
+
+    class _Grid:
+        templates = np.zeros((wave.size, 1), dtype=float)
+        template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
+
+    comp = make_custom_component(
+        name="const_term",
+        parameter_priors={"c0": {"dist": "Normal", "loc": 0.0, "scale": 1.0}},
+        evaluate=lambda wave, params, metadata: jnp.zeros_like(wave) + params["c0"],
+    )
+
+    params = {
+        "cont_norm": np.array(1.0),
+        "log_frac_host": np.array(1.0),
+        "PL_norm": np.array(5.0e6),
+        "PL_slope": np.array(0.0),
+        "tau_host": np.array(1.0),
+        "fsps_weights_raw": np.array([0.0]),
+        "gal_v_kms": np.array(0.0),
+        "gal_sigma_kms": np.array(100.0),
+        "frac_jitter": np.array(0.0),
+        "add_jitter": np.array(0.0),
+        "custom_const_term_c0": np.array(0.5),
+    }
+    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+        wave=wave,
+        flux=flux,
+        err=err,
+        conti_priors={},
+        tied_line_meta={"n_lines": 0},
+        fsps_grid=_Grid(),
+        fe_uv_wave=np.array([2000.0, 6000.0]),
+        fe_uv_flux=np.zeros(2),
+        fe_op_wave=np.array([2000.0, 6000.0]),
+        fe_op_flux=np.zeros(2),
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=True,
+        fit_pl=True,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+        z_qso=jnp.asarray(1.0),
+        custom_components=[comp],
+    )
+
+    value = tr["custom_const_term_model"]["value"]
+    assert isinstance(value, jax.Array)
+    assert np.all(np.isfinite(np.asarray(value)))
 
 
 def test_host_redshift_prior_params_shift_negative_at_high_z():

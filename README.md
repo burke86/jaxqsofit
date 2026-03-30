@@ -56,6 +56,7 @@ JAXQSOFit is designed around a **joint Bayesian model** of AGN and host componen
 
 - Python 3.10+
 - `jax`, `jaxlib`
+- `jax_cosmo`
 - `numpyro`
 - `numpy`, `scipy`, `matplotlib`, `pandas`
 - `astropy`
@@ -78,7 +79,7 @@ conda activate jaxqsofit
 CPU example:
 
 ```bash
-pip install numpy scipy matplotlib pandas astropy astroquery extinction dustmaps dsps numpyro
+pip install setuptools numpy scipy matplotlib pandas astropy astroquery extinction dustmaps dsps numpyro jax_cosmo
 pip install "jax[cpu]"
 ```
 

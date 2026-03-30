@@ -6,6 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Sequence
 
+import jax.numpy as jnp
 import numpy as np
 
 
@@ -204,19 +205,19 @@ def make_custom_line_component(
 
 def template_component_evaluator(wave, params, metadata):
     """Convenience evaluator for broadened/shifted template components."""
-    import jax.numpy as jnp
+    from .model import _fe_template_component
 
-    from .model import _fe_template_component, _normalize_template_flux
-
-    flux_template = np.asarray(metadata["flux"], dtype=float)
-    if bool(metadata.get("normalize_template", True)):
-        flux_template = _normalize_template_flux(flux_template, target_amp=float(metadata.get("target_amp", 1.0)))
+    wave_template = jnp.asarray(metadata["wave"], dtype=jnp.float64)
+    flux_template = jnp.asarray(
+        metadata.get("flux_model", metadata["flux"]),
+        dtype=jnp.float64,
+    )
     return _fe_template_component(
         wave,
-        metadata["wave"],
+        wave_template,
         flux_template,
         params["norm"],
-        params.get("fwhm", float(metadata.get("default_fwhm_kms", 3000.0))),
+        params.get("fwhm", jnp.asarray(metadata.get("default_fwhm_kms", 3000.0), dtype=jnp.float64)),
         params.get("shift", 0.0),
         base_fwhm_kms=float(metadata.get("base_fwhm_kms", 900.0)),
     )
@@ -252,6 +253,10 @@ def make_template_component(
     if fit_shift:
         priors["shift"] = {"dist": "Normal", "loc": 0.0, "scale": 1e-3}
 
+    flux_model = flux
+    if bool(normalize_template):
+        flux_model = _normalize_template_flux(flux_model, target_amp=float(target_amp))
+
     return make_custom_component(
         name=name,
         parameter_priors=priors,
@@ -259,6 +264,7 @@ def make_template_component(
         metadata={
             "wave": wave,
             "flux": flux,
+            "flux_model": flux_model,
             "normalize_template": bool(normalize_template),
             "target_amp": float(target_amp),
             "base_fwhm_kms": float(base_fwhm_kms),

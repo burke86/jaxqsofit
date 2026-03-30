@@ -28,6 +28,7 @@ warnings.filterwarnings("ignore")
 C_KMS = 299792.458
 _SFD_QUERY_CACHE: Dict[str, Any] = {}
 _LUMINOSITY_COSMO = FlatLambdaCDM(H0=70.0, Om0=0.3)
+MPC_TO_CM = 3.085677581491367e24
 
 
 def unred(wave, flux, ebv, R_V=3.1):
@@ -74,11 +75,42 @@ def _luminosity_distance_cm(z: float) -> float:
     return float(_LUMINOSITY_COSMO.luminosity_distance(float(z)).to("cm").value)
 
 
+@lru_cache(maxsize=1)
+def _get_jax_cosmo_backend():
+    """Return cached jax_cosmo helpers for a flat LCDM luminosity distance."""
+    import jax_cosmo.background as bg
+    from jax_cosmo.core import Cosmology
+
+    cosmo = Cosmology(
+        Omega_c=0.25,
+        Omega_b=0.05,
+        h=0.70,
+        n_s=0.96,
+        sigma8=0.8,
+        Omega_k=0.0,
+        w0=-1.0,
+        wa=0.0,
+    )
+    return bg, cosmo
+
+
+def _luminosity_distance_cm_jax(z):
+    """Return luminosity distance in cm using jax_cosmo when available."""
+    z = jnp.asarray(z, dtype=jnp.float64)
+    scalar_input = z.ndim == 0
+    bg, cosmo = _get_jax_cosmo_backend()
+    a = 1.0 / (1.0 + z)
+    d_a_mpc_over_h = bg.angular_diameter_distance(cosmo, a)
+    d_l_mpc_over_h = d_a_mpc_over_h / jnp.maximum(a * a, 1e-30)
+    d_l_cm = d_l_mpc_over_h / cosmo.h * MPC_TO_CM
+    return jnp.reshape(d_l_cm, ()) if scalar_input else d_l_cm
+
+
 def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
     """Return log10(lambda Llambda) using rest-frame f_lambda in 1e-17 cgs units."""
     wave_rest = jnp.maximum(jnp.asarray(wave_rest), 1e-8)
     flam_rest_cgs = 1e-17 * jnp.asarray(flam_rest)
-    d_l_cm = jnp.asarray(_luminosity_distance_cm(float(z)))
+    d_l_cm = _luminosity_distance_cm_jax(z)
     lambda_llambda = 4.0 * jnp.pi * d_l_cm**2 * wave_rest * flam_rest_cgs
     return jnp.log10(jnp.clip(lambda_llambda, 1e-300, None))
 
@@ -281,7 +313,7 @@ def _evaluate_custom_component_jax(wave, samples_or_values, comp, sample_value):
         param_name: sample_value(samples_or_values, comp.site_name(param_name), default=0.0)
         for param_name in comp.parameter_priors
     }
-    return comp.evaluate(wave, params, comp.metadata)
+    return jnp.asarray(comp.evaluate(wave, params, comp.metadata), dtype=jnp.float64)
 
 
 def _evaluate_custom_line_component_jax(wave, samples_or_values, comp, sample_value):
@@ -290,7 +322,7 @@ def _evaluate_custom_line_component_jax(wave, samples_or_values, comp, sample_va
         param_name: sample_value(samples_or_values, comp.site_name(param_name), default=0.0)
         for param_name in comp.parameter_priors
     }
-    return comp.evaluate(wave, params, comp.metadata)
+    return jnp.asarray(comp.evaluate(wave, params, comp.metadata), dtype=jnp.float64)
 
 
 @dataclass
@@ -774,8 +806,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_uv_flux = _np_to_jnp(fe_uv_flux)
     fe_op_wave = _np_to_jnp(fe_op_wave)
     fe_op_flux = _np_to_jnp(fe_op_flux)
-    z_qso_float = float(z_qso)
-    z_qso = jnp.asarray(z_qso_float)
+    z_qso = jnp.asarray(z_qso, dtype=jnp.float64)
     prior_config = {} if prior_config is None else prior_config
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
@@ -935,7 +966,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         log_lambda_llambda_2500_agn = _rest_log_lambda_llambda_from_flam(
             2500.0,
             pl_flux_2500,
-            z_qso_float,
+            z_qso,
         )
     else:
         log_lambda_llambda_2500_agn = jnp.asarray(jnp.nan)
