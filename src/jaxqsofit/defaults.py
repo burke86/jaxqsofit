@@ -131,6 +131,7 @@ DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=1718.55, compname='CIII', minwav=1700, maxwav=1900, linename='NIV1718', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
     # CIV complex
     _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_br', ngauss=3, inisig=inisig_uv_broad, minsig=0.001, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
     _line_row(lam=1663.48, compname='CIV', minwav=1500, maxwav=1700, linename='OIII1663', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
     _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),

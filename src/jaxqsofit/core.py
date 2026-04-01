@@ -3165,7 +3165,6 @@ class QSOFit:
                 'total_model': 'b',
                 'host': 'purple',
                 'PL': 'orange',
-                'PL_intrinsic': 'darkorange',
                 'FeII': 'teal',
                 'Balmer_cont': 'y',
                 'lines': 'lightskyblue',
