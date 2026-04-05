@@ -671,6 +671,49 @@ class QSOFit:
             'line_lambda': np.array([], dtype=float),
         }
 
+    @staticmethod
+    def _require_posterior_bundle_fsps_metadata(state):
+        """Return required FSPS bundle metadata or raise on incomplete bundles."""
+        required_keys = (
+            "_fit_fsps_age_grid",
+            "_fit_fsps_logzsol_grid",
+            "_fit_dsps_ssp_fn",
+        )
+        missing = [key for key in required_keys if key not in state or state[key] is None]
+        if missing:
+            joined = ", ".join(missing)
+            raise ValueError(
+                "Posterior bundle is missing required FSPS metadata for hydration: "
+                f"{joined}."
+            )
+
+        age_grid_gyr = tuple(np.asarray(state["_fit_fsps_age_grid"], dtype=float).tolist())
+        logzsol_grid = tuple(np.asarray(state["_fit_fsps_logzsol_grid"], dtype=float).tolist())
+        dsps_ssp_fn = state["_fit_dsps_ssp_fn"]
+        if len(age_grid_gyr) == 0 or len(logzsol_grid) == 0:
+            raise ValueError("Posterior bundle FSPS metadata must define non-empty age and metallicity grids.")
+        if not isinstance(dsps_ssp_fn, str) or len(dsps_ssp_fn) == 0:
+            raise ValueError("Posterior bundle FSPS metadata must include a non-empty dsps_ssp_fn.")
+        return age_grid_gyr, logzsol_grid, dsps_ssp_fn
+
+    @staticmethod
+    def _validate_fsps_weights_shape(pred_out, expected_templates, context):
+        """Ensure hydrated or reconstructed FSPS weights match the expected basis width."""
+        if pred_out is None or "fsps_weights" not in pred_out:
+            raise ValueError(f"{context} requires pred_out['fsps_weights'] to be present.")
+        fsps_weights = np.asarray(pred_out["fsps_weights"], dtype=float)
+        if fsps_weights.ndim != 2:
+            raise ValueError(
+                f"{context} requires pred_out['fsps_weights'] to be a 2D array; "
+                f"got shape {fsps_weights.shape}."
+            )
+        if fsps_weights.shape[1] != int(expected_templates):
+            raise ValueError(
+                f"{context} requires pred_out['fsps_weights'] width {expected_templates}, "
+                f"got {fsps_weights.shape[1]}."
+            )
+        return fsps_weights
+
     def _ensure_hydrated_from_samples(self):
         """Rebuild posterior-derived component products from saved samples."""
         if bool(getattr(self, "_posterior_hydrated", False)):
@@ -714,9 +757,7 @@ class QSOFit:
         if use_lines and line_table is None and len(custom_line_components) == 0:
             raise RuntimeError("Hydration requires line priors/table when fit_lines=True.")
 
-        age_grid_gyr = getattr(self, "_fit_fsps_age_grid", (0.1, 0.3, 1.0, 3.0, 10.0))
-        logzsol_grid = getattr(self, "_fit_fsps_logzsol_grid", (-1.0, -0.5, 0.0, 0.2))
-        dsps_ssp_fn = getattr(self, "_fit_dsps_ssp_fn", "tempdata.h5")
+        age_grid_gyr, logzsol_grid, dsps_ssp_fn = self._require_posterior_bundle_fsps_metadata(self.__dict__)
         decompose_host = bool(getattr(self, "_fit_decompose_host", True))
         fsps_grid = self._build_fsps_grid_for_fit(
             wave=wave,
@@ -765,6 +806,11 @@ class QSOFit:
             custom_components=custom_components,
             custom_line_components=custom_line_components,
         )
+        self._validate_fsps_weights_shape(
+            pred_out,
+            expected_templates=fsps_grid.templates.shape[1],
+            context="Hydrated posterior state",
+        )
         self._consume_posterior_outputs(
             samples=self.numpyro_samples,
             pred_out=pred_out,
@@ -811,18 +857,25 @@ class QSOFit:
         class _DummyFSPSGrid:
             pass
 
+        wave = np.asarray(wave, dtype=float)
+        age_grid_gyr = np.asarray(age_grid_gyr, dtype=float)
+        logzsol_grid = np.asarray(logzsol_grid, dtype=float)
         grid = _DummyFSPSGrid()
-        grid.wave = np.asarray(wave, dtype=float)
-        grid.templates = np.zeros((len(wave), 1), dtype=float)
-        grid.template_meta = [{
-            'tage_gyr': float(np.asarray(age_grid_gyr, dtype=float)[0]),
-            'logzsol': float(np.asarray(logzsol_grid, dtype=float)[0]),
-            'norm': 1.0,
-            'dsps_lgmet': 0.0,
-            'dsps_lg_age_gyr': 0.0,
-        }]
-        grid.age_grid_gyr = np.asarray(age_grid_gyr, dtype=float)
-        grid.logzsol_grid = np.asarray(logzsol_grid, dtype=float)
+        grid.wave = wave
+        n_templates = int(len(age_grid_gyr) * len(logzsol_grid))
+        grid.templates = np.zeros((len(wave), n_templates), dtype=float)
+        grid.template_meta = []
+        for logz in logzsol_grid:
+            for age in age_grid_gyr:
+                grid.template_meta.append({
+                    'tage_gyr': float(age),
+                    'logzsol': float(logz),
+                    'norm': 1.0,
+                    'dsps_lgmet': np.nan,
+                    'dsps_lg_age_gyr': np.nan,
+                })
+        grid.age_grid_gyr = age_grid_gyr
+        grid.logzsol_grid = logzsol_grid
         return grid
 
     @classmethod
@@ -873,6 +926,7 @@ class QSOFit:
                 samples = {k: np.asarray(h5f["samples"][k][()]) for k in h5f["samples"].keys()}
                 meta = {k: cls._read_hdf5_node(h5f["meta"], k) for k in h5f["meta"].keys()}
                 meta = cls._deserialize_from_hdf5(meta)
+                cls._require_posterior_bundle_fsps_metadata(meta)
                 state = dict(meta)
                 state["numpyro_samples"] = samples
                 state["_posterior_hydrated"] = False
@@ -2324,21 +2378,20 @@ class QSOFit:
         prior_config = getattr(self, '_fit_prior_config', None)
         if prior_config is None:
             prior_config = build_default_prior_config(np.asarray(self.flux, dtype=float))
-        age_grid_gyr = getattr(self, '_fit_fsps_age_grid', None)
-        logzsol_grid = getattr(self, '_fit_fsps_logzsol_grid', None)
-        if age_grid_gyr is None or logzsol_grid is None:
-            fsps_grid = getattr(self, 'fsps_grid', None)
-            age_grid_gyr = getattr(fsps_grid, 'age_grid_gyr', None)
-            logzsol_grid = getattr(fsps_grid, 'logzsol_grid', None)
-            if age_grid_gyr is None or logzsol_grid is None:
-                raise RuntimeError("Missing age/metallicity grid metadata for reconstruction.")
+        age_grid_gyr, logzsol_grid, dsps_ssp_fn = self._require_posterior_bundle_fsps_metadata(self.__dict__)
+        expected_templates = int(len(age_grid_gyr) * len(logzsol_grid))
+        self._validate_fsps_weights_shape(
+            getattr(self, 'pred_out', None),
+            expected_templates=expected_templates,
+            context="Posterior reconstruction",
+        )
         return reconstruct_posterior_components(
             wave_out=wave_out,
             samples=self.numpyro_samples,
             pred_out=getattr(self, 'pred_out', None),
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
-            dsps_ssp_fn=getattr(self, '_fit_dsps_ssp_fn', 'tempdata.h5'),
+            dsps_ssp_fn=dsps_ssp_fn,
             prior_config=prior_config,
             fit_poly=bool(getattr(self, '_fit_fit_poly', False)),
             fit_reddening=bool(getattr(self, '_fit_fit_reddening', False)),
