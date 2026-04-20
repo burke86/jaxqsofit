@@ -5,6 +5,8 @@ from urllib.request import urlretrieve
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
     """Fit Selsing composite and require Ly-alpha-masked normalized WRMS < threshold."""
