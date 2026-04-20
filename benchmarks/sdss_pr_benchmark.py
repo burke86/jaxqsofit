@@ -123,6 +123,7 @@ def render_markdown(result: dict[str, Any], *, sha: str, workflow_url: str) -> s
             f"| pixels | {result['pixels']} |",
             f"| redshift | {result['redshift']:.6g} |",
             f"| optax steps | {result['optax_steps']} |",
+            "| host decomposition | enabled |",
             f"| fetch time | {result['fetch_seconds']:.3f} s |",
             f"| prep time | {result['prep_seconds']:.3f} s |",
             f"| fit time | {result['fit_seconds']:.3f} s |",
