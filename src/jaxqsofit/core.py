@@ -615,6 +615,7 @@ class QSOFit:
             "_fit_fit_pl",
             "_fit_fit_fe",
             "_fit_fit_bc",
+            "_fit_fit_bal",
             "_fit_fit_poly",
             "_fit_fit_reddening",
             "_fit_fit_poly_order",

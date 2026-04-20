@@ -7,6 +7,7 @@ from .custom_components import (
     make_template_component,
 )
 from .model import negative_gaussian_bal_component
+from .components import SpectralComponentConfig, evaluate_joint_spectral_components
 from .defaults import (
     DEFAULT_LINE_CONFIG,
     DEFAULT_LINE_PRIOR_ROWS,
@@ -32,6 +33,8 @@ __all__ = [
     "build_default_bal_components",
     "build_default_prior_config",
     "negative_gaussian_bal_component",
+    "SpectralComponentConfig",
+    "evaluate_joint_spectral_components",
     "style_path",
     "use_style",
 ]
