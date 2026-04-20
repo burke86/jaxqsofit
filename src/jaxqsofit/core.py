@@ -2939,7 +2939,14 @@ class QSOFit:
             flam_band_rf_err,
         )
 
-    def plot_trace(self, param_names=None, max_vector_elems=2, save_fig_path=None, save_fig_name=None):
+    def plot_trace(
+        self,
+        param_names=None,
+        max_vector_elems=2,
+        save_fig_path=None,
+        save_fig_name=None,
+        show_plot=False,
+    ):
         """Plot posterior trace series for selected parameters.
 
         Parameters
@@ -2953,6 +2960,9 @@ class QSOFit:
             (or ``'.'`` when unset).
         save_fig_name : str or None, optional
             Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+            Defaults to False so diagnostics are safe to call in headless terminals.
         """
         series = self._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
         if len(series) == 0:
@@ -2968,7 +2978,8 @@ class QSOFit:
             self._style_axis(ax)
         axes[-1].set_xlabel('Sample', fontsize=10)
         fig.tight_layout()
-        plt.show()
+        if show_plot:
+            plt.show()
         if self.save_fig:
             out_name = f'{self.filename}_trace.pdf' if save_fig_name is None else save_fig_name
             save_dir = self.output_path if save_fig_path is None else save_fig_path
@@ -2982,7 +2993,16 @@ class QSOFit:
         self.trace_fig = fig
         return fig
 
-    def plot_corner(self, param_names=None, max_vector_elems=2, bins=30, max_points=2000, save_fig_path=None, save_fig_name=None):
+    def plot_corner(
+        self,
+        param_names=None,
+        max_vector_elems=2,
+        bins=30,
+        max_points=5000,
+        save_fig_path=None,
+        save_fig_name=None,
+        show_plot=False,
+    ):
         """Plot posterior projections with ``corner.corner``.
 
         Parameters
@@ -3000,6 +3020,9 @@ class QSOFit:
             (or ``'.'`` when unset).
         save_fig_name : str or None, optional
             Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+            Defaults to False so diagnostics are safe to call in headless terminals.
         """
         series = self._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
         if len(series) == 0:
@@ -3020,16 +3043,22 @@ class QSOFit:
             labels=labels,
             bins=bins,
             show_titles=True,
+            color="black",
+            quantiles=[0.16, 0.5, 0.84],
             plot_datapoints=True,
-            fill_contours=True,
+            plot_contours=True,
             labelpad=0.02,
             label_kwargs={"fontsize": 10},
             title_kwargs={"fontsize": 10},
+            use_math_text=False,
+            title_fmt=".3g",
         )
         for ax in fig.axes:
+            ax.tick_params(axis='both', which='major', labelsize=8)
             self._style_axis(ax)
         fig.subplots_adjust(left=0.08, bottom=0.08, right=0.98, top=0.98, wspace=0.06, hspace=0.06)
-        plt.show()
+        if show_plot:
+            plt.show()
         if self.save_fig:
             out_name = f'{self.filename}_corner.pdf' if save_fig_name is None else save_fig_name
             save_dir = self.output_path if save_fig_path is None else save_fig_path
@@ -3047,7 +3076,8 @@ class QSOFit:
                               param_names=None,
                               max_vector_elems=2,
                               corner_bins=30, corner_max_points=2000,
-                              save_fig_path=None):
+                              save_fig_path=None,
+                              show_plot=False):
         """Plot trace and/or corner diagnostics in a single convenience call.
 
         Parameters
@@ -3068,12 +3098,17 @@ class QSOFit:
         save_fig_path : str or None, optional
             Output directory when saving figures. If ``None``, uses ``self.output_path``
             (or ``'.'`` when unset).
+        show_plot : bool, optional
+            If True, display each enabled diagnostics figure interactively with
+            ``plt.show()``. Defaults to False so diagnostics are safe to call in
+            headless terminals.
         """
         if do_trace:
             self.plot_trace(
                 param_names=param_names,
                 max_vector_elems=max_vector_elems,
                 save_fig_path=save_fig_path,
+                show_plot=show_plot,
             )
         if do_corner:
             self.plot_corner(
@@ -3082,6 +3117,7 @@ class QSOFit:
                 bins=corner_bins,
                 max_points=corner_max_points,
                 save_fig_path=save_fig_path,
+                show_plot=show_plot,
             )
 
     def plot_fig(self, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
