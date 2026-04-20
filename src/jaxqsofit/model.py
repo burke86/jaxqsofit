@@ -196,6 +196,13 @@ def _many_gauss_lnlam(lnlam, amps, mus, sigs):
     return jnp.sum(amps[None, :] * jnp.exp(-0.5 * z * z), axis=1)
 
 
+def _line_meta_array(meta, key, *, jax_key=None, dtype=jnp.float64):
+    """Return JAX-ready line metadata, preferring precomputed static arrays."""
+    if jax_key is not None and jax_key in meta:
+        return meta[jax_key]
+    return jnp.asarray(meta[key], dtype=dtype)
+
+
 def _broad_line_mask(names):
     """Return a float mask identifying broad-line components by name."""
     return np.asarray(
@@ -788,6 +795,8 @@ def build_tied_line_meta_from_linelist(linelist, wave):
         if sig_max_group[gid] <= sig_min_group[gid]:
             sig_max_group[gid] = max(sig_min_group[gid] * 1.1, sig_min_group[gid] + 1e-4)
 
+    broad_mask = _broad_line_mask(names)
+
     return {
         'n_lines': len(ln_lambda0),
         'n_vgroups': n_vgroups,
@@ -795,18 +804,32 @@ def build_tied_line_meta_from_linelist(linelist, wave):
         'n_fgroups': n_fgroups,
         'ln_lambda0': _np_to_jnp(ln_lambda0),
         'vgroup': np.asarray(vgroup, dtype=int),
+        'vgroup_jax': jnp.asarray(vgroup, dtype=jnp.int32),
         'wgroup': np.asarray(wgroup, dtype=int),
+        'wgroup_jax': jnp.asarray(wgroup, dtype=jnp.int32),
         'fgroup': np.asarray(fgroup, dtype=int),
+        'fgroup_jax': jnp.asarray(fgroup, dtype=jnp.int32),
         'flux_ratio': np.asarray(flux_ratio, dtype=float),
+        'flux_ratio_jax': _np_to_jnp(flux_ratio),
         'dmu_init_group': np.asarray(dmu_init_group, dtype=float),
+        'dmu_init_group_jax': _np_to_jnp(dmu_init_group),
         'dmu_min_group': np.asarray(dmu_min_group, dtype=float),
+        'dmu_min_group_jax': _np_to_jnp(dmu_min_group),
         'dmu_max_group': np.asarray(dmu_max_group, dtype=float),
+        'dmu_max_group_jax': _np_to_jnp(dmu_max_group),
         'sig_init_group': np.asarray(sig_init_group, dtype=float),
+        'sig_init_group_jax': _np_to_jnp(sig_init_group),
         'sig_min_group': np.asarray(sig_min_group, dtype=float),
+        'sig_min_group_jax': _np_to_jnp(sig_min_group),
         'sig_max_group': np.asarray(sig_max_group, dtype=float),
+        'sig_max_group_jax': _np_to_jnp(sig_max_group),
         'amp_init_group': np.asarray(amp_init_group, dtype=float),
+        'amp_init_group_jax': _np_to_jnp(amp_init_group),
         'amp_min_group': np.asarray(amp_min_group, dtype=float),
+        'amp_min_group_jax': _np_to_jnp(amp_min_group),
         'amp_max_group': np.asarray(amp_max_group, dtype=float),
+        'amp_max_group_jax': _np_to_jnp(amp_max_group),
+        'broad_mask_jax': _np_to_jnp(broad_mask),
         'names': names,
         'compnames': compnames,
         'line_lambda': np.asarray(line_lambda, dtype=float),
@@ -819,6 +842,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          fit_poly_order=2,
                          fit_reddening=False, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
                          psf_filter_curves=None, use_psf_phot=False,
+                         return_line_components=True,
+                         emit_deterministics=True,
                          custom_components: Sequence[CustomComponentSpec] | None = None,
                          custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
     """Joint AGN+host spectral forward model for NumPyro inference."""
@@ -835,6 +860,14 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     prior_config = {} if prior_config is None else prior_config
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
+    use_psf_phot = (
+        bool(use_psf_phot)
+        and psf_mags is not None
+        and psf_mag_errs is not None
+        and psf_filter_curves is not None
+    )
+    return_line_components = bool(return_line_components)
+    emit_deterministics = bool(emit_deterministics)
     _cfg_norm = lambda key: _cfg_norm_from_prior_config(prior_config, key)
 
     def _cfg_halfnorm(key, ref_scale=None):
@@ -865,16 +898,18 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             'log_frac_host',
             dist.StudentT(df=log_frac_host_df_eff, loc=log_frac_host_loc_eff, scale=log_frac_host_scale_eff),
         )
-        numpyro.deterministic('host_redshift_prior_weight', host_redshift_prior_weight)
-        numpyro.deterministic('host_redshift_prior_loc_eff', log_frac_host_loc_eff)
-        numpyro.deterministic('host_redshift_prior_scale_eff', log_frac_host_scale_eff)
-        numpyro.deterministic('host_redshift_prior_df_eff', log_frac_host_df_eff)
+        if emit_deterministics:
+            numpyro.deterministic('host_redshift_prior_weight', host_redshift_prior_weight)
+            numpyro.deterministic('host_redshift_prior_loc_eff', log_frac_host_loc_eff)
+            numpyro.deterministic('host_redshift_prior_scale_eff', log_frac_host_scale_eff)
+            numpyro.deterministic('host_redshift_prior_df_eff', log_frac_host_df_eff)
         frac_host = jax.nn.sigmoid(log_frac_host)
     else:
-        numpyro.deterministic('host_redshift_prior_weight', jnp.asarray(0.0))
-        numpyro.deterministic('host_redshift_prior_loc_eff', jnp.asarray(0.0))
-        numpyro.deterministic('host_redshift_prior_scale_eff', jnp.asarray(1.0))
-        numpyro.deterministic('host_redshift_prior_df_eff', jnp.asarray(float(log_frac_host_df)))
+        if emit_deterministics:
+            numpyro.deterministic('host_redshift_prior_weight', jnp.asarray(0.0))
+            numpyro.deterministic('host_redshift_prior_loc_eff', jnp.asarray(0.0))
+            numpyro.deterministic('host_redshift_prior_scale_eff', jnp.asarray(1.0))
+            numpyro.deterministic('host_redshift_prior_df_eff', jnp.asarray(float(log_frac_host_df)))
         frac_host = jnp.asarray(0.0)
     host_amp = cont_norm * frac_host
     pl_pivot = _resolve_pl_pivot(wave, prior_config)
@@ -935,9 +970,16 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         )
         if fit_reddening else jnp.ones_like(wave)
     )
-    fe_uv_model_intrinsic = _fe_template_component(wave, fe_uv_wave, fe_uv_flux, fe_uv_norm, fe_uv_fwhm, fe_uv_shift)
-    fe_op_model_intrinsic = _fe_template_component(wave, fe_op_wave, fe_op_flux, fe_op_norm, fe_op_fwhm, fe_op_shift)
-    bc_model_intrinsic = _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel)
+    if fit_fe:
+        fe_uv_model_intrinsic = _fe_template_component(wave, fe_uv_wave, fe_uv_flux, fe_uv_norm, fe_uv_fwhm, fe_uv_shift)
+        fe_op_model_intrinsic = _fe_template_component(wave, fe_op_wave, fe_op_flux, fe_op_norm, fe_op_fwhm, fe_op_shift)
+    else:
+        fe_uv_model_intrinsic = jnp.zeros_like(wave)
+        fe_op_model_intrinsic = jnp.zeros_like(wave)
+    if fit_bc:
+        bc_model_intrinsic = _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel)
+    else:
+        bc_model_intrinsic = jnp.zeros_like(wave)
     pl_model = pl_model_intrinsic * reddening_atten
     fe_uv_model = fe_uv_model_intrinsic
     fe_op_model = fe_op_model_intrinsic
@@ -1031,6 +1073,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         else:
             custom_line_narrow_intrinsic = custom_line_narrow_intrinsic + custom_line_model
 
+    line_components_are_split = return_line_components or use_psf_phot
     if use_lines and tied_line_meta['n_lines'] > 0:
         n_v = tied_line_meta['n_vgroups']
         n_w = tied_line_meta['n_wgroups']
@@ -1042,47 +1085,74 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         dmu_group = numpyro.sample(
             'line_dmu_group',
             dist.TruncatedNormal(
-                loc=_np_to_jnp(tied_line_meta['dmu_init_group']),
-                scale=_np_to_jnp(np.maximum(dmu_scale_mult * (tied_line_meta['dmu_max_group'] - tied_line_meta['dmu_min_group']), 1e-6)),
-                low=_np_to_jnp(tied_line_meta['dmu_min_group']),
-                high=_np_to_jnp(tied_line_meta['dmu_max_group']),
+                loc=_line_meta_array(tied_line_meta, 'dmu_init_group', jax_key='dmu_init_group_jax'),
+                scale=jnp.maximum(
+                    dmu_scale_mult * (
+                        _line_meta_array(tied_line_meta, 'dmu_max_group', jax_key='dmu_max_group_jax')
+                        - _line_meta_array(tied_line_meta, 'dmu_min_group', jax_key='dmu_min_group_jax')
+                    ),
+                    1e-6,
+                ),
+                low=_line_meta_array(tied_line_meta, 'dmu_min_group', jax_key='dmu_min_group_jax'),
+                high=_line_meta_array(tied_line_meta, 'dmu_max_group', jax_key='dmu_max_group_jax'),
             )
         ) if n_v > 0 else jnp.zeros((0,))
 
         sig_group = numpyro.sample(
             'line_sig_group',
             dist.TruncatedNormal(
-                loc=_np_to_jnp(np.clip(tied_line_meta['sig_init_group'], 1e-5, None)),
-                scale=_np_to_jnp(np.maximum(sig_scale_mult * (tied_line_meta['sig_max_group'] - tied_line_meta['sig_min_group']), 1e-6)),
-                low=_np_to_jnp(np.clip(tied_line_meta['sig_min_group'], 1e-5, None)),
-                high=_np_to_jnp(np.clip(tied_line_meta['sig_max_group'], 1e-5, None)),
+                loc=jnp.clip(_line_meta_array(tied_line_meta, 'sig_init_group', jax_key='sig_init_group_jax'), 1e-5),
+                scale=jnp.maximum(
+                    sig_scale_mult * (
+                        _line_meta_array(tied_line_meta, 'sig_max_group', jax_key='sig_max_group_jax')
+                        - _line_meta_array(tied_line_meta, 'sig_min_group', jax_key='sig_min_group_jax')
+                    ),
+                    1e-6,
+                ),
+                low=jnp.clip(_line_meta_array(tied_line_meta, 'sig_min_group', jax_key='sig_min_group_jax'), 1e-5),
+                high=jnp.clip(_line_meta_array(tied_line_meta, 'sig_max_group', jax_key='sig_max_group_jax'), 1e-5),
             )
         ) if n_w > 0 else jnp.zeros((0,))
 
         amp_group = numpyro.sample(
             'line_amp_group',
             dist.TruncatedNormal(
-                loc=_np_to_jnp(np.clip(tied_line_meta['amp_init_group'], 1e-10, None)),
-                scale=_np_to_jnp(np.maximum(amp_scale_mult * (tied_line_meta['amp_max_group'] - tied_line_meta['amp_min_group']), 1e-10)),
-                low=_np_to_jnp(np.clip(tied_line_meta['amp_min_group'], 1e-10, None)),
-                high=_np_to_jnp(np.clip(tied_line_meta['amp_max_group'], 1e-10, None)),
+                loc=jnp.clip(_line_meta_array(tied_line_meta, 'amp_init_group', jax_key='amp_init_group_jax'), 1e-10),
+                scale=jnp.maximum(
+                    amp_scale_mult * (
+                        _line_meta_array(tied_line_meta, 'amp_max_group', jax_key='amp_max_group_jax')
+                        - _line_meta_array(tied_line_meta, 'amp_min_group', jax_key='amp_min_group_jax')
+                    ),
+                    1e-10,
+                ),
+                low=jnp.clip(_line_meta_array(tied_line_meta, 'amp_min_group', jax_key='amp_min_group_jax'), 1e-10),
+                high=jnp.clip(_line_meta_array(tied_line_meta, 'amp_max_group', jax_key='amp_max_group_jax'), 1e-10),
             )
         ) if n_f > 0 else jnp.zeros((0,))
 
-        dmu = dmu_group[_np_to_jnp(tied_line_meta['vgroup']).astype(int)]
-        sigs = sig_group[_np_to_jnp(tied_line_meta['wgroup']).astype(int)]
-        amps = amp_group[_np_to_jnp(tied_line_meta['fgroup']).astype(int)] * _np_to_jnp(tied_line_meta['flux_ratio'])
+        vgroup = _line_meta_array(tied_line_meta, 'vgroup', jax_key='vgroup_jax', dtype=jnp.int32)
+        wgroup = _line_meta_array(tied_line_meta, 'wgroup', jax_key='wgroup_jax', dtype=jnp.int32)
+        fgroup = _line_meta_array(tied_line_meta, 'fgroup', jax_key='fgroup_jax', dtype=jnp.int32)
+        dmu = dmu_group[vgroup]
+        sigs = sig_group[wgroup]
+        amps = amp_group[fgroup] * _line_meta_array(tied_line_meta, 'flux_ratio', jax_key='flux_ratio_jax')
         mus = tied_line_meta['ln_lambda0'] + dmu
 
-        broad_mask = _np_to_jnp(_broad_line_mask(tied_line_meta.get('names', [])))
-        line_model_broad_intrinsic = _many_gauss_lnlam(lnwave, amps * broad_mask, mus, sigs)
-        line_model_narrow_intrinsic = _many_gauss_lnlam(lnwave, amps * (1.0 - broad_mask), mus, sigs)
-        line_model_broad_intrinsic = line_model_broad_intrinsic + custom_line_broad_intrinsic
-        line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
-        line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
-        numpyro.deterministic('line_amp_per_component', amps)
-        numpyro.deterministic('line_mu_per_component', mus)
-        numpyro.deterministic('line_sig_per_component', sigs)
+        if line_components_are_split:
+            broad_mask = _line_meta_array(tied_line_meta, 'broad_mask', jax_key='broad_mask_jax')
+            line_model_broad_intrinsic = _many_gauss_lnlam(lnwave, amps * broad_mask, mus, sigs)
+            line_model_narrow_intrinsic = _many_gauss_lnlam(lnwave, amps * (1.0 - broad_mask), mus, sigs)
+            line_model_broad_intrinsic = line_model_broad_intrinsic + custom_line_broad_intrinsic
+            line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
+            line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
+        else:
+            line_model_intrinsic = _many_gauss_lnlam(lnwave, amps, mus, sigs) + custom_line_broad_intrinsic + custom_line_narrow_intrinsic
+            line_model_broad_intrinsic = jnp.zeros_like(wave)
+            line_model_narrow_intrinsic = jnp.zeros_like(wave)
+        if emit_deterministics:
+            numpyro.deterministic('line_amp_per_component', amps)
+            numpyro.deterministic('line_mu_per_component', mus)
+            numpyro.deterministic('line_sig_per_component', sigs)
     else:
         line_model_broad_intrinsic = custom_line_broad_intrinsic
         line_model_narrow_intrinsic = custom_line_narrow_intrinsic
@@ -1094,9 +1164,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     line_model = line_model_intrinsic
     if fit_poly:
         gal_model = gal_model * poly_model
-        line_model_broad = line_model_broad * poly_model
-        line_model_narrow = line_model_narrow * poly_model
-        line_model = line_model_broad + line_model_narrow
+        if line_components_are_split:
+            line_model_broad = line_model_broad * poly_model
+            line_model_narrow = line_model_narrow * poly_model
+            line_model = line_model_broad + line_model_narrow
+        else:
+            line_model = line_model * poly_model
         custom_line_models = {name: model * poly_model for name, model in custom_line_models.items()}
 
     frac_jitter = numpyro.sample('frac_jitter', dist.HalfNormal(_cfg_halfnorm('frac_jitter')))
@@ -1116,12 +1189,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     line_model_narrow_psf = line_model_narrow
     line_model_psf = line_model_broad_psf + line_model_narrow_psf
     psf_model = agn_model_psf + gal_model_psf + line_model_psf
-    use_psf_phot = (
-        bool(use_psf_phot)
-        and psf_mags is not None
-        and psf_mag_errs is not None
-        and psf_filter_curves is not None
-    )
     if use_psf_phot:
         delta_m_psf = numpyro.sample('delta_m_psf_raw', dist.Normal(0.0, 0.5))
         if decompose_host:
@@ -1145,44 +1212,45 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             sig = jnp.sqrt(psf_mag_errs[i] ** 2 + sigma_phot_extra ** 2)
             numpyro.sample(f'psf_mag_obs_{i}', dist.Normal(m_syn, sig), obs=psf_mags[i])
 
-    numpyro.deterministic('f_pl_model', pl_model)
-    numpyro.deterministic('f_fe_mgii_model', fe_uv_model)
-    numpyro.deterministic('f_fe_balmer_model', fe_op_model)
-    numpyro.deterministic('f_bc_model', bc_model)
-    numpyro.deterministic('f_poly_model', poly_model)
-    for comp in custom_components:
-        numpyro.deterministic(comp.deterministic_site_name, custom_models[comp.output_name])
-    for comp in custom_line_components:
-        numpyro.deterministic(comp.deterministic_site_name, custom_line_models[comp.output_name])
-    numpyro.deterministic('agn_model', agn_model)
-    numpyro.deterministic('gal_model_intrinsic', gal_model_intrinsic)
-    numpyro.deterministic('gal_model', gal_model)
-    numpyro.deterministic('line_model_broad_intrinsic', line_model_broad_intrinsic)
-    numpyro.deterministic('line_model_narrow_intrinsic', line_model_narrow_intrinsic)
-    numpyro.deterministic('line_model_intrinsic', line_model_intrinsic)
-    numpyro.deterministic('line_model_broad', line_model_broad)
-    numpyro.deterministic('line_model_narrow', line_model_narrow)
-    numpyro.deterministic('line_model', line_model)
-    numpyro.deterministic('continuum_model', continuum_model)
-    numpyro.deterministic('model', model)
-    numpyro.deterministic('delta_m_psf', delta_m_psf)
-    numpyro.deterministic('eta_psf', eta_psf)
-    numpyro.deterministic('scale_psf', scale_psf)
-    numpyro.deterministic('agn_model_psf', agn_model_psf)
-    numpyro.deterministic('gal_model_psf', gal_model_psf)
-    numpyro.deterministic('line_model_broad_psf', line_model_broad_psf)
-    numpyro.deterministic('line_model_narrow_psf', line_model_narrow_psf)
-    numpyro.deterministic('line_model_psf', line_model_psf)
-    numpyro.deterministic('psf_model', psf_model)
-    numpyro.deterministic('frac_host', frac_host)
-    for wave_lum, log_lambda_llambda_lum in log_lambda_llambda_agn.items():
-        wave_label = _format_wave_label(wave_lum)
-        numpyro.deterministic(
-            f'log_lambda_Llambda_{wave_label}_agn',
-            log_lambda_llambda_lum,
-        )
-    numpyro.deterministic('fsps_weights', fsps_weights)
-    numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
+    if emit_deterministics:
+        numpyro.deterministic('f_pl_model', pl_model)
+        numpyro.deterministic('f_fe_mgii_model', fe_uv_model)
+        numpyro.deterministic('f_fe_balmer_model', fe_op_model)
+        numpyro.deterministic('f_bc_model', bc_model)
+        numpyro.deterministic('f_poly_model', poly_model)
+        for comp in custom_components:
+            numpyro.deterministic(comp.deterministic_site_name, custom_models[comp.output_name])
+        for comp in custom_line_components:
+            numpyro.deterministic(comp.deterministic_site_name, custom_line_models[comp.output_name])
+        numpyro.deterministic('agn_model', agn_model)
+        numpyro.deterministic('gal_model_intrinsic', gal_model_intrinsic)
+        numpyro.deterministic('gal_model', gal_model)
+        numpyro.deterministic('line_model_broad_intrinsic', line_model_broad_intrinsic)
+        numpyro.deterministic('line_model_narrow_intrinsic', line_model_narrow_intrinsic)
+        numpyro.deterministic('line_model_intrinsic', line_model_intrinsic)
+        numpyro.deterministic('line_model_broad', line_model_broad)
+        numpyro.deterministic('line_model_narrow', line_model_narrow)
+        numpyro.deterministic('line_model', line_model)
+        numpyro.deterministic('continuum_model', continuum_model)
+        numpyro.deterministic('model', model)
+        numpyro.deterministic('delta_m_psf', delta_m_psf)
+        numpyro.deterministic('eta_psf', eta_psf)
+        numpyro.deterministic('scale_psf', scale_psf)
+        numpyro.deterministic('agn_model_psf', agn_model_psf)
+        numpyro.deterministic('gal_model_psf', gal_model_psf)
+        numpyro.deterministic('line_model_broad_psf', line_model_broad_psf)
+        numpyro.deterministic('line_model_narrow_psf', line_model_narrow_psf)
+        numpyro.deterministic('line_model_psf', line_model_psf)
+        numpyro.deterministic('psf_model', psf_model)
+        numpyro.deterministic('frac_host', frac_host)
+        for wave_lum, log_lambda_llambda_lum in log_lambda_llambda_agn.items():
+            wave_label = _format_wave_label(wave_lum)
+            numpyro.deterministic(
+                f'log_lambda_Llambda_{wave_label}_agn',
+                log_lambda_llambda_lum,
+            )
+        numpyro.deterministic('fsps_weights', fsps_weights)
+        numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 
     student_t_df = float(prior_config.get('student_t_df', 3.0))
     numpyro.sample('obs', dist.StudentT(df=student_t_df, loc=fiber_model, scale=sigma_tot), obs=flux)

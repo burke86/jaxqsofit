@@ -1417,6 +1417,8 @@ class QSOFit:
             psf_mag_errs=psf_mag_errs,
             psf_filter_curves=psf_filter_curves,
             use_psf_phot=use_psf_phot,
+            return_line_components=False,
+            emit_deterministics=False,
             custom_components=custom_components,
             custom_line_components=custom_line_components,
         )
@@ -1593,6 +1595,8 @@ class QSOFit:
                 psf_mag_errs=psf_mag_errs,
                 psf_filter_curves=psf_filter_curves,
                 use_psf_phot=use_psf_phot,
+                return_line_components=False,
+                emit_deterministics=False,
                 custom_components=custom_components,
                 custom_line_components=custom_line_components,
                 progress_bar=self.verbose,
