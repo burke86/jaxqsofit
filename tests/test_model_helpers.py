@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 from numpyro.handlers import seed, substitute, trace
 
+import jaxqsofit.model as model_mod
 from jaxqsofit.defaults import build_default_prior_config
 from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
@@ -76,6 +77,8 @@ def test_build_tied_line_meta_from_linelist_minimal():
     assert meta['n_fgroups'] >= 1
     assert len(meta['names']) == 2
     assert np.all(np.isfinite(meta['line_lambda']))
+    for key in ("vgroup_jax", "wgroup_jax", "fgroup_jax", "flux_ratio_jax", "broad_mask_jax"):
+        assert key in meta
 
 
 def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_luminosities():
@@ -126,6 +129,148 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_lum
         site_name = f"log_lambda_Llambda_{wave_label}_agn"
         assert site_name in tr
         assert np.isfinite(float(tr[site_name]["value"]))
+
+
+def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
+    wave = np.linspace(4800.0, 5100.0, 64)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+    cfg = build_default_prior_config(flux)
+    line_table = [
+        {
+            "lambda": 4862.68,
+            "linename": "Hb_br",
+            "compname": "Hb",
+            "ngauss": 1,
+            "inisca": 1.0,
+            "minsca": 0.0,
+            "maxsca": 10.0,
+            "inisig": 0.01,
+            "minsig": 0.001,
+            "maxsig": 0.05,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 1.0,
+        },
+        {
+            "lambda": 5008.24,
+            "linename": "OIII5007",
+            "compname": "Hb",
+            "ngauss": 1,
+            "inisca": 0.5,
+            "minsca": 0.0,
+            "maxsca": 10.0,
+            "inisig": 0.003,
+            "minsig": 0.001,
+            "maxsig": 0.02,
+            "voff": 0.01,
+            "vindex": 1,
+            "windex": 1,
+            "findex": 1,
+            "fvalue": 1.0,
+        },
+    ]
+    tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+
+    class _Grid:
+        templates = np.zeros((wave.size, 1), dtype=float)
+        template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
+
+    params = {
+        "cont_norm": np.array(1.0),
+        "line_dmu_group": np.zeros(tied_line_meta["n_vgroups"]),
+        "line_sig_group": tied_line_meta["sig_init_group"],
+        "line_amp_group": tied_line_meta["amp_init_group"],
+        "frac_jitter": np.array(0.0),
+        "add_jitter": np.array(0.0),
+    }
+
+    def _trace(return_line_components, emit_deterministics=True):
+        return trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+            wave=wave,
+            flux=flux,
+            err=err,
+            conti_priors={},
+            tied_line_meta=tied_line_meta,
+            fsps_grid=_Grid(),
+            fe_uv_wave=np.array([2000.0, 6000.0]),
+            fe_uv_flux=np.zeros(2),
+            fe_op_wave=np.array([2000.0, 6000.0]),
+            fe_op_flux=np.zeros(2),
+            use_lines=True,
+            prior_config=cfg,
+            decompose_host=False,
+            fit_pl=False,
+            fit_fe=False,
+            fit_bc=False,
+            fit_poly=False,
+            fit_reddening=False,
+            return_line_components=return_line_components,
+            emit_deterministics=emit_deterministics,
+        )
+
+    tr_split = _trace(True)
+    tr_fast = _trace(False)
+
+    assert np.allclose(tr_fast["line_model"]["value"], tr_split["line_model"]["value"])
+    assert np.allclose(tr_fast["model"]["value"], tr_split["model"]["value"])
+    assert np.allclose(tr_fast["line_model_broad"]["value"], 0.0)
+    assert np.allclose(tr_fast["line_model_narrow"]["value"], 0.0)
+
+    tr_fit = _trace(False, emit_deterministics=False)
+    assert "obs" in tr_fit
+    assert "model" not in tr_fit
+    assert "line_model" not in tr_fit
+
+
+def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):
+    wave = np.linspace(2000.0, 6000.0, 16)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+    cfg = build_default_prior_config(flux)
+    tied_line_meta = build_tied_line_meta_from_linelist([], wave)
+
+    class _Grid:
+        templates = np.zeros((wave.size, 1), dtype=float)
+        template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
+
+    def _raise_if_called(*args, **kwargs):
+        raise AssertionError("disabled Fe/Balmer component was evaluated")
+
+    monkeypatch.setattr(model_mod, "_fe_template_component", _raise_if_called)
+    monkeypatch.setattr(model_mod, "_balmer_continuum_jax", _raise_if_called)
+
+    params = {
+        "cont_norm": np.array(1.0),
+        "frac_jitter": np.array(0.0),
+        "add_jitter": np.array(0.0),
+    }
+    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+        wave=wave,
+        flux=flux,
+        err=err,
+        conti_priors={},
+        tied_line_meta=tied_line_meta,
+        fsps_grid=_Grid(),
+        fe_uv_wave=np.array([2000.0, 6000.0]),
+        fe_uv_flux=np.zeros(2),
+        fe_op_wave=np.array([2000.0, 6000.0]),
+        fe_op_flux=np.zeros(2),
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=False,
+        fit_pl=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+        return_line_components=False,
+        emit_deterministics=False,
+    )
+
+    assert "obs" in tr
 
 
 def test_luminosity_distance_cm_jax_is_finite_and_vectorizable():
