@@ -1,0 +1,63 @@
+name: Run benchmarks for PR
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sdss-benchmark:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package and benchmark deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "jax==0.4.31" "jaxlib==0.4.31" "numpyro==0.19.0"
+          pip install -e .
+          pip install astroquery
+
+      - name: Download DSPS SSP template (tempdata.h5)
+        run: |
+          curl --fail --location --retry 5 --retry-delay 2 \
+            https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
+            --output tempdata.h5
+          test -s tempdata.h5
+
+      - name: Run SDSS benchmark
+        env:
+          JAXQSOFIT_BENCH_OPTAX_STEPS: "200"
+          JAXQSOFIT_BENCH_OPTAX_LR: "1e-2"
+        run: |
+          mkdir -p benchmark-artifacts
+          python benchmarks/sdss_pr_benchmark.py \
+            --output-dir benchmark-artifacts \
+            --dsps-ssp-fn tempdata.h5
+
+      - name: Store PR number
+        if: github.event_name == 'pull_request'
+        run: |
+          printf "%s" "${{ github.event.pull_request.number }}" > benchmark-artifacts/pr
+
+      - name: Store manual run marker
+        if: github.event_name != 'pull_request'
+        run: |
+          printf "%s" "0" > benchmark-artifacts/pr
+
+      - name: Upload benchmark artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmark-artifacts
+          path: benchmark-artifacts/
