@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpyro.distributions as dist
 from numpyro.handlers import seed, substitute, trace
 
+import jaxqsofit.model as modelmod
 from jaxqsofit.defaults import build_default_prior_config
 from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
@@ -11,8 +12,18 @@ from jaxqsofit.model import (
     _extract_line_table_from_prior_config,
     _luminosity_distance_cm_jax,
     build_tied_line_meta_from_linelist,
+    build_fsps_template_grid,
+    clear_fsps_template_grid_cache,
+    fsps_template_grid_cache_info,
     qso_fsps_joint_model,
 )
+
+
+class _FakeSSPData:
+    ssp_lgmet = np.asarray([-1.0, 0.0], dtype=float)
+    ssp_lg_age_gyr = np.asarray([-1.0, 0.0], dtype=float)
+    ssp_wave = np.linspace(1000.0, 9000.0, 8)
+    ssp_flux = np.arange(2 * 2 * 8, dtype=float).reshape(2, 2, 8) + 1.0
 
 
 def test_extract_line_table_from_prior_config_layouts():
@@ -76,6 +87,68 @@ def test_build_tied_line_meta_from_linelist_minimal():
     assert meta['n_fgroups'] >= 1
     assert len(meta['names']) == 2
     assert np.all(np.isfinite(meta['line_lambda']))
+
+
+def test_build_fsps_template_grid_reuses_cached_grid(monkeypatch, tmp_path):
+    calls = {"load": 0}
+
+    def _fake_load_ssp_templates(fn):
+        calls["load"] += 1
+        return _FakeSSPData()
+
+    monkeypatch.setattr(modelmod, "load_ssp_templates", _fake_load_ssp_templates)
+    clear_fsps_template_grid_cache()
+
+    dsps_path = tmp_path / "fake_ssp.h5"
+    dsps_path.write_text("first")
+    wave = np.linspace(2000.0, 7000.0, 16)
+    kwargs = {
+        "wave_out": wave,
+        "age_grid_gyr": (0.1, 1.0),
+        "logzsol_grid": (-1.0, 0.0),
+        "dsps_ssp_fn": str(dsps_path),
+    }
+
+    grid1 = build_fsps_template_grid(**kwargs)
+    grid1.templates[:] = -123.0
+    grid2 = build_fsps_template_grid(**kwargs)
+
+    assert calls["load"] == 1
+    assert fsps_template_grid_cache_info() == {"size": 1}
+    assert not np.all(grid2.templates == -123.0)
+    assert np.array_equal(grid2.wave, wave)
+
+    clear_fsps_template_grid_cache()
+
+
+def test_build_fsps_template_grid_cache_invalidates_when_file_changes(monkeypatch, tmp_path):
+    calls = {"load": 0}
+
+    def _fake_load_ssp_templates(fn):
+        calls["load"] += 1
+        return _FakeSSPData()
+
+    monkeypatch.setattr(modelmod, "load_ssp_templates", _fake_load_ssp_templates)
+    clear_fsps_template_grid_cache()
+
+    dsps_path = tmp_path / "fake_ssp.h5"
+    dsps_path.write_text("first")
+    wave = np.linspace(2000.0, 7000.0, 16)
+    kwargs = {
+        "wave_out": wave,
+        "age_grid_gyr": (0.1, 1.0),
+        "logzsol_grid": (-1.0, 0.0),
+        "dsps_ssp_fn": str(dsps_path),
+    }
+
+    build_fsps_template_grid(**kwargs)
+    dsps_path.write_text("second version")
+    build_fsps_template_grid(**kwargs)
+
+    assert calls["load"] == 2
+    assert fsps_template_grid_cache_info() == {"size": 2}
+
+    clear_fsps_template_grid_cache()
 
 
 def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_luminosities():

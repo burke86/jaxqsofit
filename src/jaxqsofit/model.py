@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import copy
+import hashlib
+import os
 import warnings
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, List, Sequence, Tuple
+from typing import Any, Dict, Hashable, List, Sequence, Tuple
 
 import numpy as np
 import extinction
@@ -26,6 +29,7 @@ warnings.filterwarnings("ignore")
 
 C_KMS = 299792.458
 _SFD_QUERY_CACHE: Dict[str, Any] = {}
+_FSPS_TEMPLATE_GRID_CACHE: Dict[tuple[Hashable, ...], "FSPSTemplateGrid"] = {}
 _LUMINOSITY_H0 = 70.0
 _LUMINOSITY_OM0 = 0.3
 MPC_TO_CM = 3.085677581491367e24
@@ -360,6 +364,62 @@ class FSPSTemplateGrid:
     logzsol_grid: np.ndarray
 
 
+def _array_cache_key(values: Sequence[float] | np.ndarray) -> tuple[float, ...]:
+    """Return a stable cache key for small numeric grid arrays."""
+    arr = np.asarray(values, dtype=float).ravel()
+    return tuple(float(x) for x in arr)
+
+
+def _wave_cache_key(wave: Sequence[float] | np.ndarray) -> tuple[Hashable, ...]:
+    """Return a compact cache key that still distinguishes fitted wave grids."""
+    arr = np.asarray(wave, dtype=float).ravel()
+    if arr.size == 0:
+        return (0,)
+    digest = hashlib.blake2b(arr.tobytes(), digest_size=16).hexdigest()
+    return (int(arr.size), float(arr[0]), float(arr[-1]), digest)
+
+
+def _file_cache_key(path: str) -> tuple[Hashable, ...]:
+    """Return a cache key for a template file that changes when the file changes."""
+    resolved = os.path.abspath(os.path.expanduser(str(path)))
+    try:
+        stat = os.stat(resolved)
+    except OSError:
+        return (resolved, None, None)
+    return (resolved, int(stat.st_mtime_ns), int(stat.st_size))
+
+
+def _fsps_template_grid_cache_key(
+    *,
+    wave_out: Sequence[float] | np.ndarray,
+    age_grid_gyr: Sequence[float],
+    logzsol_grid: Sequence[float],
+    imf_type: int,
+    zcontinuous: int,
+    sfh: int,
+    dsps_ssp_fn: str,
+) -> tuple[Hashable, ...]:
+    return (
+        _file_cache_key(dsps_ssp_fn),
+        _wave_cache_key(wave_out),
+        _array_cache_key(age_grid_gyr),
+        _array_cache_key(logzsol_grid),
+        int(imf_type),
+        int(zcontinuous),
+        int(sfh),
+    )
+
+
+def clear_fsps_template_grid_cache() -> None:
+    """Clear the in-process FSPS template-grid cache."""
+    _FSPS_TEMPLATE_GRID_CACHE.clear()
+
+
+def fsps_template_grid_cache_info() -> dict[str, int]:
+    """Return lightweight diagnostics for the FSPS template-grid cache."""
+    return {"size": len(_FSPS_TEMPLATE_GRID_CACHE)}
+
+
 def _map_logzsol_to_dsps_lgmet(logzsol_grid: Sequence[float], ssp_lgmet: np.ndarray) -> np.ndarray:
     """Map fitting metallicity grid to DSPS metallicity convention."""
     logzsol_grid = np.asarray(logzsol_grid, dtype=float)
@@ -398,6 +458,18 @@ def build_fsps_template_grid(
     dsps_ssp_fn: str = 'tempdata.h5',
 ) -> FSPSTemplateGrid:
     """Build a host-galaxy SSP template matrix on the observed wavelength grid."""
+    cache_key = _fsps_template_grid_cache_key(
+        wave_out=wave_out,
+        age_grid_gyr=age_grid_gyr,
+        logzsol_grid=logzsol_grid,
+        imf_type=imf_type,
+        zcontinuous=zcontinuous,
+        sfh=sfh,
+        dsps_ssp_fn=dsps_ssp_fn,
+    )
+    if cache_key in _FSPS_TEMPLATE_GRID_CACHE:
+        return copy.deepcopy(_FSPS_TEMPLATE_GRID_CACHE[cache_key])
+
     # Parameters kept for API compatibility.
     _ = (imf_type, zcontinuous, sfh)
 
@@ -438,13 +510,15 @@ def build_fsps_template_grid(
             })
 
     templates = np.column_stack(tmpl)
-    return FSPSTemplateGrid(
+    grid = FSPSTemplateGrid(
         wave=wave_out,
         templates=templates,
         template_meta=meta,
         age_grid_gyr=np.asarray(age_grid_gyr, dtype=float),
         logzsol_grid=np.asarray(logzsol_grid, dtype=float),
     )
+    _FSPS_TEMPLATE_GRID_CACHE[cache_key] = copy.deepcopy(grid)
+    return grid
 
 
 def reconstruct_posterior_components(
