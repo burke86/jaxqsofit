@@ -21,8 +21,6 @@ Bayesian quasar spectral fitting with JAX + NumPyro, including:
 ## Start Here: Tutorial
 
 - GitHub view: [`notebooks/01_jaxqsofit_tutorial.ipynb`](./notebooks/01_jaxqsofit_tutorial.ipynb)
-- Direct download:
-  `https://raw.githubusercontent.com/burke86/jaxqsofit/main/notebooks/01_jaxqsofit_tutorial.ipynb`
 
 ## Documentation
 
