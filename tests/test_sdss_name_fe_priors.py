@@ -3,6 +3,8 @@ import os
 import numpy as np
 import pytest
 
+pytestmark = pytest.mark.integration
+
 
 def test_sdss_name_fe_width_prior_wrms_below_threshold():
     """Resolve a named target, fit with tight Fe-FWHM priors, and require WRMS < 1.8."""
@@ -93,4 +95,3 @@ def test_sdss_name_fe_width_prior_wrms_below_threshold():
     wrms = float(np.sqrt(np.mean(zres**2)))
     threshold = float(os.getenv("JAXQSOFIT_NAME_WRMS_THRESHOLD", "1.8"))
     assert wrms < threshold, f"WRMS too high: {wrms:.3f} (threshold={threshold:.3f})"
-

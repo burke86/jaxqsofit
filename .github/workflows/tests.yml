@@ -26,11 +26,19 @@ jobs:
           python -m pip install --upgrade pip
           pip install "jax==0.4.31" "jaxlib==0.4.31" "numpyro==0.19.0"
           pip install -e .
-          pip install pytest pytest-cov
+          pip install pytest pytest-cov astroquery
 
-      - name: Download DSPS SSP template (tempdata.h5)
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
         run: |
-          curl --fail --location --retry 5 --retry-delay 2 \
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
             https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
             --output tempdata.h5
           test -s tempdata.h5
@@ -72,9 +80,17 @@ jobs:
           pip install -e .
           pip install pytest astroquery
 
-      - name: Download DSPS SSP template (tempdata.h5)
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
         run: |
-          curl --fail --location --retry 5 --retry-delay 2 \
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
             https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
             --output tempdata.h5
           test -s tempdata.h5
