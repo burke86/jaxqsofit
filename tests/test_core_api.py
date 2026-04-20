@@ -445,6 +445,135 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert called["plot_mcmc_diagnostics"] == 1
 
 
+def test_plot_trace_show_plot_false_skips_plt_show(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {"PL_slope": np.array([-1.5, -1.4, -1.6])}
+    q.save_fig = False
+
+    called = {"show": 0}
+
+    def _stub_show():
+        called["show"] += 1
+
+    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+
+    fig = q.plot_trace(show_plot=False)
+
+    assert fig is not None
+    assert called["show"] == 0
+
+
+def test_plot_trace_show_plot_true_calls_plt_show(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {"PL_slope": np.array([-1.5, -1.4, -1.6])}
+    q.save_fig = False
+
+    called = {"show": 0}
+
+    def _stub_show():
+        called["show"] += 1
+
+    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+
+    fig = q.plot_trace(show_plot=True)
+
+    assert fig is not None
+    assert called["show"] == 1
+
+
+def test_plot_corner_show_plot_false_skips_plt_show(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+    }
+    q.save_fig = False
+
+    called = {"show": 0}
+
+    def _stub_show():
+        called["show"] += 1
+
+    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+
+    fig = q.plot_corner(show_plot=False)
+
+    assert fig is not None
+    assert called["show"] == 0
+
+
+def test_plot_corner_show_plot_true_calls_plt_show(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+    }
+    q.save_fig = False
+
+    called = {"show": 0}
+
+    def _stub_show():
+        called["show"] += 1
+
+    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+
+    fig = q.plot_corner(show_plot=True)
+
+    assert fig is not None
+    assert called["show"] == 1
+
+
+def test_plot_corner_reduces_tick_label_fontsize():
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+    }
+    q.save_fig = False
+
+    fig = q.plot_corner(show_plot=False)
+
+    assert fig is not None
+    tick_sizes = [
+        tick.get_fontsize()
+        for ax in fig.axes
+        for tick in list(ax.get_xticklabels()) + list(ax.get_yticklabels())
+        if tick.get_visible()
+    ]
+    assert tick_sizes
+    assert all(size == 8 for size in tick_sizes)
+
+
+def test_plot_mcmc_diagnostics_forwards_show_plot(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    called = {"trace": None, "corner": None}
+
+    def _stub_trace(self, **kwargs):
+        called["trace"] = kwargs
+        return None
+
+    def _stub_corner(self, **kwargs):
+        called["corner"] = kwargs
+        return None
+
+    monkeypatch.setattr(QSOFit, "plot_trace", _stub_trace)
+    monkeypatch.setattr(QSOFit, "plot_corner", _stub_corner)
+
+    q.plot_mcmc_diagnostics(show_plot=False)
+
+    assert called["trace"] is not None
+    assert called["corner"] is not None
+    assert called["trace"]["show_plot"] is False
+    assert called["corner"]["show_plot"] is False
+
+
 def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = QSOFit(
