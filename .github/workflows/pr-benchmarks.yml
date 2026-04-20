@@ -10,11 +10,20 @@ permissions:
 jobs:
   sdss-benchmark:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
 
     steps:
-      - name: Checkout
+      - name: Checkout PR head
         uses: actions/checkout@v4
+        with:
+          path: benchmark-head
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          path: benchmark-base
+          ref: ${{ github.event.pull_request.base.sha || 'main' }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -26,12 +35,20 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install "jax==0.4.31" "jaxlib==0.4.31" "numpyro==0.19.0"
-          pip install -e .
+          pip install -e benchmark-head
           pip install astroquery
 
-      - name: Download DSPS SSP template (tempdata.h5)
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
         run: |
-          curl --fail --location --retry 5 --retry-delay 2 \
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
             https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
             --output tempdata.h5
           test -s tempdata.h5
@@ -40,11 +57,27 @@ jobs:
         env:
           JAXQSOFIT_BENCH_OPTAX_STEPS: "200"
           JAXQSOFIT_BENCH_OPTAX_LR: "1e-2"
+          JAXQSOFIT_BENCH_REPEATS: "3"
         run: |
           mkdir -p benchmark-artifacts
-          python benchmarks/sdss_pr_benchmark.py \
-            --output-dir benchmark-artifacts \
+          python -m pip install --force-reinstall --no-deps -e benchmark-base
+          python benchmark-head/benchmarks/sdss_pr_benchmark.py run \
+            --output-dir benchmark-artifacts/base \
+            --label base \
+            --sha "${{ github.event.pull_request.base.sha || 'main' }}" \
             --dsps-ssp-fn tempdata.h5
+
+          python -m pip install --force-reinstall --no-deps -e benchmark-head
+          python benchmark-head/benchmarks/sdss_pr_benchmark.py run \
+            --output-dir benchmark-artifacts/head \
+            --label pr \
+            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
+            --dsps-ssp-fn tempdata.h5
+
+          python benchmark-head/benchmarks/sdss_pr_benchmark.py compare \
+            --baseline-json benchmark-artifacts/base/benchmark.json \
+            --candidate-json benchmark-artifacts/head/benchmark.json \
+            --output-dir benchmark-artifacts
 
       - name: Store PR number
         if: github.event_name == 'pull_request'
