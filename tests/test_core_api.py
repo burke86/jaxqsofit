@@ -6,6 +6,7 @@ import pytest
 
 import jaxqsofit
 import jaxqsofit.core as coremod
+import jaxqsofit.model as modelmod
 from jaxqsofit import QSOFit, build_default_prior_config
 
 
@@ -21,6 +22,59 @@ def _make_wide_spectrum(n=256):
     flux = 40.0 + 0.0015 * (lam - 6000.0)
     err = np.full_like(flux, 0.4)
     return lam, flux, err
+
+
+def _build_bundle_source(tmp_path, filename, decompose_host):
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(
+        lam=lam,
+        flux=flux,
+        err=err,
+        z=0.1,
+        ra=150.0,
+        dec=2.0,
+        filename=filename,
+        output_path=str(tmp_path),
+    )
+    q.wave = lam
+    q.wave_prereduced = lam
+    q.flux = flux
+    q.flux_prereduced = flux
+    q.err = err
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q._fit_fit_lines = False
+    q._fit_decompose_host = bool(decompose_host)
+    q._fit_fit_pl = True
+    q._fit_fit_fe = False
+    q._fit_fit_bc = False
+    q._fit_fit_poly = False
+    q._fit_fit_poly_order = 2
+    q._fit_fit_reddening = False
+    q._fit_use_psf_phot = False
+    q._fit_custom_components = ()
+    q._fit_custom_line_components = ()
+    q.numpyro_samples = {
+        "cont_norm": np.array([1.0, 1.1, 0.9]),
+        "log_frac_host": np.array([0.0, 0.1, -0.1]),
+        "PL_norm": np.array([1.0, 1.0, 1.0]),
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+    }
+    if decompose_host:
+        q.numpyro_samples.update({
+            "tau_host": np.array([1.0, 1.0, 1.0]),
+            "fsps_weights_raw": np.zeros((3, 4)),
+            "gal_v_kms": np.zeros(3),
+            "gal_sigma_kms": np.full(3, 100.0),
+        })
+    q.save_fig = False
+    return q, lam, flux, err
 
 
 def test_init_err_optional_defaults_to_small_value():
@@ -153,8 +207,14 @@ def test_build_fsps_grid_for_fit_skips_template_load_when_host_disabled(monkeypa
         decompose_host=False,
     )
 
-    assert grid.templates.shape == (lam.size, 1)
+    assert grid.templates.shape == (lam.size, 4)
     assert np.allclose(grid.templates, 0.0)
+    assert [(meta["logzsol"], meta["tage_gyr"]) for meta in grid.template_meta] == [
+        (-0.5, 0.1),
+        (-0.5, 1.0),
+        (0.0, 0.1),
+        (0.0, 1.0),
+    ]
 
 
 def test_fit_dispatch_nuts(monkeypatch):
@@ -369,50 +429,7 @@ def test_fit_method_unknown_raises():
 
 
 def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
-    lam, flux, err = _make_simple_spectrum()
-    q = QSOFit(
-        lam=lam,
-        flux=flux,
-        err=err,
-        z=0.1,
-        ra=150.0,
-        dec=2.0,
-        filename="unit_test_fit",
-        output_path=str(tmp_path),
-    )
-
-    # Minimal fitted state needed for sample+meta reload/hydration.
-    q.wave = lam
-    q.wave_prereduced = lam
-    q.flux = flux
-    q.flux_prereduced = flux
-    q.err = err
-    q.fe_uv_wave = np.array([2000.0, 4000.0])
-    q.fe_uv_flux = np.array([0.0, 0.0])
-    q.fe_op_wave = np.array([3500.0, 7000.0])
-    q.fe_op_flux = np.array([0.0, 0.0])
-    q._fit_prior_config = build_default_prior_config(flux)
-    q._fit_fsps_age_grid = (0.1, 1.0)
-    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
-    q._fit_dsps_ssp_fn = "fake_ssp.h5"
-    q._fit_fit_lines = False
-    q._fit_decompose_host = False
-    q._fit_fit_pl = True
-    q._fit_fit_fe = False
-    q._fit_fit_bc = False
-    q._fit_fit_poly = False
-    q._fit_fit_poly_order = 2
-    q._fit_fit_reddening = False
-    q._fit_use_psf_phot = False
-    q._fit_custom_components = ()
-    q._fit_custom_line_components = ()
-    q.numpyro_samples = {
-        "cont_norm": np.array([1.0, 1.1, 0.9]),
-        "log_frac_host": np.array([0.0, 0.1, -0.1]),
-        "PL_norm": np.array([1.0, 1.0, 1.0]),
-        "PL_slope": np.array([-1.5, -1.4, -1.6]),
-    }
-    q.save_fig = False
+    q, lam, flux, _err = _build_bundle_source(tmp_path, "unit_test_fit", decompose_host=False)
 
     saved_path = q.save_posterior_bundle()
     assert saved_path.endswith("unit_test_fit_samples.h5")
@@ -441,6 +458,10 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert hasattr(loaded, "model_total")
     assert loaded.model_total.shape == lam.shape
     assert set(loaded.numpyro_samples.keys()) == {"cont_norm", "log_frac_host", "PL_norm", "PL_slope"}
+    assert loaded.pred_out["fsps_weights"].shape == (3, 4)
+    assert np.allclose(loaded.pred_out["fsps_weights"], 0.0)
+    assert np.allclose(loaded._pred_host_draws, 0.0)
+    assert np.allclose(loaded.host, 0.0)
     assert called["plot_fig"] == 1
     assert called["plot_mcmc_diagnostics"] == 1
 
@@ -575,49 +596,7 @@ def test_plot_mcmc_diagnostics_forwards_show_plot(monkeypatch):
 
 
 def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
-    lam, flux, err = _make_simple_spectrum()
-    q = QSOFit(
-        lam=lam,
-        flux=flux,
-        err=err,
-        z=0.1,
-        ra=150.0,
-        dec=2.0,
-        filename="unit_test_fit_auto",
-        output_path=str(tmp_path),
-    )
-
-    q.wave = lam
-    q.wave_prereduced = lam
-    q.flux = flux
-    q.flux_prereduced = flux
-    q.err = err
-    q.fe_uv_wave = np.array([2000.0, 4000.0])
-    q.fe_uv_flux = np.array([0.0, 0.0])
-    q.fe_op_wave = np.array([3500.0, 7000.0])
-    q.fe_op_flux = np.array([0.0, 0.0])
-    q._fit_prior_config = build_default_prior_config(flux)
-    q._fit_fsps_age_grid = (0.1, 1.0)
-    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
-    q._fit_dsps_ssp_fn = "fake_ssp.h5"
-    q._fit_fit_lines = False
-    q._fit_decompose_host = False
-    q._fit_fit_pl = True
-    q._fit_fit_fe = False
-    q._fit_fit_bc = False
-    q._fit_fit_poly = False
-    q._fit_fit_poly_order = 2
-    q._fit_fit_reddening = False
-    q._fit_use_psf_phot = False
-    q._fit_custom_components = ()
-    q._fit_custom_line_components = ()
-    q.numpyro_samples = {
-        "cont_norm": np.array([1.0, 1.1, 0.9]),
-        "log_frac_host": np.array([0.0, 0.1, -0.1]),
-        "PL_norm": np.array([1.0, 1.0, 1.0]),
-        "PL_slope": np.array([-1.5, -1.4, -1.6]),
-    }
-    q.save_fig = False
+    q, _lam, _flux, _err = _build_bundle_source(tmp_path, "unit_test_fit_auto", decompose_host=False)
     q.save_posterior_bundle()
 
     monkeypatch.setattr(QSOFit, "plot_fig", lambda self, **kwargs: None)
@@ -628,6 +607,49 @@ def test_load_from_samples_roundtrip_without_filename(tmp_path, monkeypatch):
     assert isinstance(loaded, QSOFit)
     assert loaded.filename == "unit_test_fit_auto"
     assert loaded.output_path == str(tmp_path)
+
+
+def test_load_from_samples_roundtrip_with_host_enabled(tmp_path, monkeypatch):
+    q, lam, _flux, _err = _build_bundle_source(tmp_path, "unit_test_fit_host", decompose_host=True)
+    q.save_posterior_bundle()
+
+    def _stub_template_grid(**kwargs):
+        wave = np.asarray(kwargs["wave_out"], dtype=float)
+        grid = type("Grid", (), {})()
+        grid.wave = wave
+        grid.templates = np.column_stack([
+            np.ones(wave.size, dtype=float),
+            np.ones(wave.size, dtype=float) * 2.0,
+            np.ones(wave.size, dtype=float) * 3.0,
+            np.ones(wave.size, dtype=float) * 4.0,
+        ])
+        grid.template_meta = [
+            {"tage_gyr": 0.1, "logzsol": -0.5, "norm": 1.0, "dsps_lgmet": -1.0, "dsps_lg_age_gyr": -1.0},
+            {"tage_gyr": 1.0, "logzsol": -0.5, "norm": 1.0, "dsps_lgmet": -1.0, "dsps_lg_age_gyr": 0.0},
+            {"tage_gyr": 0.1, "logzsol": 0.0, "norm": 1.0, "dsps_lgmet": 0.0, "dsps_lg_age_gyr": -1.0},
+            {"tage_gyr": 1.0, "logzsol": 0.0, "norm": 1.0, "dsps_lgmet": 0.0, "dsps_lg_age_gyr": 0.0},
+        ]
+        grid.age_grid_gyr = np.array([0.1, 1.0], dtype=float)
+        grid.logzsol_grid = np.array([-0.5, 0.0], dtype=float)
+        return grid
+
+    monkeypatch.setattr(coremod, "build_fsps_template_grid", _stub_template_grid)
+    monkeypatch.setattr(modelmod, "build_fsps_template_grid", _stub_template_grid)
+    monkeypatch.setattr(QSOFit, "plot_fig", lambda self, **kwargs: None)
+    monkeypatch.setattr(QSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
+
+    loaded = jaxqsofit.load_from_samples(
+        filename="unit_test_fit_host",
+        output_path=str(tmp_path),
+    )
+
+    recon = loaded.reconstruct_posterior_spectrum(n_draws=2)
+
+    assert isinstance(loaded, QSOFit)
+    assert loaded.pred_out["fsps_weights"].shape == (3, 4)
+    assert np.all(np.isfinite(loaded.pred_out["fsps_weights"]))
+    assert loaded.host.shape == lam.shape
+    assert recon["draws"]["host"].shape == (2, recon["wave"].size)
 
 
 def test_save_posterior_bundle_excludes_figures_transient_and_duplicate_caches(tmp_path):
@@ -736,7 +758,7 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
         "cont_norm": np.array([1.0, 1.1]),
         "log_frac_host": np.array([0.0, 0.1]),
     }
-    q.pred_out = {"fsps_weights": np.ones((2, 2))}
+    q.pred_out = {"fsps_weights": np.ones((2, 4))}
     q.fe_uv_wave = np.array([2000.0, 4000.0])
     q.fe_uv_flux = np.array([0.0, 0.0])
     q.fe_op_wave = np.array([3500.0, 7000.0])
@@ -777,6 +799,91 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
     assert captured["return_components"] is False
     assert np.isclose(np.min(captured["wave_out"]), 2500.0)
     assert np.allclose(out["wave"], captured["wave_out"])
+
+
+def test_reconstruct_posterior_spectrum_raises_on_fsps_weight_width_mismatch():
+    lam, flux, err = _make_simple_spectrum()
+    q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)
+
+    q.wave = lam
+    q.flux = flux
+    q.numpyro_samples = {
+        "cont_norm": np.array([1.0, 1.1]),
+        "log_frac_host": np.array([0.0, 0.1]),
+    }
+    q.pred_out = {"fsps_weights": np.ones((2, 1))}
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q._fit_prior_config = build_default_prior_config(flux)
+    q._fit_fsps_age_grid = (0.1, 1.0)
+    q._fit_fsps_logzsol_grid = (-0.5, 0.0)
+    q._fit_dsps_ssp_fn = "fake_ssp.h5"
+    q._fit_fit_poly = False
+    q._fit_fit_poly_order = 2
+    q._fit_fit_reddening = False
+
+    with pytest.raises(ValueError, match="fsps_weights.*width 4, got 1"):
+        q.reconstruct_posterior_spectrum()
+
+
+def test_load_from_samples_raises_on_missing_fsps_metadata(tmp_path, monkeypatch):
+    q, _lam, _flux, _err = _build_bundle_source(tmp_path, "unit_test_missing_meta", decompose_host=False)
+    saved_path = q.save_posterior_bundle()
+
+    with h5py.File(saved_path, "a") as h5f:
+        del h5f["meta"]["_fit_dsps_ssp_fn"]
+
+    monkeypatch.setattr(QSOFit, "plot_fig", lambda self, **kwargs: None)
+    monkeypatch.setattr(QSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
+
+    with pytest.raises(ValueError, match="missing required FSPS metadata.*_fit_dsps_ssp_fn"):
+        jaxqsofit.load_from_samples(
+            filename="unit_test_missing_meta",
+            output_path=str(tmp_path),
+        )
+
+
+def test_load_from_samples_roundtrip_host_disabled_reconstructs_without_loading_fsps(tmp_path, monkeypatch):
+    q, _lam, _flux, _err = _build_bundle_source(tmp_path, "unit_test_host_disabled_recon", decompose_host=False)
+    q.save_posterior_bundle()
+
+    def _boom(**kwargs):
+        raise AssertionError("FSPS templates should not be loaded for host-disabled hydration or reconstruction")
+
+    monkeypatch.setattr(coremod, "build_fsps_template_grid", _boom)
+    monkeypatch.setattr(modelmod, "build_fsps_template_grid", _boom)
+    monkeypatch.setattr(QSOFit, "plot_fig", lambda self, **kwargs: None)
+    monkeypatch.setattr(QSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
+
+    loaded = jaxqsofit.load_from_samples(
+        filename="unit_test_host_disabled_recon",
+        output_path=str(tmp_path),
+    )
+
+    def _stub_reconstruct(**kwargs):
+        assert kwargs["pred_out"]["fsps_weights"].shape == (3, 4)
+        return {
+            "wave": np.asarray(kwargs["wave_out"]),
+            "draws": {
+                "host": np.zeros((3, len(kwargs["wave_out"]))),
+                "continuum": np.ones((3, len(kwargs["wave_out"]))),
+            },
+            "median": {
+                "host": np.zeros(len(kwargs["wave_out"])),
+                "continuum": np.ones(len(kwargs["wave_out"])),
+            },
+        }
+
+    monkeypatch.setattr(coremod, "reconstruct_posterior_components", _stub_reconstruct)
+
+    recon = loaded.reconstruct_posterior_spectrum(n_draws=3)
+
+    assert loaded.pred_out["fsps_weights"].shape == (3, 4)
+    assert np.allclose(loaded.pred_out["fsps_weights"], 0.0)
+    assert np.allclose(loaded._pred_host_draws, 0.0)
+    assert np.allclose(recon["draws"]["host"], 0.0)
 
 
 def test_component_fraction_at_wave_reconstruct_uses_rebuilt_draws(monkeypatch):
