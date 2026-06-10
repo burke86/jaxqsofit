@@ -36,7 +36,6 @@ autodoc_mock_imports = [
     'dsps',
     'dustmaps',
     'extinction',
-    'astropy',
 ]
 
 templates_path = ['_templates']
