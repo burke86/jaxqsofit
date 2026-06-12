@@ -307,6 +307,35 @@ def test_fit_dispatch_optax(monkeypatch):
     assert called['optax'] == 1
 
 
+def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    z = 2.0
+    q = QSOFit(lam=lam, flux=flux, err=err, z=z)
+
+    called = {'kwargs': None}
+
+    def _stub_optax(**kwargs):
+        called['kwargs'] = kwargs
+
+    monkeypatch.setattr(q, 'run_fsps_optax_fit', _stub_optax)
+
+    q.fit(
+        deredden=False,
+        fit_method='optax',
+        plot_fig=False,
+        save_result=False,
+        prior_config=None,
+    )
+
+    prior_config = called['kwargs']['prior_config']
+    expected_rest_fscale = np.nanmedian(np.abs(flux * (1.0 + z)))
+    observed_fscale = np.nanmedian(np.abs(flux))
+
+    assert np.isclose(prior_config["log_cont_norm"]["loc"], np.log(expected_rest_fscale))
+    assert not np.isclose(prior_config["log_cont_norm"]["loc"], np.log(observed_fscale))
+    assert np.allclose(q.flux, flux * (1.0 + z))
+
+
 def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = QSOFit(lam=lam, flux=flux, err=err, z=0.1)

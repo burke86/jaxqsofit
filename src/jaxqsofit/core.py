@@ -1158,6 +1158,20 @@ class QSOFit:
         self.flux = self.flux_in[ind_gooderror]
         self.lam = self.lam_in[ind_gooderror]
 
+        if wave_range is not None:
+            self._wave_trim(self.lam, self.flux, self.err, self.z)
+        if wave_mask is not None:
+            self._wave_msk(self.lam, self.flux, self.err, self.z)
+        if mask_lya_forest:
+            self._mask_lya_forest(self.lam, self.flux, self.err, self.z)
+        if deredden:
+            self._validate_deredden_coordinates(self.ra, self.dec)
+            self._de_redden(self.lam, self.flux, self.err, self.ra, self.dec)
+
+        self._rest_frame(self.lam, self.flux, self.err, self.z)
+        self._calculate_sn(self.wave, self.flux)
+        self._orignial_spec(self.wave, self.flux, self.err)
+
         bal_components = build_default_bal_components(self.flux) if bool(fit_bal) else ()
         self._fit_custom_components = normalize_custom_components(
             tuple(requested_custom_components) + tuple(bal_components)
@@ -1179,19 +1193,6 @@ class QSOFit:
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
         self._fit_prior_config = prior_config
 
-        if wave_range is not None:
-            self._wave_trim(self.lam, self.flux, self.err, self.z)
-        if wave_mask is not None:
-            self._wave_msk(self.lam, self.flux, self.err, self.z)
-        if mask_lya_forest:
-            self._mask_lya_forest(self.lam, self.flux, self.err, self.z)
-        if deredden:
-            self._validate_deredden_coordinates(self.ra, self.dec)
-            self._de_redden(self.lam, self.flux, self.err, self.ra, self.dec)
-
-        self._rest_frame(self.lam, self.flux, self.err, self.z)
-        self._calculate_sn(self.wave, self.flux)
-        self._orignial_spec(self.wave, self.flux, self.err)
         pl_pivot = prior_config.get("PL_pivot", None)
         if pl_pivot is None:
             pl_pivot = _spectrum_center_pivot(self.wave)
