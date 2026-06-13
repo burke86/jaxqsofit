@@ -38,7 +38,7 @@ def test_build_default_prior_config_has_expected_keys():
         "low": 7.0,
         "high": 12.0,
     }
-    assert cfg["log_host_aperture_scale"] == {"dist": "Delta", "value": 0.0}
+    assert cfg["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
 
 
 def test_build_default_prior_config_scales_with_flux_median():

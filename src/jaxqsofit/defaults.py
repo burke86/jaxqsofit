@@ -410,7 +410,7 @@ def build_default_prior_config(
         "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
         "host_sfh_model": "delayed",
         "log_stellar_mass": {"dist": "TruncatedNormal", "loc": 9.0, "scale": 0.75, "low": 7.0, "high": 12.0},
-        "log_host_aperture_scale": {"dist": "Delta", "value": 0.0},
+        "log_host_aperture_scale": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
         "log_sfh_age_gyr": {"dist": "Normal", "loc": np.log(3.0), "scale": 1.0},
         "log_sfh_tau_gyr": {"dist": "Normal", "loc": np.log(1.0), "scale": 1.0},
         "gal_lgmet": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
