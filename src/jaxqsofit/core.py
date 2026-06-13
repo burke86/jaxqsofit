@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import glob
+from dataclasses import replace
 
 import extinction
 import h5py
@@ -39,6 +40,7 @@ from .model import (
     _normalize_template_flux,
     _np_to_jnp,
     _spectrum_center_pivot,
+    FSPSTemplateGrid,
     build_fsps_template_grid,
     build_tied_line_meta_from_linelist,
     qso_fsps_joint_model,
@@ -1654,20 +1656,81 @@ class QSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _run_svi(guide, steps, use_lines_i, fit_pl_i, fit_fe_i, fit_bc_i, fit_poly_i, fit_reddening_i, fit_poly_order_i, decompose_host_i):
+        def _subset_fsps_grid(grid, keep_mask):
+            """Return an FSPS grid restricted to the selected wavelength pixels."""
+            keep_mask = np.asarray(keep_mask, dtype=bool)
+            host_basis = getattr(grid, "host_basis_jax", None)
+            if host_basis is not None:
+                host_basis = replace(
+                    host_basis,
+                    rest_llambda=host_basis.rest_llambda[..., keep_mask],
+                )
+            return FSPSTemplateGrid(
+                wave=np.asarray(grid.wave)[keep_mask],
+                templates=np.asarray(grid.templates)[keep_mask, :],
+                template_meta=grid.template_meta,
+                age_grid_gyr=grid.age_grid_gyr,
+                logzsol_grid=grid.logzsol_grid,
+                host_basis_jax=host_basis,
+                t_obs_gyr=grid.t_obs_gyr,
+            )
+
+        def _stage1_continuum_keep_mask(wave_in):
+            """Mask strong optical emission-line windows for continuum warm start."""
+            line_windows = (
+                (3700.0, 3755.0),   # [O II]
+                (3850.0, 3895.0),   # [Ne III]
+                (4070.0, 4135.0),   # Hdelta
+                (4300.0, 4385.0),   # Hgamma + [O III] 4363
+                (4630.0, 5105.0),   # He II, Hbeta, [O III]
+                (5800.0, 5925.0),   # He I
+                (6250.0, 6405.0),   # [O I]
+                (6450.0, 6775.0),   # Halpha, [N II], [S II]
+                (7050.0, 7165.0),   # He I / [Ar III]
+                (7300.0, 7355.0),   # [O II]
+            )
+            wave_in = np.asarray(wave_in, dtype=float)
+            keep = np.isfinite(wave_in)
+            for lo, hi in line_windows:
+                keep &= ~((wave_in >= lo) & (wave_in <= hi))
+            min_keep = max(50, int(0.2 * wave_in.size))
+            if int(np.sum(keep)) < min_keep:
+                return np.isfinite(wave_in)
+            return keep
+
+        def _run_svi(
+            guide,
+            steps,
+            use_lines_i,
+            fit_pl_i,
+            fit_fe_i,
+            fit_bc_i,
+            fit_poly_i,
+            fit_reddening_i,
+            fit_poly_order_i,
+            decompose_host_i,
+            wave_i=None,
+            flux_i=None,
+            err_i=None,
+            fsps_grid_i=None,
+        ):
             """Run an SVI stage and return optimizer state/results."""
+            wave_run = wave if wave_i is None else wave_i
+            flux_run = flux if flux_i is None else flux_i
+            err_run = err if err_i is None else err_i
+            fsps_grid_run = fsps_grid if fsps_grid_i is None else fsps_grid_i
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
             svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
             key = jax.random.PRNGKey(0)
             result = svi.run(
                 key,
                 int(steps),
-                wave=wave,
-                flux=flux,
-                err=err,
+                wave=wave_run,
+                flux=flux_run,
+                err=err_run,
                 conti_priors=conti_priors,
                 tied_line_meta=tied_line_meta,
-                fsps_grid=fsps_grid,
+                fsps_grid=fsps_grid_run,
                 fe_uv_wave=self.fe_uv_wave,
                 fe_uv_flux=self.fe_uv_flux,
                 fe_op_wave=self.fe_op_wave,
@@ -1737,6 +1800,9 @@ class QSOFit:
 
         # Stage 1: warm start on simpler landscape (continuum/host only).
         n1 = max(100, int(num_steps // 3))
+        stage1_keep = _stage1_continuum_keep_mask(wave)
+        self.init_stage1_keep_mask = stage1_keep
+        fsps_grid_stage1 = _subset_fsps_grid(fsps_grid, stage1_keep)
         stage1_init_values = _stage1_init_values()
         guide1 = AutoDelta(
             qso_fsps_joint_model,
@@ -1753,6 +1819,10 @@ class QSOFit:
             fit_reddening_i=False,
             fit_poly_order_i=2,
             decompose_host_i=decompose_host,
+            wave_i=wave[stage1_keep],
+            flux_i=flux[stage1_keep],
+            err_i=err[stage1_keep],
+            fsps_grid_i=fsps_grid_stage1,
         )
         map1 = guide1.median(res1.params)
         if plot_init:
