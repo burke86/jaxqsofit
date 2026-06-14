@@ -55,10 +55,10 @@ from .model import (
     _np_to_jnp,
     _spectrum_center_pivot,
     FSPSTemplateGrid,
-    build_fsps_template_grid,
-    build_tied_line_meta_from_linelist,
-    qso_fsps_joint_model,
-    reconstruct_posterior_components,
+    build_host_template_grid,
+    build_tied_line_metadata,
+    quasar_spectral_model,
+    reconstruct_spectral_components,
     unred,
 )
 
@@ -811,7 +811,7 @@ class JAXQSOFit:
         use_lines = bool(getattr(self, "_fit_fit_lines", True))
         line_table = _extract_line_table_from_prior_config(prior_config)
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_metadata(line_table, wave)
         else:
             tied_line_meta = self._empty_tied_line_meta()
         if use_lines and line_table is None and len(custom_line_components) == 0:
@@ -830,7 +830,7 @@ class JAXQSOFit:
         self.tied_line_meta = tied_line_meta
 
         pred = Predictive(
-            qso_fsps_joint_model,
+            quasar_spectral_model,
             posterior_samples={k: jnp.asarray(v) for k, v in self.numpyro_samples.items()},
             return_sites=self._predictive_return_sites(
                 custom_components=custom_components,
@@ -912,7 +912,7 @@ class JAXQSOFit:
     def _build_fsps_grid_for_fit(wave, age_grid_gyr, logzsol_grid, dsps_ssp_fn, decompose_host, z_qso=0.0):
         """Build the host-template grid only when host decomposition is enabled."""
         if decompose_host:
-            return build_fsps_template_grid(
+            return build_host_template_grid(
                 wave_out=wave,
                 age_grid_gyr=age_grid_gyr,
                 logzsol_grid=logzsol_grid,
@@ -1398,7 +1398,7 @@ class JAXQSOFit:
             )
 
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_metadata(line_table, wave)
         else:
             tied_line_meta = {
                 'n_lines': 0,
@@ -1435,7 +1435,7 @@ class JAXQSOFit:
 
         init_vals = {'gal_v_kms': 0.0, 'gal_sigma_kms': 150.0} if init_values is None else init_values
         init_strategy = init_to_value(values=init_vals)
-        kernel = NUTS(qso_fsps_joint_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
+        kernel = NUTS(quasar_spectral_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
         rng_key = jax.random.PRNGKey(0)
         mcmc.run(
@@ -1472,7 +1472,7 @@ class JAXQSOFit:
         samples = mcmc.get_samples()
 
         pred = Predictive(
-            qso_fsps_joint_model,
+            quasar_spectral_model,
             posterior_samples=samples,
             return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
         )
@@ -1635,7 +1635,7 @@ class JAXQSOFit:
             )
 
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_metadata(line_table, wave)
         else:
             tied_line_meta = {
                 'n_lines': 0,
@@ -1734,7 +1734,7 @@ class JAXQSOFit:
             err_run = err if err_i is None else err_i
             fsps_grid_run = fsps_grid if fsps_grid_i is None else fsps_grid_i
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
-            svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
+            svi = SVI(quasar_spectral_model, guide, optimizer, loss=Trace_ELBO())
             key = jax.random.PRNGKey(0)
             result = svi.run(
                 key,
@@ -1819,7 +1819,7 @@ class JAXQSOFit:
         fsps_grid_stage1 = _subset_fsps_grid(fsps_grid, stage1_keep)
         stage1_init_values = _stage1_init_values()
         guide1 = AutoDelta(
-            qso_fsps_joint_model,
+            quasar_spectral_model,
             init_loc_fn=init_to_value(values=stage1_init_values),
         )
         svi1, res1 = _run_svi(
@@ -1842,7 +1842,7 @@ class JAXQSOFit:
         if plot_init:
             stage1_samples = {k: np.asarray(v)[None, ...] for k, v in map1.items()}
             pred1 = Predictive(
-                qso_fsps_joint_model,
+                quasar_spectral_model,
                 posterior_samples={k: jnp.asarray(v) for k, v in stage1_samples.items()},
                 return_sites=[
                     'f_pl_model',
@@ -1892,7 +1892,7 @@ class JAXQSOFit:
         # Stage 2: full model initialized from stage-1 MAP for overlapping parameters.
         n2 = max(100, int(num_steps - n1))
         guide2 = AutoDelta(
-            qso_fsps_joint_model,
+            quasar_spectral_model,
             init_loc_fn=init_to_value(values=map1),
         )
         svi, res2 = _run_svi(
@@ -1916,7 +1916,7 @@ class JAXQSOFit:
         rng_key = jax.random.PRNGKey(0)
 
         pred = Predictive(
-            qso_fsps_joint_model,
+            quasar_spectral_model,
             posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
             return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
         )
@@ -2676,7 +2676,7 @@ class JAXQSOFit:
             expected_templates=expected_templates,
             context="Posterior reconstruction",
         )
-        return reconstruct_posterior_components(
+        return reconstruct_spectral_components(
             wave_out=wave_out,
             samples=self.numpyro_samples,
             pred_out=getattr(self, 'pred_out', None),
@@ -3464,6 +3464,14 @@ class JAXQSOFit:
                 show_plot=show_plot,
             )
 
+    def plot_spectrum(self, **kwargs):
+        """Plot the fitted spectrum, model components, and residuals.
+
+        This is the preferred public plotting method for fitted spectral
+        decompositions.
+        """
+        return self.plot_fig(**kwargs)
+
     def plot_fig(self, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
                  plot_1sigma=True, sigma_alpha=0.12, show_plot=True, plot_psf_space=False, plot_intrinsic_powerlaw=False):
         """Plot data, model components, line decomposition, and residuals.
@@ -3474,7 +3482,7 @@ class JAXQSOFit:
             Output directory when saving figures. If ``None``, uses ``self.output_path``
             (or ``'.'`` when unset).
         broad_fwhm : float, optional
-            Reserved broad-line threshold (kept for compatibility).
+            Reserved broad-line threshold.
         plot_legend : bool, optional
             If True, draw a legend.
         ylims : tuple[float, float] or None, optional
@@ -3482,7 +3490,7 @@ class JAXQSOFit:
         plot_residual : bool, optional
             If True, draw residual panel below the spectrum.
         show_title : bool, optional
-            Reserved title toggle kept for compatibility.
+            Reserved title toggle.
         plot_1sigma : bool, optional
             If True, draw 16-84% posterior bands for available components.
         sigma_alpha : float, optional

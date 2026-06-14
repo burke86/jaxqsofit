@@ -213,7 +213,7 @@ def _host_redshift_prior_params(prior_config, z_qso):
     return weight, loc_offset, scale_mult, df_eff
 
 
-def negative_gaussian_bal_component(wave, params, metadata):
+def negative_bal_component(wave, params, metadata):
     """Additive negative BAL trough with optional super-Gaussian boxiness."""
     center = params["center"]
     sigma = jnp.maximum(params["sigma"], 1e-3)
@@ -615,7 +615,7 @@ def _get_sfd_query():
     return q
 
 
-def build_fsps_template_grid(
+def build_host_template_grid(
     wave_out: np.ndarray,
     age_grid_gyr: Sequence[float] = (0.1, 0.3, 1.0, 3.0, 10.0),
     logzsol_grid: Sequence[float] = (-1.0, -0.5, 0.0, 0.2),
@@ -704,7 +704,7 @@ def build_fsps_template_grid(
     )
 
 
-def reconstruct_posterior_components(
+def reconstruct_spectral_components(
     wave_out: np.ndarray,
     samples: Dict[str, Any],
     pred_out: Dict[str, Any] | None,
@@ -731,7 +731,7 @@ def reconstruct_posterior_components(
         raise ValueError("wave_out must be a finite 1D wavelength grid.")
 
     if decompose_host:
-        fsps_grid = build_fsps_template_grid(
+        fsps_grid = build_host_template_grid(
             wave_out=wave_out,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
@@ -988,7 +988,7 @@ def _compress_group_ids(ids: np.ndarray, labels: Sequence[str] | None = None) ->
     return out, mapping
 
 
-def build_tied_line_meta_from_linelist(linelist, wave):
+def build_tied_line_metadata(linelist, wave):
     """Build tied-line metadata arrays used by the NumPyro line model."""
     def _to_records(obj):
         """Normalize line table inputs to `list[dict]` records."""
@@ -1170,7 +1170,7 @@ def build_tied_line_meta_from_linelist(linelist, wave):
     }
 
 
-def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_grid,
+def quasar_spectral_model(wave, flux, err, conti_priors, tied_line_meta, fsps_grid,
                          fe_uv_wave, fe_uv_flux, fe_op_wave, fe_op_flux, use_lines=True,
                          prior_config=None, decompose_host=True, fit_pl=True, fit_fe=True, fit_bc=True, fit_poly=False,
                          fit_poly_order=2,

@@ -18,6 +18,7 @@ API Sections
 .. toctree::
    :maxdepth: 2
 
+   fitting
    config
    model
    components

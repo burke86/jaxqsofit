@@ -7,7 +7,7 @@ import numpy as np
 
 from .config import PriorConfig
 from .custom_components import CustomComponentSpec, make_custom_component
-from .model import negative_gaussian_bal_component
+from .model import negative_bal_component
 
 MINSCA_DEFAULT = 0.0
 MAXSCA_DEFAULT = 1e10
@@ -331,7 +331,7 @@ def build_default_bal_components(flux: np.ndarray) -> tuple[CustomComponentSpec,
                     "high": 12.0,
                 },
             },
-            evaluate=negative_gaussian_bal_component,
+            evaluate=negative_bal_component,
         )
 
     # Trump et al. (2006)

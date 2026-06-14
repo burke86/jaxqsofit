@@ -48,7 +48,7 @@ def test_custom_component_prior_injection_and_site_names():
     ]
 
 
-def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
+def test_reconstruct_spectral_components_includes_custom_draws(monkeypatch):
     comps = (
         make_template_component("alt_fe", [2000.0, 2500.0, 3000.0], [0.0, 1.0, 0.0]),
         make_custom_component(
@@ -63,7 +63,7 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
         age_grid_gyr = np.array([1.0], dtype=float)
         logzsol_grid = np.array([0.0], dtype=float)
 
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", lambda **kwargs: _Grid())
+    monkeypatch.setattr(modelmod, "build_host_template_grid", lambda **kwargs: _Grid())
 
     wave_out = np.linspace(2000.0, 3000.0, 5)
     samples = {
@@ -74,7 +74,7 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
         "custom_blue_poly_c0": np.array([0.5, 1.0]),
     }
 
-    out = modelmod.reconstruct_posterior_components(
+    out = modelmod.reconstruct_spectral_components(
         wave_out=wave_out,
         samples=samples,
         pred_out=None,
@@ -100,11 +100,11 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
     assert np.allclose(out["draws"]["continuum"], expected)
 
 
-def test_reconstruct_posterior_components_host_disabled_uses_dummy_grid(monkeypatch):
+def test_reconstruct_spectral_components_host_disabled_uses_dummy_grid(monkeypatch):
     def _boom(**kwargs):
         raise AssertionError("FSPS templates should not be loaded when decompose_host=False")
 
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", _boom)
+    monkeypatch.setattr(modelmod, "build_host_template_grid", _boom)
 
     wave_out = np.linspace(2000.0, 3000.0, 5)
     samples = {
@@ -115,7 +115,7 @@ def test_reconstruct_posterior_components_host_disabled_uses_dummy_grid(monkeypa
     }
     pred_out = {"fsps_weights": np.ones((2, 4))}
 
-    out = modelmod.reconstruct_posterior_components(
+    out = modelmod.reconstruct_spectral_components(
         wave_out=wave_out,
         samples=samples,
         pred_out=pred_out,
@@ -179,7 +179,7 @@ def test_reconstruct_posterior_spectrum_passes_custom_components(monkeypatch):
             "median": {"continuum": np.ones(len(kwargs["wave_out"]))},
         }
 
-    monkeypatch.setattr(coremod, "reconstruct_posterior_components", _stub_reconstruct)
+    monkeypatch.setattr(coremod, "reconstruct_spectral_components", _stub_reconstruct)
 
     q.reconstruct_posterior_spectrum(n_draws=1)
 

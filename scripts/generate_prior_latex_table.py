@@ -37,7 +37,7 @@ def _load_defaults_module():
 
 
 def _extract_literal_sample_sites(model_path: Path) -> set[str]:
-    """Return literal string sample-site names in qso_fsps_joint_model."""
+    """Return literal string sample-site names in quasar_spectral_model."""
     tree = ast.parse(model_path.read_text())
     sites: set[str] = set()
 

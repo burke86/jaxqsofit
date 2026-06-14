@@ -17,10 +17,11 @@ from jaxqsofit.model import (
     _extract_line_table_from_prior_config,
     _luminosity_distance_cm_jax,
     _shift_and_broaden_single_spectrum_lnlam,
-    build_fsps_template_grid,
-    build_tied_line_meta_from_linelist,
-    qso_fsps_joint_model,
-    reconstruct_posterior_components,
+    build_host_template_grid,
+    build_tied_line_metadata,
+    negative_bal_component,
+    quasar_spectral_model,
+    reconstruct_spectral_components,
 )
 
 
@@ -42,6 +43,14 @@ def test_package_enables_jax_x64_explicitly():
     assert jax.config.jax_enable_x64 is True
 
 
+def test_public_model_names_are_real_implementations():
+    assert model_mod.quasar_spectral_model is quasar_spectral_model
+    assert model_mod.reconstruct_spectral_components is reconstruct_spectral_components
+    assert model_mod.build_host_template_grid is build_host_template_grid
+    assert model_mod.build_tied_line_metadata is build_tied_line_metadata
+    assert model_mod.negative_bal_component is negative_bal_component
+
+
 def test_reddening_a2500_site_is_unique_when_sampled():
     wave = np.linspace(2000.0, 3000.0, 8)
     flux = np.ones_like(wave)
@@ -50,9 +59,9 @@ def test_reddening_a2500_site_is_unique_when_sampled():
     prior_config["PL_pivot"] = 2500.0
     prior_config["poly_pivot"] = 2500.0
     fsps_grid = SimpleNamespace(templates=np.zeros((wave.size, 1)))
-    tied_line_meta = build_tied_line_meta_from_linelist([], wave)
+    tied_line_meta = build_tied_line_metadata([], wave)
 
-    model_trace = trace(seed(qso_fsps_joint_model, 0)).get_trace(
+    model_trace = trace(seed(quasar_spectral_model, 0)).get_trace(
         wave,
         flux,
         err,
@@ -135,7 +144,7 @@ def test_smc_like_reddening_parameter_is_a2500_magnitude():
     assert np.isclose(float(atten[0]), 10.0 ** -0.4)
 
 
-def test_build_fsps_template_grid_can_reuse_fit_template_norms(monkeypatch):
+def test_build_host_template_grid_can_reuse_fit_template_norms(monkeypatch):
     ssp_wave = np.linspace(1000.0, 5000.0, 10)
 
     class _SSPData:
@@ -148,7 +157,7 @@ def test_build_fsps_template_grid_can_reuse_fit_template_norms(monkeypatch):
 
     monkeypatch.setattr(model_mod, "load_ssp_templates", lambda fn: _SSPData())
 
-    fit_grid = build_fsps_template_grid(
+    fit_grid = build_host_template_grid(
         wave_out=np.linspace(3000.0, 5000.0, 20),
         age_grid_gyr=[1.0],
         logzsol_grid=[0.0],
@@ -156,7 +165,7 @@ def test_build_fsps_template_grid_can_reuse_fit_template_norms(monkeypatch):
         build_physical_host_basis=False,
     )
     fit_norms = [meta["norm"] for meta in fit_grid.template_meta]
-    recon_grid = build_fsps_template_grid(
+    recon_grid = build_host_template_grid(
         wave_out=np.linspace(2000.0, 5000.0, 20),
         age_grid_gyr=[1.0],
         logzsol_grid=[0.0],
@@ -178,7 +187,7 @@ def test_reconstruct_requires_fit_grid_pivots_for_grid_dependent_terms():
     }
 
     try:
-        reconstruct_posterior_components(
+        reconstruct_spectral_components(
             wave,
             samples,
             pred_out=None,
@@ -206,7 +215,7 @@ def test_reconstruct_requires_fit_grid_pivots_for_grid_dependent_terms():
         "fsps_weights": np.zeros((1, 1)),
     }
     try:
-        reconstruct_posterior_components(
+        reconstruct_spectral_components(
             wave,
             samples,
             pred_out=None,
@@ -252,7 +261,7 @@ def test_reconstruct_reddening_applies_to_nuclear_continuum_components():
     fe_wave = np.linspace(1900.0, 3700.0, 80)
     fe_flux = np.ones_like(fe_wave)
 
-    plain = reconstruct_posterior_components(
+    plain = reconstruct_spectral_components(
         wave,
         samples,
         pred_out=None,
@@ -269,7 +278,7 @@ def test_reconstruct_reddening_applies_to_nuclear_continuum_components():
         fe_op_flux=fe_flux,
         decompose_host=False,
     )
-    reddened = reconstruct_posterior_components(
+    reddened = reconstruct_spectral_components(
         wave,
         samples,
         pred_out=None,
@@ -294,7 +303,7 @@ def test_reconstruct_reddening_applies_to_nuclear_continuum_components():
         assert np.isclose(ratio, expected, rtol=1e-4)
 
 
-def test_build_tied_line_meta_from_linelist_minimal():
+def test_build_tied_line_metadata_minimal():
     line_table = [
         {
             'lambda': 5008.24,
@@ -333,7 +342,7 @@ def test_build_tied_line_meta_from_linelist_minimal():
     ]
     wave = np.linspace(4800.0, 5100.0, 200)
 
-    meta = build_tied_line_meta_from_linelist(line_table, wave)
+    meta = build_tied_line_metadata(line_table, wave)
 
     assert meta['n_lines'] == 2
     assert meta['n_vgroups'] >= 1
@@ -367,14 +376,14 @@ def test_build_tied_line_meta_uses_voff_as_log_wavelength_offset():
     ]
     wave = np.linspace(1500.0, 1700.0, 200)
 
-    meta = build_tied_line_meta_from_linelist(line_table, wave)
+    meta = build_tied_line_metadata(line_table, wave)
 
     assert meta["n_vgroups"] == 1
     assert np.allclose(meta["dmu_min_group"], [-0.015])
     assert np.allclose(meta["dmu_max_group"], [0.015])
 
 
-def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_luminosities():
+def test_quasar_spectral_model_reports_log_lambda_llambda_requested_continuum_luminosities():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -397,7 +406,7 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_lum
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,
@@ -425,7 +434,7 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_lum
         assert np.isfinite(float(tr[site_name]["value"]))
 
 
-def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():
+def test_quasar_spectral_model_supports_delayed_sfh_host_with_mzr():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -472,7 +481,7 @@ def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,
@@ -552,7 +561,7 @@ def test_delayed_sfh_host_uses_physical_stellar_mass_scaling():
 
     def _host_for_mass(log_stellar_mass):
         params = dict(base_params, log_stellar_mass=np.array(log_stellar_mass))
-        tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+        tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
             wave=wave,
             flux=flux,
             err=err,
@@ -631,7 +640,7 @@ def test_delayed_sfh_host_accepts_jitted_redshift_tracer():
     assert float(value) > 0.0
 
 
-def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
+def test_quasar_spectral_model_fast_line_path_matches_component_split():
     wave = np.linspace(4800.0, 5100.0, 64)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -672,7 +681,7 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
             "fvalue": 1.0,
         },
     ]
-    tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+    tied_line_meta = build_tied_line_metadata(line_table, wave)
 
     class _Grid:
         templates = np.zeros((wave.size, 1), dtype=float)
@@ -688,7 +697,7 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
     }
 
     def _trace(return_line_components, emit_deterministics=True):
-        return trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+        return trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
             wave=wave,
             flux=flux,
             err=err,
@@ -725,12 +734,12 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
     assert "line_model" not in tr_fit
 
 
-def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):
+def test_quasar_spectral_model_skips_disabled_fe_and_balmer(monkeypatch):
     wave = np.linspace(2000.0, 6000.0, 16)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
     cfg = build_default_prior_config(flux)
-    tied_line_meta = build_tied_line_meta_from_linelist([], wave)
+    tied_line_meta = build_tied_line_metadata([], wave)
 
     class _Grid:
         templates = np.zeros((wave.size, 1), dtype=float)
@@ -747,7 +756,7 @@ def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,
@@ -783,7 +792,7 @@ def test_luminosity_distance_cm_jax_is_finite_and_vectorizable():
     assert np.all(np.diff(np.asarray(d_l)) > 0.0)
 
 
-def test_qso_fsps_joint_model_custom_component_returns_jax_array():
+def test_quasar_spectral_model_custom_component_returns_jax_array():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -812,7 +821,7 @@ def test_qso_fsps_joint_model_custom_component_returns_jax_array():
         "add_jitter": np.array(0.0),
         "custom_const_term_c0": np.array(0.5),
     }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,
@@ -894,7 +903,7 @@ def test_host_redshift_prior_penalizes_same_host_more_at_high_z():
     assert float(logp_high) < float(logp_low)
 
 
-def test_qso_fsps_joint_model_reports_host_redshift_prior_diagnostics():
+def test_quasar_spectral_model_reports_host_redshift_prior_diagnostics():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -918,7 +927,7 @@ def test_qso_fsps_joint_model_reports_host_redshift_prior_diagnostics():
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+    tr = trace(substitute(seed(quasar_spectral_model, jax.random.PRNGKey(0)), data=params)).get_trace(
         wave=wave,
         flux=flux,
         err=err,

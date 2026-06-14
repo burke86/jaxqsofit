@@ -16,7 +16,7 @@ from .model import (
     _fe_template_component,
     _many_gauss_lnlam,
     _np_to_jnp,
-    build_tied_line_meta_from_linelist,
+    build_tied_line_metadata,
 )
 
 
@@ -104,7 +104,7 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
 
     # Include all configured lines. Lines outside the current spectral window
     # evaluate to negligible flux but keeping the full table preserves ties.
-    tied_line_meta = build_tied_line_meta_from_linelist(
+    tied_line_meta = build_tied_line_metadata(
         line_table,
         np.asarray([1.0, 1.0e8], dtype=float),
     )

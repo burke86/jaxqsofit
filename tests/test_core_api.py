@@ -198,7 +198,7 @@ def test_build_fsps_grid_for_fit_skips_template_load_when_host_disabled(monkeypa
     def _boom(**kwargs):
         raise AssertionError("FSPS templates should not be loaded when decompose_host=False")
 
-    monkeypatch.setattr(coremod, "build_fsps_template_grid", _boom)
+    monkeypatch.setattr(coremod, "build_host_template_grid", _boom)
 
     grid = q._build_fsps_grid_for_fit(
         wave=lam,
@@ -499,6 +499,21 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert called["plot_mcmc_diagnostics"] == 1
 
 
+def test_plot_spectrum_delegates_to_plot_fig(monkeypatch):
+    q = object.__new__(JAXQSOFit)
+    calls = {}
+
+    def _plot_fig(self, **kwargs):
+        calls["plot_fig"] = (self, kwargs)
+        return "figure"
+
+    monkeypatch.setattr(JAXQSOFit, "plot_fig", _plot_fig)
+
+    assert q.plot_spectrum(show_plot=False, plot_legend=False) == "figure"
+    assert calls["plot_fig"][0] is q
+    assert calls["plot_fig"][1] == {"show_plot": False, "plot_legend": False}
+
+
 def test_plot_trace_show_plot_false_skips_plt_show(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
@@ -720,8 +735,8 @@ def test_load_from_samples_roundtrip_with_host_enabled(tmp_path, monkeypatch):
         grid.logzsol_grid = np.array([-0.5, 0.0], dtype=float)
         return grid
 
-    monkeypatch.setattr(coremod, "build_fsps_template_grid", _stub_template_grid)
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", _stub_template_grid)
+    monkeypatch.setattr(coremod, "build_host_template_grid", _stub_template_grid)
+    monkeypatch.setattr(modelmod, "build_host_template_grid", _stub_template_grid)
     monkeypatch.setattr(JAXQSOFit, "plot_fig", lambda self, **kwargs: None)
     monkeypatch.setattr(JAXQSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
 
@@ -870,7 +885,7 @@ def test_reconstruct_posterior_spectrum_delegates_to_model_helper(monkeypatch):
             "median": {"continuum": np.ones(len(kwargs["wave_out"]))},
         }
 
-    monkeypatch.setattr(coremod, "reconstruct_posterior_components", _stub_reconstruct)
+    monkeypatch.setattr(coremod, "reconstruct_spectral_components", _stub_reconstruct)
 
     out = q.reconstruct_posterior_spectrum(wave_min=2500.0, n_draws=2, return_components=False)
 
@@ -943,8 +958,8 @@ def test_load_from_samples_roundtrip_host_disabled_reconstructs_without_loading_
     def _boom(**kwargs):
         raise AssertionError("FSPS templates should not be loaded for host-disabled hydration or reconstruction")
 
-    monkeypatch.setattr(coremod, "build_fsps_template_grid", _boom)
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", _boom)
+    monkeypatch.setattr(coremod, "build_host_template_grid", _boom)
+    monkeypatch.setattr(modelmod, "build_host_template_grid", _boom)
     monkeypatch.setattr(JAXQSOFit, "plot_fig", lambda self, **kwargs: None)
     monkeypatch.setattr(JAXQSOFit, "plot_mcmc_diagnostics", lambda self, **kwargs: None)
 

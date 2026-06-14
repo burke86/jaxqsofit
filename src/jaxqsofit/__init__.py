@@ -50,7 +50,11 @@ __all__ = [
     "DEFAULT_LINE_PRIOR_ROWS",
     "build_default_bal_components",
     "build_default_prior_config",
-    "negative_gaussian_bal_component",
+    "quasar_spectral_model",
+    "reconstruct_spectral_components",
+    "build_host_template_grid",
+    "build_tied_line_metadata",
+    "negative_bal_component",
     "SpectralComponentConfig",
     "evaluate_joint_spectral_components",
     "style_path",
@@ -87,10 +91,16 @@ def __getattr__(name):
         from . import defaults as _defaults
 
         return getattr(_defaults, name)
-    if name == "negative_gaussian_bal_component":
-        from .model import negative_gaussian_bal_component
+    if name in {
+        "quasar_spectral_model",
+        "reconstruct_spectral_components",
+        "build_host_template_grid",
+        "build_tied_line_metadata",
+        "negative_bal_component",
+    }:
+        from . import model as _model
 
-        return negative_gaussian_bal_component
+        return getattr(_model, name)
     if name in {"SpectralComponentConfig", "evaluate_joint_spectral_components"}:
         from . import components as _components
 

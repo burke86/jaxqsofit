@@ -60,7 +60,7 @@ def test_custom_line_components_add_to_broad_and_narrow_models():
     }
 
     out = Predictive(
-        modelmod.qso_fsps_joint_model,
+        modelmod.quasar_spectral_model,
         posterior_samples={},
         num_samples=1,
         return_sites=[
