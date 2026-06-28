@@ -390,6 +390,96 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
     assert called['kwargs']['plot_init'] is True
 
 
+def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
+    lam, flux, err = _make_wide_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.flux = flux
+    q.err = err
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q.verbose = False
+
+    fsps_grid = coremod.FSPSTemplateGrid(
+        wave=lam,
+        templates=np.zeros((lam.size, 1)),
+        template_meta=[{"norm": 1.0}],
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        host_basis_jax=None,
+        t_obs_gyr=None,
+    )
+    monkeypatch.setattr(q, "_build_fsps_grid_for_fit", lambda **kwargs: fsps_grid)
+    monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
+
+    svi_calls = []
+
+    class FakeSVIResult:
+        losses = np.array([0.0])
+        params = {}
+        state = object()
+
+    class FakeSVI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, key, steps, **kwargs):
+            svi_calls.append(kwargs)
+            return FakeSVIResult()
+
+    class FakeAutoDelta:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def median(self, params):
+            return {"PL_norm": np.array(1.0), "PL_slope": np.array(-1.5)}
+
+    class FakePredictive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(coremod, "SVI", FakeSVI)
+    monkeypatch.setattr(coremod, "AutoDelta", FakeAutoDelta)
+    monkeypatch.setattr(coremod, "Predictive", FakePredictive)
+
+    psf_filter_curves = {
+        "bands": ("g", "r"),
+        "trans": np.vstack([
+            np.linspace(0.0, 1.0, lam.size),
+            np.linspace(1.0, 0.0, lam.size),
+        ]),
+        "coverage": np.array([1.0, 1.0]),
+    }
+
+    q.run_fsps_optax_fit(
+        num_steps=300,
+        use_lines=False,
+        decompose_host=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+        prior_config=build_default_prior_config(flux),
+        psf_mags=np.array([19.8, 19.6]),
+        psf_mag_errs=np.array([0.05, 0.06]),
+        psf_filter_curves=psf_filter_curves,
+        use_psf_phot=True,
+    )
+
+    assert len(svi_calls) == 2
+    stage1_keep = q.init_stage1_keep_mask
+    assert svi_calls[0]["wave"].shape[0] == int(np.sum(stage1_keep))
+    assert svi_calls[0]["psf_filter_curves"]["trans"].shape == (2, int(np.sum(stage1_keep)))
+    assert svi_calls[1]["wave"].shape[0] == q.wave.size
+    assert svi_calls[1]["psf_filter_curves"]["trans"].shape == (2, q.wave.size)
+    assert svi_calls[1]["psf_filter_curves"] is psf_filter_curves
+
+
 def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)

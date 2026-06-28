@@ -1882,6 +1882,15 @@ class JAXQSOFit:
                 return np.isfinite(wave_in)
             return keep
 
+        def _subset_psf_filter_curves(curves, keep_mask):
+            """Return PSF filter curves restricted to a wavelength subset."""
+            if curves is None:
+                return None
+            subset = dict(curves)
+            if "trans" in subset:
+                subset["trans"] = np.asarray(subset["trans"])[..., np.asarray(keep_mask, dtype=bool)]
+            return subset
+
         def _run_svi(
             guide,
             steps,
@@ -1897,12 +1906,14 @@ class JAXQSOFit:
             flux_i=None,
             err_i=None,
             fsps_grid_i=None,
+            psf_filter_curves_i=None,
         ):
             """Run an SVI stage and return optimizer state/results."""
             wave_run = wave if wave_i is None else wave_i
             flux_run = flux if flux_i is None else flux_i
             err_run = err if err_i is None else err_i
             fsps_grid_run = fsps_grid if fsps_grid_i is None else fsps_grid_i
+            psf_filter_curves_run = psf_filter_curves if psf_filter_curves_i is None else psf_filter_curves_i
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
             svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
             key = jax.random.PRNGKey(0)
@@ -1931,7 +1942,7 @@ class JAXQSOFit:
                 z_qso=self.z,
                 psf_mags=psf_mags,
                 psf_mag_errs=psf_mag_errs,
-                psf_filter_curves=psf_filter_curves,
+                psf_filter_curves=psf_filter_curves_run,
                 use_psf_phot=use_psf_phot,
                 return_line_components=False,
                 emit_deterministics=False,
@@ -1992,6 +2003,7 @@ class JAXQSOFit:
         stage1_keep = _stage1_continuum_keep_mask(wave)
         self.init_stage1_keep_mask = stage1_keep
         fsps_grid_stage1 = _subset_fsps_grid(fsps_grid, stage1_keep)
+        psf_filter_curves_stage1 = _subset_psf_filter_curves(psf_filter_curves, stage1_keep)
         stage1_init_values = _stage1_init_values()
         guide1 = AutoDelta(
             qso_fsps_joint_model,
@@ -2012,6 +2024,7 @@ class JAXQSOFit:
             flux_i=flux[stage1_keep],
             err_i=err[stage1_keep],
             fsps_grid_i=fsps_grid_stage1,
+            psf_filter_curves_i=psf_filter_curves_stage1,
         )
         map1 = guide1.median(res1.params)
         if plot_init:
