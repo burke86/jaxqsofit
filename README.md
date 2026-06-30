@@ -11,6 +11,7 @@ Bayesian quasar spectral fitting with JAX + NumPyro, including:
 - FeII UV/optical templates
 - Balmer continuum
 - Tied Gaussian emission-line model
+- Built-in BAL absorption modeling for N V, Si IV, and C IV
 - Student-t likelihood (robust to outliers/absorption)
 - Low-order multiplicative polynomial basis for spectrophotometric calibration errors
 - Additive and multiplicative intrinsic scatter
@@ -175,37 +176,58 @@ If you want speed over full posterior sampling, use:
 
 ```python
 q.config.inference.method = "optax"
-q.fit(
-    optax_steps=1500,
-    optax_lr=1e-2,
-    plot_fig=True,
-    save_fig=False,
-)
+q.config.inference.map_steps = 1500
+q.config.inference.learning_rate = 1e-2
+q.config.output.plot_fig = True
+q.config.output.save_fig = False
+result = q.fit()
 ```
 
 This runs a staged MAP optimization (continuum warm start, then full model) and is typically much faster than NUTS.
 
-Optional: override any defaults by passing `prior_config`:
+Optional: override any prior defaults on the config:
 
 ```python
-prior_config = {
-    "student_t_df": 2.5,
-    "PL_slope": {"loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.3},
-}
-q.fit(prior_config=prior_config, fit_lines=False, fit_fe=False, fit_bc=True)
+cfg.prior_config = jaxqsofit.PriorConfig()
+cfg.prior_config["student_t_df"] = 2.5
+cfg.prior_config["PL_slope"] = {"loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.3}
+
+q = jaxqsofit.JAXQSOFit(cfg)
+result = q.fit()
 ```
+
+### BAL modeling
+
+Enable built-in broad absorption line modeling through `BALConfig`:
+
+```python
+cfg.bal = jaxqsofit.BALConfig(
+    enabled=True,
+    tau_scale=0.25,
+    covering_loc=0.15,
+    covering_scale=0.12,
+    covering_high=0.70,
+)
+
+q = jaxqsofit.JAXQSOFit(cfg)
+result = q.fit()
+bi, bi_err = q.balnicity_index()
+```
+
+When enabled, JAXQSOFit appends conservative multiplicative BAL absorption components for N V, Si IV, and C IV. The components share outflow velocity, optical-depth, and covering-fraction parameters across the fitted troughs, and fitted BAL components are shown as `BAL` in plots.
 
 ## Important API notes
 
-- If `prior_config=None`, defaults are auto-built from `src/jaxqsofit/defaults.py` using the input flux scale.
-- If you pass a custom `prior_config`, ensure required keys exist for enabled model components.
-- `fit_lines=True` requires a line prior table in:
-  - `prior_config["line"]["table"]` (preferred), or
-  - `prior_config["line_priors"]`, or
-  - `prior_config["line_table"]`.
-- `fit_fe=False`, `fit_bc=False`, `fit_poly=False`, `decompose_host=False` disable those model blocks.
+- `fit()` is configuration-first and currently accepts only `verbose` and `kwargs_plot`; model, preprocessing, inference, output, PSF, BAL, and prior options live on `FitConfig`.
+- If `cfg.prior_config is None`, defaults are auto-built from `src/jaxqsofit/defaults.py` using the input flux scale.
+- If you pass a custom `cfg.prior_config`, ensure required keys exist for enabled model components.
+- `cfg.lines.enabled=True` requires a line prior table in:
+  - `cfg.prior_config["line"]["table"]` (preferred), or
+  - `cfg.prior_config["line_priors"]`, or
+  - `cfg.prior_config["line_table"]`.
+- `cfg.continuum.fit_feii=False`, `cfg.continuum.fit_balmer_continuum=False`, `cfg.continuum.fit_polynomial_tilt=False`, and `cfg.host.enabled=False` disable those model blocks.
 - Likelihood is Student-t:
-  - `prior_config["student_t_df"]` controls tail heaviness.
+  - `cfg.prior_config["student_t_df"]` controls tail heaviness.
   - Lower `df` is more robust to outliers.
 
 ## Outputs on `JAXQSOFit` object
@@ -216,6 +238,7 @@ Common fitted arrays:
 - `model_total`
 - `f_conti_model`, `f_line_model`
 - `f_pl_model`, `f_fe_mgii_model`, `f_fe_balmer_model`, `f_bc_model`
+- `custom_components` for user-defined and built-in BAL components
 - `host`, `qso`
 
 Posterior artifacts:
@@ -239,3 +262,5 @@ Derived fractions:
   - Tighten line prior ranges (`maxsca`, `maxsig`) and scale multipliers.
 - Fe fit degrades continuum:
   - Use stronger shrinkage priors on Fe norms and narrower Fe shift/FWHM priors.
+- BAL troughs are overfit:
+  - Reduce `BALConfig.tau_scale` or `BALConfig.covering_high`, or leave `BALConfig.enabled=False` for non-BAL spectra.
