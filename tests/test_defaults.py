@@ -1,6 +1,8 @@
 import numpy as np
 
 from jaxqsofit.config import (
+    BALConfig,
+    ContinuumConfig,
     ContinuumPriorConfig,
     FeIIPriorConfig,
     FitConfig,
@@ -34,6 +36,25 @@ def test_prior_config_object_exposes_flat_mapping():
     assert prior["line_dmu_scale_mult"] == 0.2
     assert prior["log_Fe_uv_FWHM"]["scale"] == 0.2
     assert prior.get("PL_slope") == {"loc": -1.5, "scale": 0.3}
+
+
+def test_continuum_config_coerces_nested_bal_mapping():
+    cfg = ContinuumConfig(
+        bal={
+            "enabled": True,
+            "tau_scale": 0.4,
+            "covering_loc": 0.2,
+            "covering_scale": 0.1,
+            "covering_high": 0.8,
+        }
+    )
+
+    assert isinstance(cfg.bal, BALConfig)
+    assert cfg.bal.enabled is True
+    assert np.isclose(cfg.bal.tau_scale, 0.4)
+    assert np.isclose(cfg.bal.covering_loc, 0.2)
+    assert np.isclose(cfg.bal.covering_scale, 0.1)
+    assert np.isclose(cfg.bal.covering_high, 0.8)
 
 
 def test_fit_config_coerces_prior_config_mapping():
@@ -144,17 +165,17 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     assert comps[2].metadata["shared_parameter_sites"]["v_out"] == "custom_bal_v_out"
     assert comps[2].metadata["shared_parameter_sites"]["tau_peak"] == "custom_bal_tau_peak"
     assert comps[2].metadata["shared_parameter_sites"]["covering"] == "custom_bal_covering"
-    assert np.isclose(comps[0].parameter_priors["tau_peak"]["scale"], 0.8)
-    assert np.isclose(comps[1].parameter_priors["tau_peak"]["scale"], 0.8)
+    assert np.isclose(comps[0].parameter_priors["tau_peak"]["scale"], 0.25)
+    assert np.isclose(comps[1].parameter_priors["tau_peak"]["scale"], 0.25)
     tau_cfg = comps[2].parameter_priors["tau_peak"]
     assert tau_cfg["dist"] == "HalfNormal"
-    assert np.isclose(tau_cfg["scale"], 0.8)
+    assert np.isclose(tau_cfg["scale"], 0.25)
     covering_cfg = comps[2].parameter_priors["covering"]
     assert covering_cfg["dist"] == "TruncatedNormal"
-    assert covering_cfg["loc"] == 0.55
-    assert covering_cfg["scale"] == 0.2
+    assert covering_cfg["loc"] == 0.15
+    assert covering_cfg["scale"] == 0.12
     assert covering_cfg["low"] == 0.0
-    assert covering_cfg["high"] == 0.90
+    assert covering_cfg["high"] == 0.70
     v_out_cfg = comps[2].parameter_priors["v_out"]
     assert v_out_cfg["dist"] == "TruncatedNormal"
     assert v_out_cfg["loc"] == 6000.0
@@ -166,6 +187,23 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     assert shape_cfg["loc"] == 2.0
     assert shape_cfg["low"] == 2.0
     assert shape_cfg["high"] == 12.0
+
+
+def test_build_default_bal_components_accepts_prior_overrides():
+    comps = build_default_bal_components(
+        np.array([1.0, 2.0, 3.0], dtype=float),
+        tau_scale=0.6,
+        covering_loc=0.4,
+        covering_scale=0.1,
+        covering_high=0.85,
+    )
+
+    for comp in comps:
+        assert np.isclose(comp.parameter_priors["tau_peak"]["scale"], 0.6)
+        covering_cfg = comp.parameter_priors["covering"]
+        assert np.isclose(covering_cfg["loc"], 0.4)
+        assert np.isclose(covering_cfg["scale"], 0.1)
+        assert np.isclose(covering_cfg["high"], 0.85)
 
 
 def test_default_line_table_contains_expanded_uv_complexes():

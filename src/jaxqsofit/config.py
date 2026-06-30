@@ -72,16 +72,32 @@ class PreprocessingConfig:
 
 
 @dataclass
+class BALConfig:
+    """Built-in BAL absorption component configuration."""
+
+    enabled: bool = False
+    tau_scale: float = 0.25
+    covering_loc: float = 0.15
+    covering_scale: float = 0.12
+    covering_high: float = 0.70
+
+
+@dataclass
 class ContinuumConfig:
     """Continuum and spectral component switches."""
 
     fit_power_law: bool = True
     fit_feii: bool = True
     fit_balmer_continuum: bool = False
-    fit_bal_absorption: bool = False
+    bal: BALConfig = field(default_factory=BALConfig)
     fit_polynomial_tilt: bool = True
     fit_reddening: bool = True
     polynomial_order: int = 2
+
+    def __post_init__(self) -> None:
+        """Coerce mapping-style BAL config into :class:`BALConfig`."""
+        if not isinstance(self.bal, BALConfig):
+            self.bal = _coerce_dataclass(BALConfig, self.bal)
 
 
 @dataclass
