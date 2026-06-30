@@ -1230,6 +1230,7 @@ class JAXQSOFit:
         infer_cfg = cfg.inference
         out_cfg = cfg.output
         psf_cfg = cfg.psf_photometry
+        bal_cfg = cfg.bal
 
         name = out_cfg.save_name
         deredden = bool(obs_cfg.apply_mw_deredden)
@@ -1241,7 +1242,7 @@ class JAXQSOFit:
         fit_pl = bool(cont_cfg.fit_power_law)
         fit_fe = bool(cont_cfg.fit_feii)
         fit_bc = bool(cont_cfg.fit_balmer_continuum)
-        fit_bal = bool(cont_cfg.fit_bal_absorption)
+        fit_bal = bool(bal_cfg.enabled)
         fit_poly = bool(cont_cfg.fit_polynomial_tilt)
         fit_reddening = bool(cont_cfg.fit_reddening)
         fit_poly_order = int(cont_cfg.polynomial_order)
@@ -1352,7 +1353,17 @@ class JAXQSOFit:
         self._calculate_sn(self.wave, self.flux)
         self._orignial_spec(self.wave, self.flux, self.err)
 
-        bal_components = build_default_bal_components(self.flux) if bool(fit_bal) else ()
+        bal_components = (
+            build_default_bal_components(
+                self.flux,
+                tau_scale=float(bal_cfg.tau_scale),
+                covering_loc=float(bal_cfg.covering_loc),
+                covering_scale=float(bal_cfg.covering_scale),
+                covering_high=float(bal_cfg.covering_high),
+            )
+            if bool(fit_bal)
+            else ()
+        )
         self._fit_custom_components = normalize_custom_components(
             tuple(requested_custom_components) + tuple(bal_components)
         )

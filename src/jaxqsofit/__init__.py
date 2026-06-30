@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .config import (
+    BALConfig,
     ContinuumConfig,
     ContinuumPriorConfig,
     FeIIPriorConfig,
@@ -29,6 +30,7 @@ __all__ = [
     "PSFPhotometryData",
     "PredictionResult",
     "PreprocessingConfig",
+    "BALConfig",
     "ContinuumConfig",
     "ContinuumPriorConfig",
     "FeIIPriorConfig",

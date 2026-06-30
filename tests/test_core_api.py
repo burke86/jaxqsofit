@@ -357,13 +357,24 @@ def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
     q.config.output.save_result = False
-    q.config.continuum.fit_bal_absorption = True
+    q.config.bal.enabled = True
+    q.config.bal.tau_scale = 0.5
+    q.config.bal.covering_loc = 0.35
+    q.config.bal.covering_scale = 0.11
+    q.config.bal.covering_high = 0.80
     q.config.prior_config = build_default_prior_config(flux)
     q.fit()
 
     assert called['optax'] == 1
-    names = [comp.name for comp in called['kwargs']['custom_components']]
+    components = called['kwargs']['custom_components']
+    names = [comp.name for comp in components]
     assert names == ["bal_nv", "bal_siiv", "bal_civ"]
+    for comp in components:
+        assert np.isclose(comp.parameter_priors["tau_peak"]["scale"], 0.5)
+        covering_cfg = comp.parameter_priors["covering"]
+        assert np.isclose(covering_cfg["loc"], 0.35)
+        assert np.isclose(covering_cfg["scale"], 0.11)
+        assert np.isclose(covering_cfg["high"], 0.80)
 
 
 def test_fit_dispatch_optax_nuts(monkeypatch):

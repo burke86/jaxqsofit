@@ -382,8 +382,15 @@ def _append_unique_by_wavelength(
     return out
 
 
-def build_default_bal_components(flux: np.ndarray) -> tuple[CustomComponentSpec, ...]:
-    """Return built-in BAL custom components with flux-scaled depth priors."""
+def build_default_bal_components(
+    flux: np.ndarray,
+    *,
+    tau_scale: float = 0.25,
+    covering_loc: float = 0.15,
+    covering_scale: float = 0.12,
+    covering_high: float = 0.70,
+) -> tuple[CustomComponentSpec, ...]:
+    """Return built-in BAL custom components with conservative depth priors."""
     def _bal_component(
         name: str,
         tau_scale: float,
@@ -394,19 +401,16 @@ def build_default_bal_components(flux: np.ndarray) -> tuple[CustomComponentSpec,
         v_out_high: float,
         sigma: float,
         sigma_scale: float = 0.35,
-        covering_loc: float = 0.55,
-        covering_scale: float = 0.2,
-        covering_high: float = 0.90,
     ):
         """Build one multiplicative BAL optical-depth component spec."""
         return make_custom_component(
             name=name,
             parameter_priors={
-                "tau_peak": {"dist": "HalfNormal", "scale": float(tau_scale)},
+                "tau_peak": {"dist": "HalfNormal", "scale": float(max(tau_scale, 1.0e-6))},
                 "covering": {
                     "dist": "TruncatedNormal",
                     "loc": float(covering_loc),
-                    "scale": float(covering_scale),
+                    "scale": float(max(covering_scale, 1.0e-6)),
                     "low": 0.0,
                     "high": float(covering_high),
                 },
@@ -443,11 +447,11 @@ def build_default_bal_components(flux: np.ndarray) -> tuple[CustomComponentSpec,
 
     # Trump et al. (2006)
     return (
-        _bal_component("bal_nv", tau_scale=0.8, line_lambda=1240.14, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=22.0),
+        _bal_component("bal_nv", tau_scale=tau_scale, line_lambda=1240.14, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=22.0),
         # _bal_component("bal_nv_2", depth_frac=0.025, center=1160.0, scale=90.0, low=1100.0, high=1240.0, sigma=40.0),
-        _bal_component("bal_siiv", tau_scale=0.8, line_lambda=1396.76, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=22.0),
+        _bal_component("bal_siiv", tau_scale=tau_scale, line_lambda=1396.76, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=22.0),
         # _bal_component("bal_siiv_2", depth_frac=0.025, center=1320.0, scale=90.0, low=1260.0, high=1397.0, sigma=40.0),
-        _bal_component("bal_civ", tau_scale=0.8, line_lambda=1549.06, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=24.0),
+        _bal_component("bal_civ", tau_scale=tau_scale, line_lambda=1549.06, v_out_loc=6000.0, v_out_scale=2500.0, v_out_low=3000.0, v_out_high=12000.0, sigma=24.0),
         # _bal_component("bal_civ_2", depth_frac=0.03, center=1450.0, scale=100.0, low=1350.0, high=1549.0, sigma=45.0),
         # not common, often blended with other lines
         # _bal_component("bal_ciii", tau_scale=0.8, line_lambda=1908.73, v_out_loc=9200.0, v_out_scale=8000.0, v_out_low=300.0, v_out_high=25000.0, sigma=30.0),
