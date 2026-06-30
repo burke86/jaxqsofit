@@ -2,7 +2,6 @@ import numpy as np
 
 from jaxqsofit.config import (
     BALConfig,
-    ContinuumConfig,
     ContinuumPriorConfig,
     FeIIPriorConfig,
     FitConfig,
@@ -38,8 +37,10 @@ def test_prior_config_object_exposes_flat_mapping():
     assert prior.get("PL_slope") == {"loc": -1.5, "scale": 0.3}
 
 
-def test_continuum_config_coerces_nested_bal_mapping():
-    cfg = ContinuumConfig(
+def test_fit_config_coerces_bal_mapping():
+    cfg = FitConfig(
+        observation=Observation(redshift=0.1),
+        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
         bal={
             "enabled": True,
             "tau_scale": 0.4,

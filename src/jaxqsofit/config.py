@@ -89,15 +89,9 @@ class ContinuumConfig:
     fit_power_law: bool = True
     fit_feii: bool = True
     fit_balmer_continuum: bool = False
-    bal: BALConfig = field(default_factory=BALConfig)
     fit_polynomial_tilt: bool = True
     fit_reddening: bool = True
     polynomial_order: int = 2
-
-    def __post_init__(self) -> None:
-        """Coerce mapping-style BAL config into :class:`BALConfig`."""
-        if not isinstance(self.bal, BALConfig):
-            self.bal = _coerce_dataclass(BALConfig, self.bal)
 
 
 @dataclass
@@ -305,6 +299,7 @@ class FitConfig:
     psf_photometry: PSFPhotometryData | None = None
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     continuum: ContinuumConfig = field(default_factory=ContinuumConfig)
+    bal: BALConfig = field(default_factory=BALConfig)
     host: HostConfig = field(default_factory=HostConfig)
     lines: LineConfig = field(default_factory=LineConfig)
     inference: InferenceConfig = field(default_factory=InferenceConfig)
@@ -312,7 +307,9 @@ class FitConfig:
     prior_config: PriorConfig | None = None
 
     def __post_init__(self) -> None:
-        """Coerce mapping-style prior configs into :class:`PriorConfig`."""
+        """Coerce mapping-style nested configs into dataclass objects."""
+        if not isinstance(self.bal, BALConfig):
+            self.bal = _coerce_dataclass(BALConfig, self.bal)
         if self.prior_config is not None:
             self.prior_config = _coerce_prior_config(self.prior_config)
 
@@ -377,6 +374,7 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
         psf_photometry=psf_obj,
         preprocessing=_coerce_dataclass(PreprocessingConfig, data.get("preprocessing", {})),
         continuum=_coerce_dataclass(ContinuumConfig, data.get("continuum", {})),
+        bal=_coerce_dataclass(BALConfig, data.get("bal", {})),
         host=_coerce_dataclass(HostConfig, data.get("host", {})),
         lines=_coerce_dataclass(LineConfig, data.get("lines", {})),
         inference=_coerce_dataclass(InferenceConfig, data.get("inference", {})),

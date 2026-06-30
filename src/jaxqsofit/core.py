@@ -1230,6 +1230,7 @@ class JAXQSOFit:
         infer_cfg = cfg.inference
         out_cfg = cfg.output
         psf_cfg = cfg.psf_photometry
+        bal_cfg = cfg.bal
 
         name = out_cfg.save_name
         deredden = bool(obs_cfg.apply_mw_deredden)
@@ -1241,7 +1242,7 @@ class JAXQSOFit:
         fit_pl = bool(cont_cfg.fit_power_law)
         fit_fe = bool(cont_cfg.fit_feii)
         fit_bc = bool(cont_cfg.fit_balmer_continuum)
-        fit_bal = bool(cont_cfg.bal.enabled)
+        fit_bal = bool(bal_cfg.enabled)
         fit_poly = bool(cont_cfg.fit_polynomial_tilt)
         fit_reddening = bool(cont_cfg.fit_reddening)
         fit_poly_order = int(cont_cfg.polynomial_order)
@@ -1355,10 +1356,10 @@ class JAXQSOFit:
         bal_components = (
             build_default_bal_components(
                 self.flux,
-                tau_scale=float(cont_cfg.bal.tau_scale),
-                covering_loc=float(cont_cfg.bal.covering_loc),
-                covering_scale=float(cont_cfg.bal.covering_scale),
-                covering_high=float(cont_cfg.bal.covering_high),
+                tau_scale=float(bal_cfg.tau_scale),
+                covering_loc=float(bal_cfg.covering_loc),
+                covering_scale=float(bal_cfg.covering_scale),
+                covering_high=float(bal_cfg.covering_high),
             )
             if bool(fit_bal)
             else ()

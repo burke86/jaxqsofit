@@ -357,11 +357,11 @@ def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
     q.config.output.save_result = False
-    q.config.continuum.bal.enabled = True
-    q.config.continuum.bal.tau_scale = 0.5
-    q.config.continuum.bal.covering_loc = 0.35
-    q.config.continuum.bal.covering_scale = 0.11
-    q.config.continuum.bal.covering_high = 0.80
+    q.config.bal.enabled = True
+    q.config.bal.tau_scale = 0.5
+    q.config.bal.covering_loc = 0.35
+    q.config.bal.covering_scale = 0.11
+    q.config.bal.covering_high = 0.80
     q.config.prior_config = build_default_prior_config(flux)
     q.fit()
 
