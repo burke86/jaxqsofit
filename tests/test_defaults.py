@@ -72,8 +72,13 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     prior.lines.dmu_scale_mult = 0.25
     prior.lines.sig_scale_mult = 0.25
     prior.lines.amp_scale_mult = 0.20
+    prior.host.stellar_mass = dist.TruncatedNormal(loc=10.6, scale=0.4, low=9.5, high=12.0)
     prior.host.aperture_scale = dist.Normal(loc=0.0, scale=0.5)
-    prior.host.sfh_model = "flexible"
+    prior.host.sfh_age_gyr = dist.Normal(loc=np.log(7.0), scale=0.3)
+    prior.host.sfh_tau_over_age = dist.Normal(loc=np.log(0.25), scale=0.3)
+    prior.host.metallicity = dist.Normal(loc=0.0, scale=0.2)
+    prior.host.metallicity_scatter = dist.Normal(loc=np.log(0.1), scale=0.3)
+    prior.host.sfh_model = "delayed"
 
     mapping = prior.to_mapping()
 
@@ -87,8 +92,13 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     assert mapping["line_dmu_scale_mult"] == 0.25
     assert mapping["line_sig_scale_mult"] == 0.25
     assert mapping["line_amp_scale_mult"] == 0.20
+    assert mapping["log_stellar_mass"] == {"dist": "TruncatedNormal", "loc": 10.6, "scale": 0.4, "low": 9.5, "high": 12.0}
     assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert mapping["host_sfh_model"] == "flexible"
+    assert mapping["log_sfh_age_gyr"] == {"dist": "Normal", "loc": np.log(7.0), "scale": 0.3}
+    assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": np.log(0.25), "scale": 0.3}
+    assert mapping["gal_lgmet"] == {"dist": "Normal", "loc": 0.0, "scale": 0.2}
+    assert mapping["log_gal_lgmet_scatter"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.3}
+    assert mapping["host_sfh_model"] == "delayed"
     assert np.isclose(mapping["log_cont_norm"]["loc"], np.log(2.0 * np.median(np.abs(flux))))
 
 
@@ -97,7 +107,7 @@ def test_prior_config_coerces_nested_semantic_mapping():
         continuum={"powerlaw": {"slope": {"loc": -1.2, "scale": 0.2}}},
         feii={"uv_norm": {"loc": -5.0, "scale": 0.1}},
         lines={"dmu_scale_mult": 0.1, "sig_scale_mult": 0.2, "amp_scale_mult": 0.3},
-        host={"sfh_model": "delayed"},
+        host={"sfh_model": "delayed", "stellar_mass": {"loc": 10.5, "scale": 0.2}},
     )
     mapping = prior.to_mapping()
 
@@ -107,6 +117,7 @@ def test_prior_config_coerces_nested_semantic_mapping():
     assert mapping["line_sig_scale_mult"] == 0.2
     assert mapping["line_amp_scale_mult"] == 0.3
     assert mapping["host_sfh_model"] == "delayed"
+    assert mapping["log_stellar_mass"] == {"loc": 10.5, "scale": 0.2}
 
 
 def test_fit_config_coerces_bal_mapping():
