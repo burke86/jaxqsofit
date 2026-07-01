@@ -917,6 +917,8 @@ class JAXQSOFit:
         prior_config = getattr(self, "_fit_prior_config", None)
         if prior_config is None:
             prior_config = _materialize_prior_config(build_default_prior_config(flux))
+        else:
+            prior_config = _materialize_prior_config(prior_config)
         custom_components = normalize_custom_components(getattr(self, "_fit_custom_components", ()))
         custom_line_components = normalize_custom_line_components(getattr(self, "_fit_custom_line_components", ()))
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
@@ -1370,6 +1372,8 @@ class JAXQSOFit:
 
         if prior_config_input is None:
             prior_config = _materialize_prior_config(build_default_prior_config(self.flux))
+        else:
+            prior_config = _materialize_prior_config(prior_config)
         prior_config["z_qso"] = float(self.z)
         prior_config["host_sfh_model"] = str(host_sfh_model)
         self._fit_host_sfh_model = str(prior_config.get("host_sfh_model", "flexible"))
@@ -1552,6 +1556,8 @@ class JAXQSOFit:
         custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
             prior_config = _materialize_prior_config(build_default_prior_config(flux))
+        else:
+            prior_config = _materialize_prior_config(prior_config)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
         prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
         conti_priors = prior_config.get('conti_priors', {})
@@ -1804,6 +1810,8 @@ class JAXQSOFit:
         custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
             prior_config = _materialize_prior_config(build_default_prior_config(flux))
+        else:
+            prior_config = _materialize_prior_config(prior_config)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
         prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
         conti_priors = prior_config.get('conti_priors', {})
@@ -2870,7 +2878,7 @@ class JAXQSOFit:
         if prior_config is None:
             prior_config = _materialize_prior_config(build_default_prior_config(np.asarray(self.flux, dtype=float)))
         else:
-            prior_config = dict(prior_config)
+            prior_config = _materialize_prior_config(prior_config)
         if prior_config.get("PL_pivot", None) is None:
             prior_config["PL_pivot"] = float(np.asarray(_spectrum_center_pivot(wave_native), dtype=float))
         if prior_config.get("poly_pivot", None) is None:

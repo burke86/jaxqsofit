@@ -497,7 +497,7 @@ def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):
 
     monkeypatch.setattr(q, 'run_fsps_optax_fit', lambda **kwargs: None)
 
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     assert cfg["PL_pivot"] is None
     q.config.inference.method = 'optax'
     q.config.observation.apply_mw_deredden = False
@@ -537,7 +537,7 @@ def test_fit_materializes_missing_pl_pivot_key(monkeypatch):
 
     monkeypatch.setattr(q, 'run_fsps_optax_fit', lambda **kwargs: None)
 
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg.pop("PL_pivot")
     q.config.inference.method = 'optax'
     q.config.observation.apply_mw_deredden = False
