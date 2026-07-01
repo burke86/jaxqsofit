@@ -1,4 +1,5 @@
 import numpy as np
+import numpyro.distributions as dist
 
 from jaxqsofit.config import (
     BALConfig,
@@ -20,21 +21,92 @@ from jaxqsofit.defaults import (
 )
 
 
-def test_prior_config_object_exposes_flat_mapping():
+def test_prior_config_object_exposes_model_mapping():
     prior = PriorConfig(
         continuum=ContinuumPriorConfig(power_law_pivot=3000.0, polynomial_pivot=2800.0),
         host=HostPriorConfig(redshift_weight_enabled=False),
         lines=LinePriorConfig(dmu_scale_mult=0.2, sig_scale_mult=0.3, amp_scale_mult=0.4),
         feii=FeIIPriorConfig(uv_fwhm={"loc": np.log(1000.0), "scale": 0.2}),
     )
-    prior["PL_slope"] = {"loc": -1.5, "scale": 0.3}
+    prior.powerlaw.slope = dist.Normal(loc=-1.5, scale=0.3)
+    mapping = prior.to_mapping()
 
-    assert prior["PL_pivot"] == 3000.0
-    assert prior["poly_pivot"] == 2800.0
-    assert prior["host_redshift_prior"]["enabled"] is False
-    assert prior["line_dmu_scale_mult"] == 0.2
-    assert prior["log_Fe_uv_FWHM"]["scale"] == 0.2
-    assert prior.get("PL_slope") == {"loc": -1.5, "scale": 0.3}
+    assert mapping["PL_pivot"] == 3000.0
+    assert mapping["poly_pivot"] == 2800.0
+    assert mapping["host_redshift_prior"]["enabled"] is False
+    assert mapping["line_dmu_scale_mult"] == 0.2
+    assert mapping["log_Fe_uv_FWHM"]["scale"] == 0.2
+    assert mapping["PL_slope"] == {"dist": "Normal", "loc": -1.5, "scale": 0.3}
+
+
+def test_fit_config_to_dict_serializes_numpyro_priors():
+    prior = PriorConfig()
+    prior.powerlaw.slope = dist.Normal(loc=-1.5, scale=0.3)
+    cfg = FitConfig(
+        observation=Observation(redshift=0.1),
+        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
+        prior_config=prior,
+    )
+
+    data = cfg.to_dict()
+
+    assert data["prior_config"]["continuum"]["powerlaw"]["slope"] == {
+        "dist": "Normal",
+        "loc": -1.5,
+        "scale": 0.3,
+    }
+
+
+def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
+    flux = np.array([1.0, 2.0, 3.0], dtype=float)
+
+    prior = PriorConfig.from_spectrum(
+        flux=flux,
+        redshift=1.0,
+        include_high_ionization_lines=False,
+        include_elg_narrow_lines=False,
+    )
+    prior.powerlaw.slope = dist.TruncatedNormal(loc=-1.5, scale=0.3, low=-3.5, high=0.5)
+    prior.fe.uv_norm = dist.LogNormal(np.log(max(1.0e-3 * np.median(np.abs(flux)), 1.0e-10)), 0.04)
+    prior.fe.op_over_uv = dist.Normal(loc=0.0, scale=0.4)
+    prior.lines.dmu_scale_mult = 0.25
+    prior.lines.sig_scale_mult = 0.25
+    prior.lines.amp_scale_mult = 0.20
+    prior.host.aperture_scale = dist.Normal(loc=0.0, scale=0.5)
+    prior.host.sfh_model = "flexible"
+
+    mapping = prior.to_mapping()
+
+    assert mapping["PL_slope"] == {"dist": "TruncatedNormal", "loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.5}
+    assert mapping["log_Fe_uv_norm"] == {
+        "dist": "LogNormal",
+        "loc": np.log(max(1.0e-3 * np.median(np.abs(flux)), 1.0e-10)),
+        "scale": 0.04,
+    }
+    assert mapping["log_Fe_op_over_uv"] == {"dist": "Normal", "loc": 0.0, "scale": 0.4}
+    assert mapping["line_dmu_scale_mult"] == 0.25
+    assert mapping["line_sig_scale_mult"] == 0.25
+    assert mapping["line_amp_scale_mult"] == 0.20
+    assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
+    assert mapping["host_sfh_model"] == "flexible"
+    assert np.isclose(mapping["log_cont_norm"]["loc"], np.log(2.0 * np.median(np.abs(flux))))
+
+
+def test_prior_config_coerces_nested_semantic_mapping():
+    prior = PriorConfig(
+        continuum={"powerlaw": {"slope": {"loc": -1.2, "scale": 0.2}}},
+        feii={"uv_norm": {"loc": -5.0, "scale": 0.1}},
+        lines={"dmu_scale_mult": 0.1, "sig_scale_mult": 0.2, "amp_scale_mult": 0.3},
+        host={"sfh_model": "delayed"},
+    )
+    mapping = prior.to_mapping()
+
+    assert mapping["PL_slope"] == {"loc": -1.2, "scale": 0.2}
+    assert mapping["log_Fe_uv_norm"] == {"loc": -5.0, "scale": 0.1}
+    assert mapping["line_dmu_scale_mult"] == 0.1
+    assert mapping["line_sig_scale_mult"] == 0.2
+    assert mapping["line_amp_scale_mult"] == 0.3
+    assert mapping["host_sfh_model"] == "delayed"
 
 
 def test_fit_config_coerces_bal_mapping():
@@ -63,17 +135,18 @@ def test_fit_config_coerces_prior_config_mapping():
         observation=Observation(redshift=0.1),
         spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
         host=HostConfig(sfh_model="flexible"),
-        prior_config={"PL_pivot": 2500.0},
+        prior_config={"continuum": {"power_law_pivot": 2500.0}},
     )
 
     assert isinstance(cfg.prior_config, PriorConfig)
     assert cfg.host.sfh_model == "flexible"
-    assert cfg.prior_config["PL_pivot"] == 2500.0
+    assert cfg.prior_config.to_mapping()["PL_pivot"] == 2500.0
 
 
 def test_build_default_prior_config_has_expected_keys():
     flux = np.array([1.0, 2.0, 3.0, 4.0], dtype=float)
     cfg = build_default_prior_config(flux)
+    mapping = cfg.to_mapping()
 
     required = [
         'log_cont_norm',
@@ -92,20 +165,20 @@ def test_build_default_prior_config_has_expected_keys():
         'student_t_df',
     ]
     for k in required:
-        assert k in cfg
+        assert k in mapping
     assert isinstance(cfg, PriorConfig)
-    assert cfg["poly_pivot"] is None
-    assert cfg["log_stellar_mass"] == {
+    assert mapping["poly_pivot"] is None
+    assert mapping["log_stellar_mass"] == {
         "dist": "TruncatedNormal",
         "loc": 9.0,
         "scale": 0.75,
         "low": 7.0,
         "high": 12.0,
     }
-    assert cfg["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert cfg["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert cfg["log_gal_sigma_kms"]["dist"] == "Normal"
-    assert cfg["log_reddening_a2500"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6}
+    assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
+    assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
+    assert mapping["log_gal_sigma_kms"]["dist"] == "Normal"
+    assert mapping["log_reddening_a2500"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6}
 
 
 def test_build_default_prior_config_scales_with_flux_median():
@@ -113,47 +186,51 @@ def test_build_default_prior_config_scales_with_flux_median():
     cfg = build_default_prior_config(flux)
 
     expected = np.log(np.median(np.abs(flux)))
-    got = float(cfg['log_cont_norm']['loc'])
+    mapping = cfg.to_mapping()
+
+    got = float(mapping['log_cont_norm']['loc'])
     assert np.isfinite(got)
     assert np.isclose(got, expected)
-    assert cfg['log_cont_norm']['dist'] == 'LogNormal'
-    assert cfg['PL_slope']['dist'] == 'Normal'
-    assert cfg['tau_host']['dist'] == 'HalfNormal'
+    assert mapping['log_cont_norm']['dist'] == 'LogNormal'
+    assert mapping['PL_slope']['dist'] == 'Normal'
+    assert mapping['tau_host']['dist'] == 'HalfNormal'
 
 
 def test_build_default_prior_config_accepts_manual_pl_pivot():
     flux = np.array([1.0, 2.0, 3.0], dtype=float)
     cfg = build_default_prior_config(flux, pl_pivot=3000.0)
-    assert cfg["PL_pivot"] == 3000.0
+    mapping = cfg.to_mapping()
+    assert mapping["PL_pivot"] == 3000.0
 
 
 def test_build_default_prior_config_uses_explicit_dist_fields():
     flux = np.array([1.0, 2.0, 3.0], dtype=float)
     cfg = build_default_prior_config(flux)
+    mapping = cfg.to_mapping()
 
-    assert cfg["log_frac_host"]["dist"] == "StudentT"
-    assert cfg["host_redshift_prior"]["enabled"] is False
-    assert cfg["host_redshift_prior"]["z_mid"] == 1.0
-    assert cfg["host_redshift_prior"]["width"] == 0.2
-    assert cfg["host_redshift_prior"]["lowz_loc_offset"] == 0.0
-    assert cfg["host_redshift_prior"]["highz_loc_offset"] == -8.0
-    assert cfg["host_redshift_prior"]["lowz_scale_mult"] == 1.0
-    assert cfg["host_redshift_prior"]["highz_scale_mult"] == 0.05
-    assert cfg["host_redshift_prior"]["lowz_df"] == 3.0
-    assert cfg["host_redshift_prior"]["highz_df"] == 20.0
-    assert cfg["log_Fe_uv_norm"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["log_Fe_uv_norm"]["loc"], np.log(0.03 * 2.0))
-    assert cfg["log_Fe_uv_norm"]["scale"] == 1.0
-    assert cfg["log_Fe_op_over_uv"] == {"dist": "Normal", "loc": 0.0, "scale": 1.0}
-    assert cfg["log_Fe_uv_FWHM"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["log_Fe_uv_FWHM"]["loc"], np.log(3000.0))
-    assert cfg["log_Fe_uv_FWHM"]["scale"] == 0.5
-    assert cfg["log_Fe_op_FWHM"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["log_Fe_op_FWHM"]["loc"], np.log(3000.0))
-    assert cfg["log_Fe_op_FWHM"]["scale"] == 0.5
-    assert cfg["Fe_uv_shift"]["dist"] == "Normal"
-    assert cfg["frac_jitter"]["dist"] == "HalfNormal"
-    assert cfg["add_jitter"]["dist"] == "HalfNormal"
+    assert mapping["log_frac_host"]["dist"] == "StudentT"
+    assert mapping["host_redshift_prior"]["enabled"] is False
+    assert mapping["host_redshift_prior"]["z_mid"] == 1.0
+    assert mapping["host_redshift_prior"]["width"] == 0.2
+    assert mapping["host_redshift_prior"]["lowz_loc_offset"] == 0.0
+    assert mapping["host_redshift_prior"]["highz_loc_offset"] == -8.0
+    assert mapping["host_redshift_prior"]["lowz_scale_mult"] == 1.0
+    assert mapping["host_redshift_prior"]["highz_scale_mult"] == 0.05
+    assert mapping["host_redshift_prior"]["lowz_df"] == 3.0
+    assert mapping["host_redshift_prior"]["highz_df"] == 20.0
+    assert mapping["log_Fe_uv_norm"]["dist"] == "LogNormal"
+    assert np.isclose(mapping["log_Fe_uv_norm"]["loc"], np.log(0.03 * 2.0))
+    assert mapping["log_Fe_uv_norm"]["scale"] == 1.0
+    assert mapping["log_Fe_op_over_uv"] == {"dist": "Normal", "loc": 0.0, "scale": 1.0}
+    assert mapping["log_Fe_uv_FWHM"]["dist"] == "LogNormal"
+    assert np.isclose(mapping["log_Fe_uv_FWHM"]["loc"], np.log(3000.0))
+    assert mapping["log_Fe_uv_FWHM"]["scale"] == 0.5
+    assert mapping["log_Fe_op_FWHM"]["dist"] == "LogNormal"
+    assert np.isclose(mapping["log_Fe_op_FWHM"]["loc"], np.log(3000.0))
+    assert mapping["log_Fe_op_FWHM"]["scale"] == 0.5
+    assert mapping["Fe_uv_shift"]["dist"] == "Normal"
+    assert mapping["frac_jitter"]["dist"] == "HalfNormal"
+    assert mapping["add_jitter"]["dist"] == "HalfNormal"
 
 
 def test_build_default_bal_components_exposes_common_bal_lines():
@@ -209,7 +286,7 @@ def test_build_default_bal_components_accepts_prior_overrides():
 
 def test_default_line_table_contains_expanded_uv_complexes():
     cfg = build_default_prior_config(np.array([1.0, 2.0, 3.0], dtype=float))
-    rows = cfg["line"]["table"]
+    rows = cfg.to_mapping()["line"]["table"]
     by_name = {row["linename"]: row for row in rows}
 
     expected_names = {
@@ -245,7 +322,7 @@ def test_optional_line_tables_do_not_duplicate_hei7065():
         include_elg_narrow_lines=True,
         include_high_ionization_lines=True,
     )
-    rows = cfg["line"]["table"]
+    rows = cfg.to_mapping()["line"]["table"]
     hei7065 = [row for row in rows if row["linename"] == "HeI7065"]
 
     assert len(hei7065) == 1
@@ -280,7 +357,7 @@ def test_optional_fixed_doublet_ratios_are_physical():
 
 def test_default_oiii_doublets_are_tied_with_physical_ratio():
     cfg = build_default_prior_config(np.array([1.0, 2.0, 3.0], dtype=float))
-    by_name = {row["linename"]: row for row in cfg["line"]["table"]}
+    by_name = {row["linename"]: row for row in cfg.to_mapping()["line"]["table"]}
 
     assert by_name["OIII4959c"]["findex"] == by_name["OIII5007c"]["findex"]
     assert by_name["OIII4959w"]["findex"] == by_name["OIII5007w"]["findex"]
@@ -302,7 +379,7 @@ def test_combined_optional_config_preserves_oi_doublet_ratio():
         np.array([1.0, 2.0, 3.0], dtype=float),
         include_elg_narrow_lines=True,
     )
-    by_name = {row["linename"]: row for row in cfg["line"]["table"]}
+    by_name = {row["linename"]: row for row in cfg.to_mapping()["line"]["table"]}
 
     assert np.isclose(
         by_name["OI6300"]["fvalue"] * by_name["OI6300"]["lambda"]

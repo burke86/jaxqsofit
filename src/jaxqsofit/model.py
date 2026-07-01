@@ -39,6 +39,17 @@ CGS_TO_JAXQSOFIT_FLUX = 1.0e17
 AMPLITUDE_FLOOR = 1e-32
 
 
+def _materialize_prior_mapping(prior_config):
+    """Return a flat prior mapping for low-level model helpers."""
+    if prior_config is None:
+        return {}
+    if isinstance(prior_config, Mapping):
+        return dict(prior_config)
+    if hasattr(prior_config, "to_mapping"):
+        return dict(prior_config.to_mapping())
+    return dict(prior_config)
+
+
 def unred(wave, flux, ebv, R_V=3.1):
     """Apply Fitzpatrick (1999) Galactic dereddening to a flux array."""
     # Preserve legacy function signature; use extinction package implementation.
@@ -70,19 +81,19 @@ def _spectrum_center_pivot(wave):
 
 def _resolve_pl_pivot(wave, prior_config):
     """Return the configured power-law pivot or fall back to the spectrum center."""
-    if prior_config is not None:
-        pivot = prior_config.get("PL_pivot", None)
-        if pivot is not None:
-            return jnp.maximum(jnp.asarray(float(pivot)), 1e-8)
+    prior_config = _materialize_prior_mapping(prior_config)
+    pivot = prior_config.get("PL_pivot", None)
+    if pivot is not None:
+        return jnp.maximum(jnp.asarray(float(pivot)), 1e-8)
     return _spectrum_center_pivot(wave)
 
 
 def _resolve_poly_pivot(wave, prior_config, *, require_configured=False):
     """Return the polynomial pivot wavelength used by the fitted model."""
-    if prior_config is not None:
-        pivot = prior_config.get("poly_pivot", None)
-        if pivot is not None:
-            return jnp.maximum(jnp.asarray(float(pivot)), 1e-8)
+    prior_config = _materialize_prior_mapping(prior_config)
+    pivot = prior_config.get("poly_pivot", None)
+    if pivot is not None:
+        return jnp.maximum(jnp.asarray(float(pivot)), 1e-8)
     if require_configured:
         raise ValueError(
             "Posterior reconstruction with fitted polynomial coefficients requires "
@@ -104,7 +115,8 @@ def _format_wave_label(w0):
 
 def _continuum_output_waves_from_prior_config(prior_config, *, default_waves=(2500.0, 4200.0, 5100.0)):
     """Return unique continuum output wavelengths, always preserving 2500 A."""
-    out_params = prior_config.get("out_params", {}) if isinstance(prior_config, Mapping) else {}
+    prior_config = _materialize_prior_mapping(prior_config)
+    out_params = prior_config.get("out_params", {})
     waves = np.asarray(out_params.get("cont_loc", []), dtype=float)
     waves = waves[np.isfinite(waves)]
     if waves.size == 0:
@@ -1023,19 +1035,12 @@ def reconstruct_posterior_components(
 
 
 def _extract_line_table_from_prior_config(prior_config: Dict[str, Any] | None):
-    """Extract line-table style priors from `prior_config` in supported layouts."""
-    if prior_config is None:
-        return None
-    if 'line_priors' in prior_config:
-        return prior_config['line_priors']
-    if 'line_table' in prior_config:
-        return prior_config['line_table']
+    """Extract line-table priors from the canonical ``line.table`` layout."""
+    prior_config = _materialize_prior_mapping(prior_config)
     line_cfg = prior_config.get('line', None)
     if isinstance(line_cfg, dict):
         if 'table' in line_cfg:
             return line_cfg['table']
-        if 'priors' in line_cfg:
-            return line_cfg['priors']
     return None
 
 
@@ -1271,7 +1276,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_op_wave = _np_to_jnp(fe_op_wave)
     fe_op_flux = _np_to_jnp(fe_op_flux)
     z_qso = jnp.asarray(z_qso, dtype=jnp.float64)
-    prior_config = {} if prior_config is None else prior_config
+    prior_config = _materialize_prior_mapping(prior_config)
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
     bal_absorption_components = tuple(

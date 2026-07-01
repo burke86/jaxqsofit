@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from collections.abc import MutableMapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Mapping, Sequence
 
@@ -128,6 +127,87 @@ class InferenceConfig:
     plot_init: bool = False
 
 
+def _scalar_or_list(value: Any) -> Any:
+    """Convert scalar array-like distribution parameters into plain Python values."""
+    arr = np.asarray(value)
+    if arr.shape == ():
+        return float(arr)
+    return arr.tolist()
+
+
+def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
+    """Convert supported NumPyro distributions into the model prior schema."""
+    module = getattr(value.__class__, "__module__", "")
+    if not module.startswith("numpyro.distributions"):
+        return None
+
+    name = value.__class__.__name__
+    if name in {"Normal", "LogNormal"}:
+        return {
+            "dist": name,
+            "loc": _scalar_or_list(value.loc),
+            "scale": _scalar_or_list(value.scale),
+        }
+    if name == "TruncatedNormal":
+        return {
+            "dist": name,
+            "loc": _scalar_or_list(value.loc),
+            "scale": _scalar_or_list(value.scale),
+            "low": _scalar_or_list(value.low),
+            "high": _scalar_or_list(value.high),
+        }
+    if name == "TwoSidedTruncatedDistribution":
+        base = value.base_dist
+        if base.__class__.__name__ == "Normal":
+            return {
+                "dist": "TruncatedNormal",
+                "loc": _scalar_or_list(base.loc),
+                "scale": _scalar_or_list(base.scale),
+                "low": _scalar_or_list(value.low),
+                "high": _scalar_or_list(value.high),
+            }
+    if name == "HalfNormal":
+        return {"dist": name, "scale": _scalar_or_list(value.scale)}
+    if name == "StudentT":
+        return {
+            "dist": name,
+            "df": _scalar_or_list(value.df),
+            "loc": _scalar_or_list(value.loc),
+            "scale": _scalar_or_list(value.scale),
+        }
+    if name == "Uniform":
+        return {
+            "dist": name,
+            "low": _scalar_or_list(value.low),
+            "high": _scalar_or_list(value.high),
+        }
+    raise TypeError(f"Unsupported NumPyro prior distribution: {name}")
+
+
+def _prior_to_mapping(value: Any) -> Any:
+    """Convert public prior specs to low-level mappings."""
+    if isinstance(value, Mapping):
+        return dict(value)
+    prior = _numpyro_distribution_to_mapping(value)
+    if prior is not None:
+        return prior
+    raise TypeError("Prior fields must be mappings or supported numpyro.distributions objects.")
+
+
+@dataclass
+class PowerLawPriorConfig:
+    """Semantic power-law prior options."""
+
+    slope: Any | None = None
+
+    def to_mapping(self) -> dict[str, Any]:
+        """Convert power-law prior settings into model-site keys."""
+        out: dict[str, Any] = {}
+        if self.slope is not None:
+            out["PL_slope"] = _prior_to_mapping(self.slope)
+        return out
+
+
 @dataclass
 class OutputConfig:
     """Plotting and persistence defaults."""
@@ -147,11 +227,19 @@ class ContinuumPriorConfig:
     power_law_pivot: float | None = None
     polynomial_pivot: float | None = None
     output_wavelengths: Sequence[float] | None = None
-    overrides: dict[str, Any] = field(default_factory=dict)
+    powerlaw: PowerLawPriorConfig = field(default_factory=PowerLawPriorConfig)
+
+    def __post_init__(self) -> None:
+        """Normalize nested continuum prior sections passed as mappings."""
+        if isinstance(self.powerlaw, Mapping):
+            self.powerlaw = PowerLawPriorConfig(
+                **{k: v for k, v in self.powerlaw.items() if k in PowerLawPriorConfig.__dataclass_fields__}
+            )
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic continuum prior settings into model-site keys."""
-        out = dict(self.overrides)
+        out: dict[str, Any] = {}
+        out.update(self.powerlaw.to_mapping())
         if self.power_law_pivot is not None:
             out["PL_pivot"] = float(self.power_law_pivot)
         if self.polynomial_pivot is not None:
@@ -166,11 +254,16 @@ class HostPriorConfig:
     """Semantic host-galaxy prior options."""
 
     redshift_weight_enabled: bool | None = None
-    overrides: dict[str, Any] = field(default_factory=dict)
+    aperture_scale: Any | None = None
+    sfh_model: str | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic host prior settings into model-site keys."""
-        out = dict(self.overrides)
+        out: dict[str, Any] = {}
+        if self.aperture_scale is not None:
+            out["log_host_aperture_scale"] = _prior_to_mapping(self.aperture_scale)
+        if self.sfh_model is not None:
+            out["host_sfh_model"] = str(self.sfh_model)
         if self.redshift_weight_enabled is not None:
             host_z = dict(out.get("host_redshift_prior", {}))
             host_z["enabled"] = bool(self.redshift_weight_enabled)
@@ -186,11 +279,10 @@ class LinePriorConfig:
     dmu_scale_mult: float | None = None
     sig_scale_mult: float | None = None
     amp_scale_mult: float | None = None
-    overrides: dict[str, Any] = field(default_factory=dict)
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic emission-line prior settings into model-site keys."""
-        out = dict(self.overrides)
+        out: dict[str, Any] = {}
         if self.table is not None:
             out["line"] = {"table": list(self.table)}
         if self.dmu_scale_mult is not None:
@@ -206,17 +298,22 @@ class LinePriorConfig:
 class FeIIPriorConfig:
     """Semantic Fe II prior options."""
 
-    uv_fwhm: Mapping[str, Any] | None = None
-    optical_fwhm: Mapping[str, Any] | None = None
-    overrides: dict[str, Any] = field(default_factory=dict)
+    uv_norm: Any | None = None
+    op_over_uv: Any | None = None
+    uv_fwhm: Any | None = None
+    optical_fwhm: Any | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic Fe II prior settings into model-site keys."""
-        out = dict(self.overrides)
+        out: dict[str, Any] = {}
+        if self.uv_norm is not None:
+            out["log_Fe_uv_norm"] = _prior_to_mapping(self.uv_norm)
+        if self.op_over_uv is not None:
+            out["log_Fe_op_over_uv"] = _prior_to_mapping(self.op_over_uv)
         if self.uv_fwhm is not None:
-            out["log_Fe_uv_FWHM"] = dict(self.uv_fwhm)
+            out["log_Fe_uv_FWHM"] = _prior_to_mapping(self.uv_fwhm)
         if self.optical_fwhm is not None:
-            out["log_Fe_op_FWHM"] = dict(self.optical_fwhm)
+            out["log_Fe_op_FWHM"] = _prior_to_mapping(self.optical_fwhm)
         return out
 
 
@@ -224,70 +321,100 @@ class FeIIPriorConfig:
 class PSFPriorConfig:
     """Semantic PSF recalibration prior options."""
 
-    overrides: dict[str, Any] = field(default_factory=dict)
-
     def to_mapping(self) -> dict[str, Any]:
-        """Return low-level PSF recalibration prior overrides."""
-        return dict(self.overrides)
+        """Return PSF recalibration prior settings."""
+        return {}
 
 
 @dataclass
-class PriorConfig(MutableMapping[str, Any]):
-    """Object-oriented prior configuration with dict-compatible overrides."""
+class PriorConfig:
+    """Object-oriented prior configuration."""
 
     continuum: ContinuumPriorConfig = field(default_factory=ContinuumPriorConfig)
     host: HostPriorConfig = field(default_factory=HostPriorConfig)
     lines: LinePriorConfig = field(default_factory=LinePriorConfig)
     feii: FeIIPriorConfig = field(default_factory=FeIIPriorConfig)
     psf: PSFPriorConfig = field(default_factory=PSFPriorConfig)
-    overrides: dict[str, Any] = field(default_factory=dict)
+    student_t_df: float | None = None
+    _model_priors: dict[str, Any] = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self) -> None:
+        """Normalize nested prior sections passed as mappings."""
+        self.continuum = _coerce_dataclass(ContinuumPriorConfig, self.continuum)
+        self.host = _coerce_dataclass(HostPriorConfig, self.host)
+        self.lines = _coerce_dataclass(LinePriorConfig, self.lines)
+        self.feii = _coerce_dataclass(FeIIPriorConfig, self.feii)
+        self.psf = _coerce_dataclass(PSFPriorConfig, self.psf)
+        self._model_priors = dict(self._model_priors)
+
+    @classmethod
+    def _from_model_priors(cls, model_priors: Mapping[str, Any]) -> "PriorConfig":
+        """Build a PriorConfig from the low-level default-prior payload."""
+        out = cls()
+        out._model_priors = dict(model_priors)
+        return out
+
+    @classmethod
+    def from_spectrum(
+        cls,
+        flux: Sequence[float],
+        redshift: float | None = None,
+        *,
+        line_config: Mapping[str, Any] | None = None,
+        include_elg_narrow_lines: bool = False,
+        include_high_ionization_lines: bool = False,
+        pl_pivot: float | None = None,
+    ) -> "PriorConfig":
+        """Build default priors from an observed spectrum flux scale.
+
+        ``build_default_prior_config`` expects rest-frame flux density. This
+        constructor accepts observed-frame flux and redshift, applying the
+        standard ``flux_rest = flux * (1 + redshift)`` conversion when a
+        redshift is provided.
+        """
+        from .defaults import build_default_prior_config
+
+        flux_arr = np.asarray(flux, dtype=float)
+        flux_for_priors = flux_arr * (1.0 + float(redshift)) if redshift is not None else flux_arr
+        return build_default_prior_config(
+            flux_for_priors,
+            line_config=None if line_config is None else dict(line_config),
+            include_elg_narrow_lines=include_elg_narrow_lines,
+            include_high_ionization_lines=include_high_ionization_lines,
+            pl_pivot=pl_pivot,
+        )
+
+    @property
+    def powerlaw(self) -> PowerLawPriorConfig:
+        """Semantic power-law prior section."""
+        return self.continuum.powerlaw
+
+    @powerlaw.setter
+    def powerlaw(self, value: PowerLawPriorConfig | Mapping[str, Any]) -> None:
+        """Set the semantic power-law prior section."""
+        self.continuum.powerlaw = _coerce_dataclass(PowerLawPriorConfig, value)
+
+    @property
+    def fe(self) -> FeIIPriorConfig:
+        """Alias for the Fe II prior section."""
+        return self.feii
+
+    @fe.setter
+    def fe(self, value: FeIIPriorConfig | Mapping[str, Any]) -> None:
+        """Set the Fe II prior section through the shorter alias."""
+        self.feii = _coerce_dataclass(FeIIPriorConfig, value)
 
     def to_mapping(self) -> dict[str, Any]:
         """Return the flat prior mapping consumed by low-level model code."""
-        out: dict[str, Any] = dict(self.overrides)
+        out: dict[str, Any] = dict(self._model_priors)
         out.update(self.continuum.to_mapping())
         out.update(self.host.to_mapping())
         out.update(self.lines.to_mapping())
         out.update(self.feii.to_mapping())
         out.update(self.psf.to_mapping())
+        if self.student_t_df is not None:
+            out["student_t_df"] = float(self.student_t_df)
         return out
-
-    def __getitem__(self, key: str) -> Any:
-        """Return one prior entry from the flat mapping view."""
-        return self.to_mapping()[key]
-
-    def __setitem__(self, key: str, value: Any) -> None:
-        """Store a low-level prior override by model-site key."""
-        self.overrides[str(key)] = value
-
-    def __delitem__(self, key: str) -> None:
-        """Remove a low-level override entry."""
-        if key in self.overrides:
-            del self.overrides[key]
-            return
-        raise KeyError(key)
-
-    def __iter__(self):
-        """Iterate over keys in the flat mapping view."""
-        return iter(self.to_mapping())
-
-    def __len__(self) -> int:
-        """Return the number of entries in the flat mapping view."""
-        return len(self.to_mapping())
-
-    def __contains__(self, key: object) -> bool:
-        """Return True when a key exists in the flat mapping view."""
-        return key in self.to_mapping()
-
-    def get(self, key: str, default: Any = None) -> Any:
-        """Return a prior entry or default from the flat mapping view."""
-        return self.to_mapping().get(key, default)
-
-    def setdefault(self, key: str, default: Any = None) -> Any:
-        """Set and return a low-level override when the key is absent."""
-        if key not in self:
-            self[key] = default
-        return self[key]
 
 
 @dataclass
@@ -321,7 +448,7 @@ class FitConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """Convert the dataclass tree into a plain dictionary."""
-        return asdict(self)
+        return serialize_config(self)
 
 
 def _coerce_dataclass(cls, value: Any):
@@ -338,7 +465,7 @@ def _coerce_dataclass(cls, value: Any):
 
 
 def _coerce_prior_config(value: Any) -> PriorConfig:
-    """Coerce flat and nested prior mappings into :class:`PriorConfig`."""
+    """Coerce structured prior mappings into :class:`PriorConfig`."""
     if isinstance(value, PriorConfig):
         return value
     if value is None:
@@ -346,7 +473,7 @@ def _coerce_prior_config(value: Any) -> PriorConfig:
     if not isinstance(value, Mapping):
         return _coerce_dataclass(PriorConfig, value)
     data = dict(value)
-    nested_keys = {"continuum", "host", "lines", "feii", "psf", "overrides"}
+    nested_keys = {"continuum", "host", "lines", "feii", "psf", "student_t_df", "_model_priors"}
     if any(key in data for key in nested_keys):
         cfg = PriorConfig(
             continuum=_coerce_dataclass(ContinuumPriorConfig, data.get("continuum", {})),
@@ -354,13 +481,11 @@ def _coerce_prior_config(value: Any) -> PriorConfig:
             lines=_coerce_dataclass(LinePriorConfig, data.get("lines", {})),
             feii=_coerce_dataclass(FeIIPriorConfig, data.get("feii", {})),
             psf=_coerce_dataclass(PSFPriorConfig, data.get("psf", {})),
-            overrides=dict(data.get("overrides", {})),
+            student_t_df=data.get("student_t_df"),
         )
-        for key, item in data.items():
-            if key not in nested_keys:
-                cfg.overrides[key] = item
+        cfg._model_priors = dict(data.get("_model_priors", {}))
         return cfg
-    return PriorConfig(overrides=data)
+    raise ValueError("prior_config mappings must use structured PriorConfig sections.")
 
 
 def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
@@ -388,6 +513,9 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
 def serialize_config(value: Any) -> Any:
     """Convert config-like objects into JSON-serializable Python values."""
 
+    prior = _numpyro_distribution_to_mapping(value)
+    if prior is not None:
+        return serialize_config(prior)
     if is_dataclass(value):
         return {k: serialize_config(v) for k, v in asdict(value).items()}
     if isinstance(value, dict):

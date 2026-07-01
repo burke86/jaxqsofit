@@ -29,18 +29,13 @@ from jaxqsofit.model import (
 )
 
 
-def test_extract_line_table_from_prior_config_layouts():
+def test_extract_line_table_from_prior_config_uses_canonical_layout():
     table = [{'lambda': 5008.24, 'linename': 'OIII5007', 'compname': 'Hb', 'ngauss': 1, 'inisca': 1.0, 'minsca': 0.0, 'maxsca': 1e3, 'inisig': 1e-3, 'minsig': 1e-4, 'maxsig': 1e-2, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 1, 'fvalue': 1.0}]
 
-    cfg1 = {'line_priors': table}
-    cfg2 = {'line_table': table}
-    cfg3 = {'line': {'table': table}}
-    cfg4 = {'line': {'priors': table}}
-
-    assert _extract_line_table_from_prior_config(cfg1) is table
-    assert _extract_line_table_from_prior_config(cfg2) is table
-    assert _extract_line_table_from_prior_config(cfg3) is table
-    assert _extract_line_table_from_prior_config(cfg4) is table
+    assert _extract_line_table_from_prior_config({'line': {'table': table}}) is table
+    assert _extract_line_table_from_prior_config({'line_priors': table}) is None
+    assert _extract_line_table_from_prior_config({'line_table': table}) is None
+    assert _extract_line_table_from_prior_config({'line': {'priors': table}}) is None
 
 
 def test_package_enables_jax_x64_explicitly():
@@ -93,7 +88,7 @@ def test_reddening_a2500_is_sampled_in_log_space_and_exposed():
     wave = np.linspace(2000.0, 3000.0, 8)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
-    prior_config = build_default_prior_config(flux)
+    prior_config = build_default_prior_config(flux).to_mapping()
     prior_config["PL_pivot"] = 2500.0
     prior_config["poly_pivot"] = 2500.0
     fsps_grid = SimpleNamespace(templates=np.zeros((wave.size, 1)))
@@ -495,7 +490,7 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_lum
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "flexible"
 
     class _Grid:
@@ -546,7 +541,7 @@ def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
     cfg["mass_metallicity_relation"] = {
         "enabled": True,
@@ -626,7 +621,7 @@ def test_delayed_sfh_host_uses_physical_stellar_mass_scaling():
     wave = np.linspace(4000.0, 4100.0, 16)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
     cfg["mass_metallicity_relation"] = {"enabled": False}
     cfg["log_host_aperture_scale"] = {"dist": "Normal", "loc": 0.0, "scale": 0.1}
@@ -706,7 +701,7 @@ def test_delayed_sfh_host_uses_physical_stellar_mass_scaling():
 def test_delayed_sfh_host_accepts_jitted_redshift_tracer():
     wave = np.linspace(4000.0, 4100.0, 16)
     flux = np.ones_like(wave)
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
     cfg["mass_metallicity_relation"] = {"enabled": False}
     cfg["z_qso"] = 0.1
@@ -1001,7 +996,7 @@ def test_host_redshift_prior_params_disable_restores_zero_offset():
 
 
 def test_host_redshift_prior_penalizes_same_host_more_at_high_z():
-    cfg = build_default_prior_config(np.array([1.0, 2.0, 3.0], dtype=float))
+    cfg = build_default_prior_config(np.array([1.0, 2.0, 3.0], dtype=float)).to_mapping()
     cfg["host_redshift_prior"]["enabled"] = True
     _, offset_low, scale_low, df_low = _host_redshift_prior_params(cfg, 0.2)
     _, offset_high, scale_high, df_high = _host_redshift_prior_params(cfg, 2.0)
@@ -1017,7 +1012,7 @@ def test_qso_fsps_joint_model_derives_host_fraction_diagnostics():
     wave = np.linspace(2000.0, 6000.0, 32)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
-    cfg = build_default_prior_config(flux)
+    cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "flexible"
 
     class _Grid:
