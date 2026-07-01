@@ -29,18 +29,13 @@ from jaxqsofit.model import (
 )
 
 
-def test_extract_line_table_from_prior_config_layouts():
+def test_extract_line_table_from_prior_config_uses_canonical_layout():
     table = [{'lambda': 5008.24, 'linename': 'OIII5007', 'compname': 'Hb', 'ngauss': 1, 'inisca': 1.0, 'minsca': 0.0, 'maxsca': 1e3, 'inisig': 1e-3, 'minsig': 1e-4, 'maxsig': 1e-2, 'voff': 0.01, 'vindex': 1, 'windex': 1, 'findex': 1, 'fvalue': 1.0}]
 
-    cfg1 = {'line_priors': table}
-    cfg2 = {'line_table': table}
-    cfg3 = {'line': {'table': table}}
-    cfg4 = {'line': {'priors': table}}
-
-    assert _extract_line_table_from_prior_config(cfg1) is table
-    assert _extract_line_table_from_prior_config(cfg2) is table
-    assert _extract_line_table_from_prior_config(cfg3) is table
-    assert _extract_line_table_from_prior_config(cfg4) is table
+    assert _extract_line_table_from_prior_config({'line': {'table': table}}) is table
+    assert _extract_line_table_from_prior_config({'line_priors': table}) is None
+    assert _extract_line_table_from_prior_config({'line_table': table}) is None
+    assert _extract_line_table_from_prior_config({'line': {'priors': table}}) is None
 
 
 def test_package_enables_jax_x64_explicitly():

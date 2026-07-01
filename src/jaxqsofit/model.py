@@ -1023,19 +1023,13 @@ def reconstruct_posterior_components(
 
 
 def _extract_line_table_from_prior_config(prior_config: Dict[str, Any] | None):
-    """Extract line-table style priors from `prior_config` in supported layouts."""
+    """Extract line-table priors from the canonical ``line.table`` layout."""
     if prior_config is None:
         return None
-    if 'line_priors' in prior_config:
-        return prior_config['line_priors']
-    if 'line_table' in prior_config:
-        return prior_config['line_table']
     line_cfg = prior_config.get('line', None)
     if isinstance(line_cfg, dict):
         if 'table' in line_cfg:
             return line_cfg['table']
-        if 'priors' in line_cfg:
-            return line_cfg['priors']
     return None
 
 

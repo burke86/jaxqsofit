@@ -81,17 +81,11 @@ def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
 
 
 def _line_table_from_prior_config(prior_config: Mapping[str, Any]):
-    """Extract a line table from supported prior-config layouts."""
+    """Extract a line table from the canonical ``line.table`` layout."""
     line_cfg = prior_config.get("line", None)
     if isinstance(line_cfg, Mapping):
         if "table" in line_cfg:
             return line_cfg["table"]
-        if "priors" in line_cfg:
-            return line_cfg["priors"]
-    if "line_table" in prior_config:
-        return prior_config["line_table"]
-    if "line_priors" in prior_config:
-        return prior_config["line_priors"]
     return None
 
 

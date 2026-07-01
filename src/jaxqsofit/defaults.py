@@ -591,4 +591,4 @@ def build_default_prior_config(
                     )
                 line_cfg["table"] = _apply_robust_line_scale_priors(table, fscale=fscale, fmax=fmax)
     cfg.update(lc)
-    return PriorConfig(overrides=cfg)
+    return PriorConfig._from_model_priors(cfg)

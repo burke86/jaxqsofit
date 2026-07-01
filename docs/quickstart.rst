@@ -4,7 +4,7 @@ Quickstart
 ``jaxqsofit`` is configured through a single :class:`jaxqsofit.FitConfig`
 object. The top-level config groups the observation metadata, spectroscopy
 arrays, continuum and host-galaxy options, inference settings, output behavior,
-and optional prior overrides. Build the config first, pass it to
+and optional prior configuration. Build the config first, pass it to
 :class:`jaxqsofit.JAXQSOFit`, and then call :meth:`jaxqsofit.JAXQSOFit.fit`.
 
 Minimal fitting example

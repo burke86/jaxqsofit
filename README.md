@@ -188,9 +188,27 @@ This runs a staged MAP optimization (continuum warm start, then full model) and 
 Optional: override any prior defaults on the config:
 
 ```python
-cfg.prior_config = jaxqsofit.PriorConfig()
-cfg.prior_config["student_t_df"] = 2.5
-cfg.prior_config["PL_slope"] = {"loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.3}
+import numpyro.distributions as dist
+
+cfg.prior_config = jaxqsofit.PriorConfig.from_spectrum(
+    flux=flux,
+    redshift=z,
+)
+cfg.prior_config.powerlaw.slope = dist.TruncatedNormal(
+    loc=-1.5,
+    scale=0.3,
+    low=-3.5,
+    high=0.3,
+)
+cfg.prior_config.fe.uv_norm = dist.LogNormal(
+    np.log(max(1e-3 * np.median(np.abs(flux)), 1e-10)),
+    0.04,
+)
+cfg.prior_config.fe.op_over_uv = dist.Normal(0.0, 0.4)
+cfg.prior_config.lines.dmu_scale_mult = 0.25
+cfg.prior_config.lines.sig_scale_mult = 0.25
+cfg.prior_config.lines.amp_scale_mult = 0.20
+cfg.prior_config.student_t_df = 2.5
 
 q = jaxqsofit.JAXQSOFit(cfg)
 result = q.fit()
@@ -220,14 +238,11 @@ When enabled, JAXQSOFit appends conservative multiplicative BAL absorption compo
 
 - `fit()` is configuration-first and currently accepts only `verbose` and `kwargs_plot`; model, preprocessing, inference, output, PSF, BAL, and prior options live on `FitConfig`.
 - If `cfg.prior_config is None`, defaults are auto-built from `src/jaxqsofit/defaults.py` using the input flux scale.
-- If you pass a custom `cfg.prior_config`, ensure required keys exist for enabled model components.
-- `cfg.lines.enabled=True` requires a line prior table in:
-  - `cfg.prior_config["line"]["table"]` (preferred), or
-  - `cfg.prior_config["line_priors"]`, or
-  - `cfg.prior_config["line_table"]`.
+- If you pass a custom `cfg.prior_config`, configure the semantic sections required by enabled model components.
+- `cfg.lines.enabled=True` requires a line prior table in `cfg.prior_config.lines.table`.
 - `cfg.continuum.fit_feii=False`, `cfg.continuum.fit_balmer_continuum=False`, `cfg.continuum.fit_polynomial_tilt=False`, and `cfg.host.enabled=False` disable those model blocks.
 - Likelihood is Student-t:
-  - `cfg.prior_config["student_t_df"]` controls tail heaviness.
+  - `cfg.prior_config.student_t_df` controls tail heaviness.
   - Lower `df` is more robust to outliers.
 
 ## Outputs on `JAXQSOFit` object
