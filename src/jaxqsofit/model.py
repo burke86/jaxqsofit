@@ -475,6 +475,43 @@ def _template_grid_age_met_arrays(fsps_grid):
     return _np_to_jnp(ages), _np_to_jnp(mets)
 
 
+def _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp):
+    """Return template-wise prior logits for flexible host SSP weights."""
+    raw_w_loc, _ = _cfg_norm_from_prior_config(prior_config, "raw_w")
+    loc = jnp.full((ntemp,), raw_w_loc, dtype=jnp.float64)
+    cfg = prior_config.get("host_template_age_prior", None)
+    if cfg is None:
+        cfg = prior_config.get("template_age_prior", None)
+    if not isinstance(cfg, Mapping) or not bool(cfg.get("enabled", True)):
+        return loc
+
+    ages = np.asarray([m.get("tage_gyr", np.nan) for m in fsps_grid.template_meta], dtype=float)
+    if ages.size != ntemp or not np.all(np.isfinite(ages)):
+        ages = np.asarray(_template_grid_age_met_arrays(fsps_grid)[0], dtype=float)
+    if ages.size != ntemp:
+        return loc
+
+    pivot_gyr = max(float(cfg.get("pivot_gyr", 1.0)), 1.0e-6)
+    strength = float(cfg.get("strength", 1.0))
+    min_logit = float(cfg.get("min_logit", -3.0))
+    max_logit = float(cfg.get("max_logit", 2.0))
+    safe_ages = np.where(np.isfinite(ages) & (ages > 0.0), ages, pivot_gyr)
+    prior_type = str(cfg.get("type", "prefer_old")).lower()
+
+    if prior_type in {"prefer_old", "old", "older", "old_host"}:
+        age_logits = strength * np.log10(np.maximum(safe_ages, 1.0e-6) / pivot_gyr)
+    elif prior_type in {"lognormal", "log_age_normal", "age_peak"}:
+        loc_gyr = max(float(cfg.get("loc_gyr", pivot_gyr)), 1.0e-6)
+        scale_dex = max(float(cfg.get("scale_dex", 0.5)), 1.0e-6)
+        log_age = np.log10(np.maximum(safe_ages, 1.0e-6))
+        age_logits = -0.5 * strength * ((log_age - np.log10(loc_gyr)) / scale_dex) ** 2
+    else:
+        raise ValueError("host_template_age_prior type must be 'prefer_old' or 'lognormal'.")
+
+    age_logits = np.clip(age_logits, min_logit, max_logit)
+    return loc + jnp.asarray(age_logits, dtype=jnp.float64)
+
+
 def _proxy_template_weights_from_host_state(fsps_grid, host_state):
     """Map full JAXSEDFit SSP weights onto the legacy template grid for summaries."""
     template_age_gyr, template_lgmet = _template_grid_age_met_arrays(fsps_grid)
@@ -1488,8 +1525,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         elif host_sfh_model in {"flexible", "free", "template_weights", "ssp_weights"}:
             tau_host = numpyro.sample('tau_host', dist.HalfNormal(_cfg_halfnorm('tau_host')))
             tau_host_eff = jnp.maximum(tau_host, 1e-6)
-            raw_w_loc, _ = _cfg_norm('raw_w')
-            raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(jnp.full((ntemp,), raw_w_loc), tau_host_eff))
+            raw_w_loc = _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp)
+            raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(raw_w_loc, tau_host_eff))
             fsps_weights_frac = jax.nn.softmax(raw_w)
             fsps_weights_total = host_amp * fsps_weights_frac
             fsps_weights = host_aperture_scale * fsps_weights_total

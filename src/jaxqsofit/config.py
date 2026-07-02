@@ -261,6 +261,7 @@ class HostPriorConfig:
     sfh_tau_over_age: Any | None = None
     metallicity: Any | None = None
     metallicity_scatter: Any | None = None
+    template_age_prior: Mapping[str, Any] | None = None
     sfh_model: str | None = None
 
     def to_mapping(self) -> dict[str, Any]:
@@ -280,6 +281,8 @@ class HostPriorConfig:
             out["gal_lgmet"] = _prior_to_mapping(self.metallicity)
         if self.metallicity_scatter is not None:
             out["log_gal_lgmet_scatter"] = _prior_to_mapping(self.metallicity_scatter)
+        if self.template_age_prior is not None:
+            out["host_template_age_prior"] = dict(self.template_age_prior)
         if self.sfh_model is not None:
             out["host_sfh_model"] = str(self.sfh_model)
         if self.redshift_weight_enabled is not None:

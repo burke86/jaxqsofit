@@ -78,6 +78,7 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     prior.host.sfh_tau_over_age = dist.Normal(loc=np.log(0.25), scale=0.3)
     prior.host.metallicity = dist.Normal(loc=0.0, scale=0.2)
     prior.host.metallicity_scatter = dist.Normal(loc=np.log(0.1), scale=0.3)
+    prior.host.template_age_prior = {"type": "prefer_old", "pivot_gyr": 1.0, "strength": 2.0}
     prior.host.sfh_model = "delayed"
 
     mapping = prior.to_mapping()
@@ -98,6 +99,7 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": np.log(0.25), "scale": 0.3}
     assert mapping["gal_lgmet"] == {"dist": "Normal", "loc": 0.0, "scale": 0.2}
     assert mapping["log_gal_lgmet_scatter"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.3}
+    assert mapping["host_template_age_prior"] == {"type": "prefer_old", "pivot_gyr": 1.0, "strength": 2.0}
     assert mapping["host_sfh_model"] == "delayed"
     assert np.isclose(mapping["log_cont_norm"]["loc"], np.log(2.0 * np.median(np.abs(flux))))
 
@@ -187,6 +189,13 @@ def test_build_default_prior_config_has_expected_keys():
         "high": 12.0,
     }
     assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
+    assert mapping["host_template_age_prior"] == {
+        "type": "prefer_old",
+        "pivot_gyr": 1.0,
+        "strength": 1.0,
+        "min_logit": -3.0,
+        "max_logit": 2.0,
+    }
     assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
     assert mapping["log_gal_sigma_kms"]["dist"] == "Normal"
     assert mapping["log_reddening_a2500"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6}

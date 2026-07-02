@@ -12,6 +12,7 @@ from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
     _delayed_sfh_host_spectrum,
     _fe_template_component,
+    _flexible_host_raw_weight_locs,
     _host_redshift_prior_params,
     _smc_like_reddening_jax,
     _extract_line_table_from_prior_config,
@@ -535,6 +536,48 @@ def test_qso_fsps_joint_model_reports_log_lambda_llambda_requested_continuum_lum
         site_name = f"log_lambda_Llambda_{wave_label}_agn"
         assert site_name in tr
         assert np.isfinite(float(tr[site_name]["value"]))
+
+
+def test_flexible_host_age_prior_prefers_old_template_logits():
+    class _Grid:
+        templates = np.zeros((8, 3), dtype=float)
+        template_meta = [
+            {"tage_gyr": 0.1, "logzsol": 0.0},
+            {"tage_gyr": 1.0, "logzsol": 0.0},
+            {"tage_gyr": 10.0, "logzsol": 0.0},
+        ]
+
+    cfg = {
+        "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
+        "host_template_age_prior": {
+            "type": "prefer_old",
+            "pivot_gyr": 1.0,
+            "strength": 1.0,
+        },
+    }
+
+    loc = np.asarray(_flexible_host_raw_weight_locs(_Grid(), cfg, 3), dtype=float)
+
+    assert loc[0] < loc[1] < loc[2]
+    assert np.allclose(loc, [-1.5, -0.5, 0.5])
+
+
+def test_flexible_host_age_prior_can_be_disabled():
+    class _Grid:
+        templates = np.zeros((8, 2), dtype=float)
+        template_meta = [
+            {"tage_gyr": 0.1, "logzsol": 0.0},
+            {"tage_gyr": 10.0, "logzsol": 0.0},
+        ]
+
+    cfg = {
+        "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
+        "host_template_age_prior": {"enabled": False},
+    }
+
+    loc = np.asarray(_flexible_host_raw_weight_locs(_Grid(), cfg, 2), dtype=float)
+
+    assert np.allclose(loc, [-0.5, -0.5])
 
 
 def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():
