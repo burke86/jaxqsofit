@@ -73,7 +73,10 @@ def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
         if hasattr(prior, "to_mapping"):
             prior = prior.to_mapping()
     else:
-        prior = copy.deepcopy(dict(cfg.line_prior_config))
+        prior = cfg.line_prior_config
+        if hasattr(prior, "to_mapping"):
+            prior = prior.to_mapping()
+        prior = copy.deepcopy(dict(prior))
     if cfg.line_table is not None:
         prior.setdefault("line", {})
         prior["line"]["table"] = [dict(row) for row in cfg.line_table]

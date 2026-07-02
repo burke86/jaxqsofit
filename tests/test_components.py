@@ -3,6 +3,7 @@ import jax
 from numpyro.handlers import seed, substitute, trace
 
 from jaxqsofit.components import SpectralComponentConfig, evaluate_joint_spectral_components
+from jaxqsofit.defaults import build_default_prior_config
 
 
 def test_evaluate_joint_spectral_components_uses_external_continuum():
@@ -72,6 +73,33 @@ def test_evaluate_joint_spectral_components_uses_default_tied_lines():
     assert "jqf_line_amp_per_component" in tr
     assert "jqf_line_model_broad" in tr
     assert "jqf_line_model_narrow" in tr
+    assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
+
+
+def test_evaluate_joint_spectral_components_accepts_prior_config_object_as_line_prior_config():
+    wave_obs = np.linspace(4700.0, 5100.0, 96)
+    continuum = np.full_like(wave_obs, 2.0)
+    prior_config = build_default_prior_config(
+        continuum,
+        include_elg_narrow_lines=False,
+        include_high_ionization_lines=False,
+    )
+
+    tr = trace(seed(evaluate_joint_spectral_components, jax.random.PRNGKey(6))).get_trace(
+        wave_obs=wave_obs,
+        redshift=0.0,
+        continuum_mjy=continuum,
+        config=SpectralComponentConfig(
+            use_lines=True,
+            use_tied_lines=True,
+            use_feii=False,
+            use_balmer_continuum=False,
+            line_prior_config=prior_config,
+        ),
+    )
+
+    assert "jqf_line_dmu_group" in tr
+    assert "jqf_line_amp_per_component" in tr
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
 
 
