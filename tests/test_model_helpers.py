@@ -698,6 +698,88 @@ def test_delayed_sfh_host_uses_physical_stellar_mass_scaling():
     assert np.allclose(host_high[mask] / host_low[mask], 100.0, rtol=1e-6)
 
 
+def test_psf_host_fraction_applies_to_total_host_before_fiber_aperture_scale():
+    wave = np.linspace(4000.0, 4100.0, 16)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+    cfg = build_default_prior_config(flux).to_mapping()
+    cfg["host_sfh_model"] = "delayed"
+    cfg["mass_metallicity_relation"] = {"enabled": False}
+    cfg["log_host_aperture_scale"] = {"dist": "Delta", "value": np.log(0.25)}
+
+    class _Grid:
+        templates = np.zeros((wave.size, 4), dtype=float)
+        template_meta = [
+            {"tage_gyr": 0.1, "logzsol": -0.5, "dsps_lg_age_gyr": -1.0, "dsps_lgmet": -1.0},
+            {"tage_gyr": 1.0, "logzsol": -0.5, "dsps_lg_age_gyr": 0.0, "dsps_lgmet": -1.0},
+            {"tage_gyr": 0.1, "logzsol": 0.0, "dsps_lg_age_gyr": -1.0, "dsps_lgmet": -0.5},
+            {"tage_gyr": 1.0, "logzsol": 0.0, "dsps_lg_age_gyr": 0.0, "dsps_lgmet": -0.5},
+        ]
+        age_grid_gyr = np.array([0.1, 1.0])
+        logzsol_grid = np.array([-0.5, 0.0])
+        host_basis_jax = HostBasisJax(
+            ssp_lgmet=jnp.array([-1.0, -0.5, 0.0], dtype=jnp.float64),
+            ssp_lg_age_gyr=jnp.log10(jnp.array([0.1, 0.5, 1.0], dtype=jnp.float64)),
+            rest_llambda=jnp.ones((3, 3, wave.size), dtype=jnp.float64),
+            surviving_frac_by_age=jnp.ones((3,), dtype=jnp.float64),
+            n_ly_per_msun=jnp.zeros((3, 3), dtype=jnp.float64),
+            ly_lum_per_msun=jnp.zeros((3, 3), dtype=jnp.float64),
+            gal_t_table=jnp.geomspace(0.01, 1.2, 16),
+        )
+        t_obs_gyr = 1.2
+
+    params = {
+        "cont_norm": np.array(1.0),
+        "log_frac_host": np.array(0.0),
+        "PL_norm": np.array(0.0),
+        "PL_slope": np.array(0.0),
+        "log_stellar_mass": np.array(10.0),
+        "log_sfh_age_gyr": np.log(1.0),
+        "log_sfh_tau_over_age": np.log(0.5),
+        "gal_lgmet": np.array(-0.5),
+        "log_gal_lgmet_scatter": np.log(0.2),
+        "gal_v_kms": np.array(0.0),
+        "log_gal_sigma_kms": np.log(1.0),
+        "frac_jitter": np.array(0.0),
+        "add_jitter": np.array(0.0),
+        "delta_m_psf_raw": np.array(0.0),
+        "eta_psf_raw": np.array(0.4),
+        "sigma_phot_extra": np.array(0.0),
+    }
+    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
+        wave=wave,
+        flux=flux,
+        err=err,
+        conti_priors={},
+        tied_line_meta={"n_lines": 0},
+        fsps_grid=_Grid(),
+        fe_uv_wave=np.array([4000.0, 4100.0]),
+        fe_uv_flux=np.zeros(2),
+        fe_op_wave=np.array([4000.0, 4100.0]),
+        fe_op_flux=np.zeros(2),
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=True,
+        fit_pl=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+        z_qso=0.1,
+        use_psf_phot=True,
+        psf_mags=np.array([20.0]),
+        psf_mag_errs=np.array([0.1]),
+        psf_filter_curves={"trans": np.ones((1, wave.size), dtype=float)},
+    )
+
+    gal_total = np.asarray(tr["gal_model_total"]["value"], dtype=float)
+    gal_fiber = np.asarray(tr["gal_model"]["value"], dtype=float)
+    gal_psf = np.asarray(tr["gal_model_psf"]["value"], dtype=float)
+
+    assert np.allclose(gal_fiber, 0.25 * gal_total)
+    assert np.allclose(gal_psf, 0.4 * gal_total)
+
+
 def test_delayed_sfh_host_accepts_jitted_redshift_tracer():
     wave = np.linspace(4000.0, 4100.0, 16)
     flux = np.ones_like(wave)
