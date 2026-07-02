@@ -531,6 +531,13 @@ def build_default_prior_config(
         },
         "tau_host": {"dist": "HalfNormal", "scale": 1.0},
         "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
+        "host_template_age_prior": {
+            "type": "prefer_old",
+            "pivot_gyr": 1.0,
+            "strength": 1.0,
+            "min_logit": -3.0,
+            "max_logit": 2.0,
+        },
         "log_stellar_mass": {"dist": "TruncatedNormal", "loc": 9.0, "scale": 0.75, "low": 7.0, "high": 12.0},
         "log_host_aperture_scale": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
         "log_sfh_age_gyr": {"dist": "Normal", "loc": np.log(3.0), "scale": 1.0},

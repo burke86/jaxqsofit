@@ -475,6 +475,43 @@ def _template_grid_age_met_arrays(fsps_grid):
     return _np_to_jnp(ages), _np_to_jnp(mets)
 
 
+def _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp):
+    """Return template-wise prior logits for flexible host SSP weights."""
+    raw_w_loc, _ = _cfg_norm_from_prior_config(prior_config, "raw_w")
+    loc = jnp.full((ntemp,), raw_w_loc, dtype=jnp.float64)
+    cfg = prior_config.get("host_template_age_prior", None)
+    if cfg is None:
+        cfg = prior_config.get("template_age_prior", None)
+    if not isinstance(cfg, Mapping) or not bool(cfg.get("enabled", True)):
+        return loc
+
+    ages = np.asarray([m.get("tage_gyr", np.nan) for m in fsps_grid.template_meta], dtype=float)
+    if ages.size != ntemp or not np.all(np.isfinite(ages)):
+        ages = np.asarray(_template_grid_age_met_arrays(fsps_grid)[0], dtype=float)
+    if ages.size != ntemp:
+        return loc
+
+    pivot_gyr = max(float(cfg.get("pivot_gyr", 1.0)), 1.0e-6)
+    strength = float(cfg.get("strength", 1.0))
+    min_logit = float(cfg.get("min_logit", -3.0))
+    max_logit = float(cfg.get("max_logit", 2.0))
+    safe_ages = np.where(np.isfinite(ages) & (ages > 0.0), ages, pivot_gyr)
+    prior_type = str(cfg.get("type", "prefer_old")).lower()
+
+    if prior_type in {"prefer_old", "old", "older", "old_host"}:
+        age_logits = strength * np.log10(np.maximum(safe_ages, 1.0e-6) / pivot_gyr)
+    elif prior_type in {"lognormal", "log_age_normal", "age_peak"}:
+        loc_gyr = max(float(cfg.get("loc_gyr", pivot_gyr)), 1.0e-6)
+        scale_dex = max(float(cfg.get("scale_dex", 0.5)), 1.0e-6)
+        log_age = np.log10(np.maximum(safe_ages, 1.0e-6))
+        age_logits = -0.5 * strength * ((log_age - np.log10(loc_gyr)) / scale_dex) ** 2
+    else:
+        raise ValueError("host_template_age_prior type must be 'prefer_old' or 'lognormal'.")
+
+    age_logits = np.clip(age_logits, min_logit, max_logit)
+    return loc + jnp.asarray(age_logits, dtype=jnp.float64)
+
+
 def _proxy_template_weights_from_host_state(fsps_grid, host_state):
     """Map full JAXSEDFit SSP weights onto the legacy template grid for summaries."""
     template_age_gyr, template_lgmet = _template_grid_age_met_arrays(fsps_grid)
@@ -585,7 +622,7 @@ def _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp):
 
 
 def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
-    """Return delayed-SFH host spectrum, weights, and proxy weights."""
+    """Return total delayed-SFH host spectrum, weights, and proxy weights."""
     host_basis = getattr(fsps_grid, "host_basis_jax", None)
     if host_basis is None:
         fsps_weights, fsps_weights_frac = _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp)
@@ -603,9 +640,7 @@ def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
         t_obs_gyr=float(t_obs_gyr),
         redshift=static_redshift,
     )
-    log_host_aperture_scale = _sample_log_host_aperture_scale(prior_config)
-    host_aperture_scale = jnp.exp(log_host_aperture_scale)
-    gal_intrinsic = host_aperture_scale * _host_luminosity_w_a_to_rest_flux_units(host_state["host_rest"], z_qso)
+    gal_intrinsic = _host_luminosity_w_a_to_rest_flux_units(host_state["host_rest"], z_qso)
     fsps_weights_frac = _proxy_template_weights_from_host_state(fsps_grid, host_state)
     fsps_weights = fsps_weights_frac
 
@@ -614,7 +649,6 @@ def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
     numpyro.deterministic("formed_stellar_mass", host_state["formed_mass"])
     numpyro.deterministic("surviving_mass_fraction", host_state["surviving_mass_fraction"])
     numpyro.deterministic("mass_metallicity_relation_logprior", host_state["mass_metallicity_relation_logprior"])
-    numpyro.deterministic("host_aperture_scale", host_aperture_scale)
     return gal_intrinsic, fsps_weights, fsps_weights_frac
 
 
@@ -1477,9 +1511,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         else:
             log_lambda_llambda_agn[wave_lum] = jnp.asarray(jnp.nan)
     ntemp = fsps_grid.templates.shape[1]
+    host_aperture_scale = jnp.asarray(1.0, dtype=jnp.float64)
     if decompose_host:
+        log_host_aperture_scale = _sample_log_host_aperture_scale(prior_config)
+        host_aperture_scale = jnp.exp(log_host_aperture_scale)
         if host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
-            gal_intrinsic, fsps_weights, fsps_weights_frac = _delayed_sfh_host_spectrum(
+            gal_intrinsic_total, fsps_weights, fsps_weights_frac = _delayed_sfh_host_spectrum(
                 fsps_grid,
                 prior_config,
                 host_amp,
@@ -1488,11 +1525,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         elif host_sfh_model in {"flexible", "free", "template_weights", "ssp_weights"}:
             tau_host = numpyro.sample('tau_host', dist.HalfNormal(_cfg_halfnorm('tau_host')))
             tau_host_eff = jnp.maximum(tau_host, 1e-6)
-            raw_w_loc, _ = _cfg_norm('raw_w')
-            raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(jnp.full((ntemp,), raw_w_loc), tau_host_eff))
+            raw_w_loc = _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp)
+            raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(raw_w_loc, tau_host_eff))
             fsps_weights_frac = jax.nn.softmax(raw_w)
-            fsps_weights = host_amp * fsps_weights_frac
-            gal_intrinsic = jnp.dot(templates, fsps_weights)
+            fsps_weights_total = host_amp * fsps_weights_frac
+            fsps_weights = host_aperture_scale * fsps_weights_total
+            gal_intrinsic_total = jnp.dot(templates, fsps_weights_total)
         else:
             raise ValueError("host_sfh_model must be one of: 'flexible', 'delayed'.")
         gal_v_kms = numpyro.sample('gal_v_kms', dist.Normal(*_cfg_norm('gal_v_kms')))
@@ -1503,10 +1541,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             default_value=150.0,
             default_log_scale=0.4,
         )
-        gal_model_intrinsic = _shift_and_broaden_single_spectrum_lnlam(lnwave, gal_intrinsic, gal_v_kms, gal_sigma_kms)
+        gal_model_intrinsic_total = _shift_and_broaden_single_spectrum_lnlam(
+            lnwave,
+            gal_intrinsic_total,
+            gal_v_kms,
+            gal_sigma_kms,
+        )
+        gal_model_intrinsic = host_aperture_scale * gal_model_intrinsic_total
     else:
         fsps_weights_frac = jnp.zeros((ntemp,))
         fsps_weights = jnp.zeros((ntemp,))
+        gal_model_intrinsic_total = jnp.zeros_like(wave)
         gal_model_intrinsic = jnp.zeros_like(wave)
 
     custom_line_models = {}
@@ -1626,6 +1671,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         line_model_narrow_intrinsic = custom_line_narrow_intrinsic
         line_model_intrinsic = custom_line_broad_intrinsic + custom_line_narrow_intrinsic
 
+    gal_model_total = gal_model_intrinsic_total
     gal_model = gal_model_intrinsic
     line_model_broad = line_model_broad_intrinsic * reddening_atten
     line_model_narrow = line_model_narrow_intrinsic
@@ -1641,6 +1687,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         for comp in custom_line_components
     }
     if fit_poly:
+        gal_model_total = gal_model_total * poly_model
         gal_model = gal_model * poly_model
         if line_components_are_split:
             line_model_broad = line_model_broad * poly_model
@@ -1736,7 +1783,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             eta_psf = numpyro.sample('eta_psf_raw', dist.Beta(2.0, 2.0))
         scale_psf = 10.0 ** (-0.4 * delta_m_psf)
         agn_model_psf = scale_psf * agn_model
-        gal_model_psf = scale_psf * eta_psf * gal_model
+        gal_model_psf = scale_psf * eta_psf * gal_model_total
         line_model_broad_psf = scale_psf * line_model_broad
         line_model_narrow_psf = scale_psf * eta_psf * line_model_narrow
         line_model_psf = line_model_broad_psf + line_model_narrow_psf
@@ -1776,7 +1823,10 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         for comp in custom_line_components:
             numpyro.deterministic(comp.deterministic_site_name, custom_line_models[comp.output_name])
         numpyro.deterministic('agn_model', agn_model)
+        numpyro.deterministic('host_aperture_scale', host_aperture_scale)
+        numpyro.deterministic('gal_model_intrinsic_total', gal_model_intrinsic_total)
         numpyro.deterministic('gal_model_intrinsic', gal_model_intrinsic)
+        numpyro.deterministic('gal_model_total', gal_model_total)
         numpyro.deterministic('gal_model', gal_model)
         numpyro.deterministic('line_model_broad_intrinsic', line_model_broad_intrinsic)
         numpyro.deterministic('line_model_narrow_intrinsic', line_model_narrow_intrinsic)

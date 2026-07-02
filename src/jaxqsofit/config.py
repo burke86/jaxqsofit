@@ -254,14 +254,35 @@ class HostPriorConfig:
     """Semantic host-galaxy prior options."""
 
     redshift_weight_enabled: bool | None = None
+    fraction: Any | None = None
+    stellar_mass: Any | None = None
     aperture_scale: Any | None = None
+    sfh_age_gyr: Any | None = None
+    sfh_tau_over_age: Any | None = None
+    metallicity: Any | None = None
+    metallicity_scatter: Any | None = None
+    template_age_prior: Mapping[str, Any] | None = None
     sfh_model: str | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic host prior settings into model-site keys."""
         out: dict[str, Any] = {}
+        if self.fraction is not None:
+            out["log_frac_host"] = _prior_to_mapping(self.fraction)
+        if self.stellar_mass is not None:
+            out["log_stellar_mass"] = _prior_to_mapping(self.stellar_mass)
         if self.aperture_scale is not None:
             out["log_host_aperture_scale"] = _prior_to_mapping(self.aperture_scale)
+        if self.sfh_age_gyr is not None:
+            out["log_sfh_age_gyr"] = _prior_to_mapping(self.sfh_age_gyr)
+        if self.sfh_tau_over_age is not None:
+            out["log_sfh_tau_over_age"] = _prior_to_mapping(self.sfh_tau_over_age)
+        if self.metallicity is not None:
+            out["gal_lgmet"] = _prior_to_mapping(self.metallicity)
+        if self.metallicity_scatter is not None:
+            out["log_gal_lgmet_scatter"] = _prior_to_mapping(self.metallicity_scatter)
+        if self.template_age_prior is not None:
+            out["host_template_age_prior"] = dict(self.template_age_prior)
         if self.sfh_model is not None:
             out["host_sfh_model"] = str(self.sfh_model)
         if self.redshift_weight_enabled is not None:
