@@ -109,6 +109,7 @@ def test_sdss_fit_wrms_below_threshold():
     q.config.continuum.fit_feii = False
     q.config.continuum.fit_balmer_continuum = False
     q.config.continuum.fit_polynomial_tilt = True
+    q.config.continuum.fit_reddening = False
     q.config.output.plot_fig = False
     q.config.output.save_fig = False
     q.config.output.save_result = False
