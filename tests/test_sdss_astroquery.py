@@ -147,7 +147,9 @@ def test_sdss_fit_wrms_below_threshold():
 
     q = JAXQSOFit(
         FitConfig(
-            observation=Observation(redshift=z, ra=ra, dec=dec, apply_mw_deredden=True),
+            # CI does not install the SFD dust map files used by dustmaps, so
+            # keep the fit smoke test independent of local map data.
+            observation=Observation(redshift=z, ra=ra, dec=dec, apply_mw_deredden=False),
             spectroscopy=SpectroscopyData(
                 wave_obs=lam,
                 fluxes=flux,
