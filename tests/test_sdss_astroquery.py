@@ -83,7 +83,20 @@ def test_sdss_fit_wrms_below_threshold():
     if not spectra:
         pytest.skip('No SDSS spectra returned')
 
-    from jaxqsofit import JAXQSOFit, build_default_prior_config
+    import numpyro.distributions as dist
+    from jaxqsofit import (
+        ContinuumConfig,
+        FitConfig,
+        HostConfig,
+        InferenceConfig,
+        JAXQSOFit,
+        LineConfig,
+        Observation,
+        OutputConfig,
+        PreprocessingConfig,
+        PriorConfig,
+        SpectroscopyData,
+    )
     if not os.path.isfile('tempdata.h5'):
         pytest.skip('DSPS SSP template file tempdata.h5 is unavailable')
 
@@ -92,6 +105,7 @@ def test_sdss_fit_wrms_below_threshold():
     lam = np.asarray(10 ** data['loglam'], dtype=float)
     flux = np.asarray(data['flux'], dtype=float)
     ivar = np.asarray(data['ivar'], dtype=float)
+    wdisp = np.asarray(data['wdisp'], dtype=float) if 'wdisp' in data.names else None
 
     err = np.full_like(flux, 1e-6, dtype=float)
     good = np.isfinite(ivar) & (ivar > 0)
@@ -99,28 +113,76 @@ def test_sdss_fit_wrms_below_threshold():
     err[~np.isfinite(err)] = 1e-6
     err[err <= 0] = 1e-6
 
-    z = float(xid[0]['z']) if 'z' in xid.colnames else 0.1
+    try:
+        z = float(hdu[2].data['z'][0])
+    except Exception:
+        z = float(xid[0]['z']) if 'z' in xid.colnames else 0.1
 
-    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=ra, dec=dec)
-    q.config.inference.method = "optax+nuts"
-    q.config.observation.apply_mw_deredden = False
-    q.config.preprocessing.mask_lya_forest = True
-    q.config.lines.enabled = True
-    q.config.host.enabled = True
-    q.config.continuum.fit_feii = False
-    q.config.continuum.fit_balmer_continuum = False
-    q.config.continuum.fit_polynomial_tilt = True
-    q.config.continuum.fit_reddening = False
-    q.config.output.plot_fig = False
-    q.config.output.save_fig = False
-    q.config.output.save_result = False
-    q.config.prior_config = build_default_prior_config(flux)
-    q.config.inference.map_steps = int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '600'))
-    q.config.inference.learning_rate = float(os.getenv('JAXQSOFIT_WRMS_OPTAX_LR', '1e-2'))
-    q.config.inference.num_warmup = int(os.getenv('JAXQSOFIT_WRMS_NUTS_WARMUP', '25'))
-    q.config.inference.num_samples = int(os.getenv('JAXQSOFIT_WRMS_NUTS_SAMPLES', '25'))
-    q.config.inference.num_chains = 1
-    q.config.inference.target_accept_prob = 0.9
+    if wdisp is not None and np.any(np.isfinite(wdisp) & (wdisp > 0)):
+        dloglam = float(np.nanmedian(np.diff(np.log10(lam))))
+        fwhm_pixels = 2.355 * wdisp[np.isfinite(wdisp) & (wdisp > 0)]
+        resolving_power = float(np.nanmedian(1.0 / (np.log(10.0) * dloglam * fwhm_pixels)))
+    else:
+        resolving_power = 2000.0
+
+    prior_config = PriorConfig.from_spectrum(
+        flux=flux,
+        redshift=z,
+        include_elg_narrow_lines=False,
+        include_high_ionization_lines=False,
+    )
+    prior_config.powerlaw.slope = dist.TruncatedNormal(loc=-1.5, scale=0.3, low=-3.5, high=0.5)
+    prior_config.fe.uv_norm = dist.LogNormal(np.log(max(1e-3 * np.median(np.abs(flux)), 1e-10)), 0.04)
+    prior_config.fe.op_over_uv = dist.Normal(0.0, 0.4)
+    prior_config.lines.dmu_scale_mult = 0.25
+    prior_config.lines.sig_scale_mult = 0.25
+    prior_config.lines.amp_scale_mult = 0.20
+    prior_config.host.sfh_model = "delayed"
+    prior_config.host.stellar_mass = dist.TruncatedNormal(loc=10.6, scale=0.4, low=9.5, high=12.0)
+    prior_config.host.sfh_age_gyr = dist.Normal(np.log(7.0), 0.3)
+    prior_config.host.sfh_tau_over_age = dist.Normal(np.log(0.25), 0.3)
+    prior_config.host.metallicity = dist.Normal(0.0, 0.2)
+    prior_config.host.metallicity_scatter = dist.Normal(np.log(0.1), 0.3)
+    prior_config.host.aperture_scale = dist.Normal(0.0, 0.25)
+
+    q = JAXQSOFit(
+        FitConfig(
+            observation=Observation(redshift=z, ra=ra, dec=dec, apply_mw_deredden=True),
+            spectroscopy=SpectroscopyData(
+                wave_obs=lam,
+                fluxes=flux,
+                errors=err,
+                wavelength_dispersion=wdisp,
+                resolving_power=resolving_power,
+            ),
+            preprocessing=PreprocessingConfig(mask_lya_forest=True),
+            continuum=ContinuumConfig(
+                fit_power_law=True,
+                fit_feii=True,
+                fit_balmer_continuum=True,
+                fit_polynomial_tilt=True,
+            ),
+            host=HostConfig(
+                enabled=True,
+                sfh_model="delayed",
+                dsps_ssp_fn="tempdata.h5",
+                age_grid_gyr=(0.3, 1.0, 3.0, 6.0, 10.0),
+                logzsol_grid=(-0.5, 0.0, 0.2),
+            ),
+            lines=LineConfig(enabled=True),
+            inference=InferenceConfig(
+                method="optax+nuts",
+                map_steps=int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '1200')),
+                learning_rate=float(os.getenv('JAXQSOFIT_WRMS_OPTAX_LR', '1e-2')),
+                num_warmup=int(os.getenv('JAXQSOFIT_WRMS_NUTS_WARMUP', '50')),
+                num_samples=int(os.getenv('JAXQSOFIT_WRMS_NUTS_SAMPLES', '50')),
+                num_chains=1,
+                target_accept_prob=0.9,
+            ),
+            output=OutputConfig(plot_fig=False, save_fig=False, save_result=False),
+            prior_config=prior_config,
+        )
+    )
     q.fit()
 
     resid = np.asarray(q.flux) - np.asarray(q.model_total)
