@@ -115,7 +115,7 @@ def test_sdss_fit_wrms_below_threshold():
     q.config.output.save_fig = False
     q.config.output.save_result = False
     q.config.prior_config = build_default_prior_config(flux)
-    q.config.inference.map_steps = int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '300'))
+    q.config.inference.map_steps = int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '600'))
     q.config.inference.learning_rate = float(os.getenv('JAXQSOFIT_WRMS_OPTAX_LR', '1e-2'))
     q.config.inference.num_warmup = int(os.getenv('JAXQSOFIT_WRMS_NUTS_WARMUP', '25'))
     q.config.inference.num_samples = int(os.getenv('JAXQSOFIT_WRMS_NUTS_SAMPLES', '25'))
