@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import glob
+import warnings
 from dataclasses import replace
 from pathlib import Path
 
@@ -18,6 +19,7 @@ from jaxsedfit.filters import load_filter_curves
 import jax
 import jax.numpy as jnp
 import optax
+from numpyro.handlers import reparam
 from numpyro.infer import MCMC, NUTS, Predictive, SVI, Trace_ELBO, init_to_value
 from numpyro.infer.autoguide import AutoDelta
 from numpyro.optim import optax_to_numpyro
@@ -77,6 +79,28 @@ def _materialize_prior_config(prior_config) -> dict:
     if hasattr(prior_config, "to_mapping"):
         return dict(prior_config.to_mapping())
     return dict(prior_config)
+
+
+def _numpyro_geometry_reparam_config(
+    prior_config,
+    *,
+    fit_pl=True,
+    fit_fe=True,
+    fit_bc=True,
+    fit_poly=False,
+    fit_reddening=False,
+    fit_poly_order=2,
+    decompose_host=True,
+):
+    """Build additional NumPyro reparameterizers for NUTS.
+
+    The broad/narrow tied-line model already uses explicit non-centered
+    standard-normal sites in physical model code. Do not add a global
+    ``LocScaleReparam`` layer here: it rewrites physical sample-site names to
+    decentered names, so Optax MAP warm starts keyed by physical names can miss
+    the actual NUTS latent sites and produce bad post-Optax fits.
+    """
+    return {}
 
 
 def _get_sdss_filters():
@@ -160,6 +184,7 @@ class JAXQSOFit:
                 self.err_in = err_arr
         self.z = float(obs.redshift)
         self.wdisp = spec.wavelength_dispersion
+        self.resolving_power = spec.resolving_power
         self.ra = -999 if obs.ra is None else float(obs.ra)
         self.dec = -999 if obs.dec is None else float(obs.dec)
         self.install_path = os.path.dirname(os.path.abspath(__file__))
@@ -302,6 +327,7 @@ class JAXQSOFit:
         filename=None,
         output_path=None,
         wdisp=None,
+        resolving_power=None,
         psf_mags=None,
         psf_mag_errs=None,
         psf_bands=None,
@@ -326,6 +352,7 @@ class JAXQSOFit:
                 fluxes=flux,
                 errors=err,
                 wavelength_dispersion=wdisp,
+                resolving_power=resolving_power,
             ),
             psf_photometry=psf,
             output=OutputConfig(output_path=output_path, save_name=filename),
@@ -377,6 +404,7 @@ class JAXQSOFit:
             'line_component_profiles_psf',
             'line_model_psf',
             'psf_model',
+            'spectral_likelihood_weight',
         ]
         for wave_lum in _continuum_output_waves_from_prior_config(
             getattr(self, "_fit_prior_config", None)
@@ -1260,7 +1288,7 @@ class JAXQSOFit:
         nuts_target_accept = float(infer_cfg.target_accept_prob)
         optax_steps = int(infer_cfg.map_steps)
         optax_lr = float(infer_cfg.learning_rate)
-        plot_init = bool(infer_cfg.plot_init)
+        plot_init = bool(infer_cfg.plot_init or out_cfg.plot_init)
         prior_config = None if cfg.prior_config is None else _materialize_prior_config(cfg.prior_config)
         if psf_cfg is not None:
             psf_mags = psf_cfg.magnitudes
@@ -1354,6 +1382,18 @@ class JAXQSOFit:
         self._rest_frame(self.lam, self.flux, self.err, self.z)
         self._calculate_sn(self.wave, self.flux)
         self._orignial_spec(self.wave, self.flux, self.err)
+        resolving_power = self.resolving_power
+        if resolving_power is None:
+            warnings.warn(
+                "SpectroscopyData.resolving_power is None; jaxqsofit will treat spectral pixels as independent, "
+                "so posterior uncertainties may be over-confident for oversampled spectra.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+        else:
+            resolving_power = float(resolving_power)
+            if not np.isfinite(resolving_power) or resolving_power <= 0.0:
+                raise ValueError("SpectroscopyData.resolving_power must be positive when specified.")
 
         bal_components = (
             build_default_bal_components(
@@ -1399,6 +1439,7 @@ class JAXQSOFit:
         if poly_pivot is None:
             poly_pivot = _spectrum_center_pivot(self.wave)
         prior_config["poly_pivot"] = float(np.asarray(poly_pivot, dtype=float))
+        prior_config["resolving_power"] = resolving_power
         self._fit_prior_config = prior_config
         psf_mags_use, psf_mag_errs_use, _psf_bands_use, psf_filter_curves_use, use_psf_phot_use = self._prepare_psf_photometry(
             wave_obs=self.lam,
@@ -1605,6 +1646,36 @@ class JAXQSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
+        def _line_std_init_values():
+            """Initialize non-centered tied-line latents at the line-table defaults."""
+            values = {}
+            if not use_lines or int(tied_line_meta.get("n_lines", 0)) <= 0:
+                return values
+
+            n_v = int(tied_line_meta.get("n_vgroups", 0))
+            n_w = int(tied_line_meta.get("n_wgroups", 0))
+            n_f = int(tied_line_meta.get("n_fgroups", 0))
+            if n_v > 0:
+                values["line_dmu_group_std"] = np.zeros(n_v, dtype=float)
+            if n_w > 0:
+                wgroup = np.asarray(tied_line_meta.get("wgroup", []), dtype=int)
+                broad_mask = np.asarray(
+                    [str(name).lower().endswith("_br") or ("_br" in str(name).lower()) for name in tied_line_meta.get("names", [])],
+                    dtype=float,
+                )
+                wgroup_is_broad = np.asarray(
+                    [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
+                    dtype=bool,
+                )
+                if np.any(wgroup_is_broad):
+                    values["line_log_broad_fwhm_std"] = np.array(0.0)
+                if np.any(~wgroup_is_broad):
+                    values["line_log_narrow_fwhm_std"] = np.array(0.0)
+                values["line_log_fwhm_delta_group_std"] = np.zeros(n_w, dtype=float)
+            if n_f > 0:
+                values["line_amp_group"] = np.asarray(tied_line_meta.get("amp_init_group", np.zeros(n_f)), dtype=float)
+            return values
+
         if init_values is None:
             init_vals = {
                 'gal_v_kms': 0.0,
@@ -1619,10 +1690,28 @@ class JAXQSOFit:
                 init_vals['log_frac_host'] = prior_config.get('log_frac_host', {}).get('loc', 0.0)
             if fit_reddening:
                 init_vals['log_reddening_a2500'] = prior_config.get('log_reddening_a2500', {}).get('loc', np.log(0.1))
+            init_vals.update(_line_std_init_values())
         else:
-            init_vals = init_values
+            init_vals = dict(init_values)
+            for key, value in _line_std_init_values().items():
+                init_vals.setdefault(key, value)
         init_strategy = init_to_value(values=init_vals)
-        kernel = NUTS(qso_fsps_joint_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
+        reparam_config = _numpyro_geometry_reparam_config(
+            prior_config,
+            fit_pl=fit_pl,
+            fit_fe=fit_fe,
+            fit_bc=fit_bc,
+            fit_poly=fit_poly,
+            fit_reddening=fit_reddening,
+            fit_poly_order=fit_poly_order,
+            decompose_host=decompose_host,
+        )
+        nuts_model = (
+            reparam(qso_fsps_joint_model, config=reparam_config)
+            if reparam_config
+            else qso_fsps_joint_model
+        )
+        kernel = NUTS(nuts_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
         rng_key = jax.random.PRNGKey(0)
         mcmc.run(
@@ -1703,8 +1792,8 @@ class JAXQSOFit:
             decompose_host=decompose_host,
         )
 
-    def _plot_stage1_initialization(self, wave, flux, err, pred_out, samples):
-        """Plot and store the stage-1 Optax continuum/host warm-start model."""
+    def _plot_initialization(self, wave, flux, err, pred_out, samples, *, stage_name, attr_prefix, model_label):
+        """Plot and store an Optax initialization model."""
         wave = np.asarray(wave, dtype=float)
         flux = np.asarray(flux, dtype=float)
         err = np.asarray(err, dtype=float)
@@ -1725,14 +1814,14 @@ class JAXQSOFit:
         dof = max(int(np.sum(valid)) - n_params, 1)
         redchi2 = float(np.sum(((flux[valid] - model[valid]) / err[valid]) ** 2) / dof)
 
-        self.init_stage1_samples = samples
-        self.init_stage1_pred_out = pred_out
-        self.init_stage1_model = model
-        self.init_stage1_continuum_model = continuum
-        self.init_stage1_host_model = host
-        self.init_stage1_pl_model = pl
-        self.init_stage1_line_model = line
-        self.init_stage1_redchi2 = redchi2
+        setattr(self, f"{attr_prefix}_samples", samples)
+        setattr(self, f"{attr_prefix}_pred_out", pred_out)
+        setattr(self, f"{attr_prefix}_model", model)
+        setattr(self, f"{attr_prefix}_continuum_model", continuum)
+        setattr(self, f"{attr_prefix}_host_model", host)
+        setattr(self, f"{attr_prefix}_pl_model", pl)
+        setattr(self, f"{attr_prefix}_line_model", line)
+        setattr(self, f"{attr_prefix}_redchi2", redchi2)
 
         fig, (ax, axr) = plt.subplots(
             2,
@@ -1742,13 +1831,13 @@ class JAXQSOFit:
             gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.05},
         )
         ax.plot(wave, flux, color='black', lw=0.8, alpha=0.8, label='data')
-        ax.plot(wave, model, color='blue', lw=1.6, label='stage 1 model')
+        ax.plot(wave, model, color='blue', lw=1.6, label=model_label)
         ax.plot(wave, host, color='purple', lw=1.2, label='host galaxy')
         ax.plot(wave, pl, color='orange', lw=1.2, label='power law')
         if np.nanmax(np.abs(line)) > 0:
             ax.plot(wave, line, color='lightskyblue', lw=1.0, label='lines')
         ax.set_ylabel(r'$f_\lambda$')
-        ax.set_title(f'Stage 1 initialization (reduced chi2 = {redchi2:.2f})')
+        ax.set_title(f'{stage_name} (reduced chi2 = {redchi2:.2f})')
         ax.legend(loc='best')
 
         resid = flux - model
@@ -1757,6 +1846,32 @@ class JAXQSOFit:
         axr.set_ylabel('resid')
         axr.set_xlabel(r'Rest Wavelength ($\AA$)')
         plt.show()
+
+    def _plot_stage1_initialization(self, wave, flux, err, pred_out, samples):
+        """Plot and store the stage-1 Optax continuum/host warm-start model."""
+        self._plot_initialization(
+            wave,
+            flux,
+            err,
+            pred_out,
+            samples,
+            stage_name="Stage 1 initialization",
+            attr_prefix="init_stage1",
+            model_label="stage 1 model",
+        )
+
+    def _plot_stage2_initialization(self, wave, flux, err, pred_out, samples):
+        """Plot and store the full stage-2 Optax MAP model passed to NUTS."""
+        self._plot_initialization(
+            wave,
+            flux,
+            err,
+            pred_out,
+            samples,
+            stage_name="Stage 2 full MAP initialization",
+            attr_prefix="init_stage2",
+            model_label="stage 2 MAP model",
+        )
 
     def run_fsps_optax_fit(self, num_steps=2000, learning_rate=1e-2,
                            age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
@@ -2017,6 +2132,36 @@ class JAXQSOFit:
                 values['log_host_aperture_scale'] = _prior_field('log_host_aperture_scale', 'value', 0.0)
             return values
 
+        def _line_std_init_values():
+            """Initialize non-centered tied-line latents at the line-table defaults."""
+            values = {}
+            if not use_lines or int(tied_line_meta.get("n_lines", 0)) <= 0:
+                return values
+
+            n_v = int(tied_line_meta.get("n_vgroups", 0))
+            n_w = int(tied_line_meta.get("n_wgroups", 0))
+            n_f = int(tied_line_meta.get("n_fgroups", 0))
+            if n_v > 0:
+                values["line_dmu_group_std"] = np.zeros(n_v, dtype=float)
+            if n_w > 0:
+                wgroup = np.asarray(tied_line_meta.get("wgroup", []), dtype=int)
+                broad_mask = np.asarray(
+                    [str(name).lower().endswith("_br") or ("_br" in str(name).lower()) for name in tied_line_meta.get("names", [])],
+                    dtype=float,
+                )
+                wgroup_is_broad = np.asarray(
+                    [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
+                    dtype=bool,
+                )
+                if np.any(wgroup_is_broad):
+                    values["line_log_broad_fwhm_std"] = np.array(0.0)
+                if np.any(~wgroup_is_broad):
+                    values["line_log_narrow_fwhm_std"] = np.array(0.0)
+                values["line_log_fwhm_delta_group_std"] = np.zeros(n_w, dtype=float)
+            if n_f > 0:
+                values["line_amp_group"] = np.asarray(tied_line_meta.get("amp_init_group", np.zeros(n_f)), dtype=float)
+            return values
+
         # Stage 1: warm start on simpler landscape (continuum/host only).
         n1 = max(100, int(num_steps // 3))
         stage1_keep = _stage1_continuum_keep_mask(wave)
@@ -2098,9 +2243,11 @@ class JAXQSOFit:
 
         # Stage 2: full model initialized from stage-1 MAP for overlapping parameters.
         n2 = max(100, int(num_steps - n1))
+        stage2_init_values = dict(map1)
+        stage2_init_values.update(_line_std_init_values())
         guide2 = AutoDelta(
             qso_fsps_joint_model,
-            init_loc_fn=init_to_value(values=map1),
+            init_loc_fn=init_to_value(values=stage2_init_values),
         )
         svi, res2 = _run_svi(
             guide2,
@@ -2156,6 +2303,14 @@ class JAXQSOFit:
             custom_components=custom_components,
             custom_line_components=custom_line_components,
         )
+        if plot_init:
+            self._plot_stage2_initialization(
+                wave=wave,
+                flux=flux,
+                err=err,
+                pred_out=pred_out,
+                samples=samples,
+            )
 
         self.numpyro_mcmc = None
         self.svi = svi

@@ -16,6 +16,7 @@ from .model import (
     _fe_template_component,
     _many_gauss_lnlam,
     _np_to_jnp,
+    _sample_tied_line_groups,
     build_tied_line_meta_from_linelist,
 )
 
@@ -42,6 +43,7 @@ class SpectralComponentConfig:
     line_flux_scale_mjy: float = 1.0
     include_elg_narrow_lines: bool = False
     include_high_ionization_lines: bool = False
+    line_coverage_rest: tuple[float, float] | None = None
     line_centers_rest: Sequence[float] | None = None
     line_names: Sequence[str] | None = None
     broad_line_names: Sequence[str] = ()
@@ -73,7 +75,10 @@ def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
         if hasattr(prior, "to_mapping"):
             prior = prior.to_mapping()
     else:
-        prior = copy.deepcopy(dict(cfg.line_prior_config))
+        prior = cfg.line_prior_config
+        if hasattr(prior, "to_mapping"):
+            prior = prior.to_mapping()
+        prior = copy.deepcopy(dict(prior))
     if cfg.line_table is not None:
         prior.setdefault("line", {})
         prior["line"]["table"] = [dict(row) for row in cfg.line_table]
@@ -89,15 +94,34 @@ def _line_table_from_prior_config(prior_config: Mapping[str, Any]):
     return None
 
 
+def _filter_line_table_to_rest_coverage(
+    line_table: Sequence[Mapping[str, Any]],
+    coverage_rest: tuple[float, float] | None,
+) -> list[Mapping[str, Any]]:
+    """Keep only line-table rows whose fitting window overlaps rest coverage."""
+    if coverage_rest is None:
+        return [dict(row) for row in line_table]
+    lo, hi = sorted((float(coverage_rest[0]), float(coverage_rest[1])))
+    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+        return []
+    covered: list[Mapping[str, Any]] = []
+    for row in line_table:
+        lam = float(row.get("lambda", np.nan))
+        row_lo = float(row.get("minwav", lam))
+        row_hi = float(row.get("maxwav", lam))
+        if np.isfinite(row_lo) and np.isfinite(row_hi) and max(row_lo, lo) <= min(row_hi, hi):
+            covered.append(dict(row))
+    return covered
+
+
 def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, site_prefix: str):
     """Evaluate jaxqsofit's grouped tied-line model on a rest-frame grid."""
     prior_config = _component_prior_config(cfg)
     line_table = _line_table_from_prior_config(prior_config)
     if line_table is None:
         return jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), {}
+    line_table = _filter_line_table_to_rest_coverage(line_table, cfg.line_coverage_rest)
 
-    # Include all configured lines. Lines outside the current spectral window
-    # evaluate to negligible flux but keeping the full table preserves ties.
     tied_line_meta = build_tied_line_meta_from_linelist(
         line_table,
         np.asarray([1.0, 1.0e8], dtype=float),
@@ -105,42 +129,11 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
     if int(tied_line_meta["n_lines"]) <= 0:
         return jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), {}
 
-    n_v = int(tied_line_meta["n_vgroups"])
-    n_w = int(tied_line_meta["n_wgroups"])
-    n_f = int(tied_line_meta["n_fgroups"])
-    dmu_scale_mult = float(prior_config.get("line_dmu_scale_mult", 0.25))
-    sig_scale_mult = float(prior_config.get("line_sig_scale_mult", 0.25))
-    amp_scale_mult = float(prior_config.get("line_amp_scale_mult", 0.25))
-
-    dmu_group = numpyro.sample(
-        f"{site_prefix}_line_dmu_group",
-        dist.TruncatedNormal(
-            loc=_np_to_jnp(tied_line_meta["dmu_init_group"]),
-            scale=_np_to_jnp(np.maximum(dmu_scale_mult * (tied_line_meta["dmu_max_group"] - tied_line_meta["dmu_min_group"]), 1.0e-6)),
-            low=_np_to_jnp(tied_line_meta["dmu_min_group"]),
-            high=_np_to_jnp(tied_line_meta["dmu_max_group"]),
-        ),
-    ) if n_v > 0 else jnp.zeros((0,))
-
-    sig_group = numpyro.sample(
-        f"{site_prefix}_line_sig_group",
-        dist.TruncatedNormal(
-            loc=_np_to_jnp(np.clip(tied_line_meta["sig_init_group"], 1.0e-5, None)),
-            scale=_np_to_jnp(np.maximum(sig_scale_mult * (tied_line_meta["sig_max_group"] - tied_line_meta["sig_min_group"]), 1.0e-6)),
-            low=_np_to_jnp(np.clip(tied_line_meta["sig_min_group"], 1.0e-5, None)),
-            high=_np_to_jnp(np.clip(tied_line_meta["sig_max_group"], 1.0e-5, None)),
-        ),
-    ) if n_w > 0 else jnp.zeros((0,))
-
-    amp_group = numpyro.sample(
-        f"{site_prefix}_line_amp_group",
-        dist.TruncatedNormal(
-            loc=_np_to_jnp(np.clip(tied_line_meta["amp_init_group"], 1.0e-10, None)),
-            scale=_np_to_jnp(np.maximum(amp_scale_mult * (tied_line_meta["amp_max_group"] - tied_line_meta["amp_min_group"]), 1.0e-10)),
-            low=_np_to_jnp(np.clip(tied_line_meta["amp_min_group"], 1.0e-10, None)),
-            high=_np_to_jnp(np.clip(tied_line_meta["amp_max_group"], 1.0e-10, None)),
-        ),
-    ) if n_f > 0 else jnp.zeros((0,))
+    dmu_group, sig_group, amp_group = _sample_tied_line_groups(
+        tied_line_meta,
+        prior_config,
+        site_prefix=site_prefix,
+    )
 
     dmu = dmu_group[jnp.asarray(tied_line_meta["vgroup"], dtype=jnp.int32)]
     sigs = sig_group[jnp.asarray(tied_line_meta["wgroup"], dtype=jnp.int32)]

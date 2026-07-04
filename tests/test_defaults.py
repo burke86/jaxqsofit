@@ -188,6 +188,13 @@ def test_build_default_prior_config_has_expected_keys():
         "low": 7.0,
         "high": 12.0,
     }
+    assert mapping["log_Balmer_vel"] == {
+        "dist": "TruncatedNormal",
+        "loc": np.log(3000.0),
+        "scale": 0.3,
+        "low": np.log(1000.0),
+        "high": np.log(15000.0),
+    }
     assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
     assert mapping["host_template_age_prior"] == {
         "type": "prefer_old",

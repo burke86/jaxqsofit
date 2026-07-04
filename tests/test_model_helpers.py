@@ -15,6 +15,7 @@ from jaxqsofit.model import (
     _flexible_host_raw_weight_locs,
     _host_redshift_prior_params,
     _smc_like_reddening_jax,
+    _smooth_bounded_affine,
     _extract_line_table_from_prior_config,
     _luminosity_distance_cm_jax,
     _shift_and_broaden_single_spectrum_lnlam,
@@ -83,6 +84,101 @@ def test_public_model_names_delegate_to_legacy_implementations(monkeypatch):
     assert calls["grid"][1]["dsps_ssp_fn"] == "tempdata.h5"
     assert calls["line_meta"][0] == ([], "wave")
     assert calls["bal"][1]["metadata"] == {}
+
+
+def test_qso_model_honors_numpyro_prior_distribution_families():
+    wave = np.linspace(2000.0, 6000.0, 32)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+
+    class _Grid:
+        templates = np.zeros((wave.size, 1), dtype=float)
+        template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
+
+    cfg = build_default_prior_config(flux).to_mapping()
+    cfg["PL_slope"] = {"dist": "TruncatedNormal", "loc": -1.5, "scale": 0.2, "low": -2.5, "high": -0.5}
+    cfg["log_Fe_uv_norm"] = {"dist": "Normal", "loc": np.log(0.01), "scale": 0.1}
+    model = substitute(
+        seed(qso_fsps_joint_model, jax.random.PRNGKey(0)),
+        data={
+            "PL_norm": np.array(1.0),
+            "PL_slope": np.array(-1.5),
+            "log_Fe_uv_norm": np.array(np.log(0.01)),
+            "log_Fe_op_over_uv": np.array(0.0),
+            "Fe_uv_FWHM": np.array(3000.0),
+            "Fe_op_FWHM": np.array(3000.0),
+            "Fe_uv_shift": np.array(0.0),
+            "Fe_op_shift": np.array(0.0),
+            "frac_jitter": np.array(0.0),
+            "add_jitter": np.array(0.0),
+        },
+    )
+    tr = trace(model).get_trace(
+        wave=wave,
+        flux=flux,
+        err=err,
+        conti_priors={},
+        tied_line_meta={"n_lines": 0},
+        fsps_grid=_Grid(),
+        fe_uv_wave=np.array([2000.0, 6000.0]),
+        fe_uv_flux=np.ones(2),
+        fe_op_wave=np.array([2000.0, 6000.0]),
+        fe_op_flux=np.zeros(2),
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=False,
+        fit_pl=True,
+        fit_fe=True,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+    )
+
+    assert tr["PL_slope"]["fn"].__class__.__name__ in {"TruncatedNormal", "TwoSidedTruncatedDistribution"}
+    assert tr["log_Fe_uv_norm"]["type"] == "sample"
+    assert tr["Fe_uv_norm"]["type"] == "deterministic"
+    np.testing.assert_allclose(np.asarray(tr["Fe_uv_norm"]["value"]), 0.01)
+
+    cfg["log_Fe_uv_norm"] = {"dist": "LogNormal", "loc": np.log(0.01), "scale": 0.1}
+    model = substitute(
+        seed(qso_fsps_joint_model, jax.random.PRNGKey(1)),
+        data={
+            "PL_norm": np.array(1.0),
+            "PL_slope": np.array(-1.5),
+            "Fe_uv_norm": np.array(0.01),
+            "log_Fe_op_over_uv": np.array(0.0),
+            "Fe_uv_FWHM": np.array(3000.0),
+            "Fe_op_FWHM": np.array(3000.0),
+            "Fe_uv_shift": np.array(0.0),
+            "Fe_op_shift": np.array(0.0),
+            "frac_jitter": np.array(0.0),
+            "add_jitter": np.array(0.0),
+        },
+    )
+    tr = trace(model).get_trace(
+        wave=wave,
+        flux=flux,
+        err=err,
+        conti_priors={},
+        tied_line_meta={"n_lines": 0},
+        fsps_grid=_Grid(),
+        fe_uv_wave=np.array([2000.0, 6000.0]),
+        fe_uv_flux=np.ones(2),
+        fe_op_wave=np.array([2000.0, 6000.0]),
+        fe_op_flux=np.zeros(2),
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=False,
+        fit_pl=True,
+        fit_fe=True,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+    )
+
+    assert "log_Fe_uv_norm" not in tr
+    assert tr["Fe_uv_norm"]["type"] == "sample"
+    assert tr["Fe_uv_norm"]["fn"].__class__.__name__ == "LogNormal"
 
 
 def test_reddening_a2500_is_sampled_in_log_space_and_exposed():
@@ -387,6 +483,62 @@ def test_build_tied_line_meta_from_linelist_minimal():
     assert np.all(np.isfinite(meta['line_lambda']))
     for key in ("vgroup_jax", "wgroup_jax", "fgroup_jax", "flux_ratio_jax", "broad_mask_jax"):
         assert key in meta
+
+
+def test_build_tied_line_meta_uses_fvalue_when_inisca_is_zero():
+    line_table = [
+        {
+            "lambda": 6564.61,
+            "linename": "Ha_br",
+            "compname": "Ha",
+            "ngauss": 1,
+            "inisca": 0.0,
+            "minsca": 0.0,
+            "maxsca": 1e3,
+            "inisig": 5e-3,
+            "minsig": 1e-3,
+            "maxsig": 5e-2,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 0.05,
+        }
+    ]
+    wave = np.linspace(6400.0, 6800.0, 200)
+
+    meta = build_tied_line_meta_from_linelist(line_table, wave)
+
+    assert meta["n_fgroups"] == 1
+    assert np.allclose(meta["amp_init_group"], [0.05])
+
+
+def test_build_tied_line_meta_moves_amp_init_off_lower_boundary():
+    line_table = [
+        {
+            "lambda": 6564.61,
+            "linename": "Ha_br",
+            "compname": "Ha",
+            "ngauss": 1,
+            "inisca": 0.0,
+            "minsca": 1.0e-4,
+            "maxsca": 0.12,
+            "inisig": 5e-3,
+            "minsig": 1e-3,
+            "maxsig": 5e-2,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 1.0e-4,
+        }
+    ]
+    wave = np.linspace(6400.0, 6800.0, 200)
+
+    meta = build_tied_line_meta_from_linelist(line_table, wave)
+
+    assert meta["amp_init_group"][0] > meta["amp_min_group"][0]
+    assert meta["amp_init_group"][0] < meta["amp_max_group"][0]
 
 
 def test_build_tied_line_meta_includes_lines_with_broad_wings_overlapping_window():
@@ -920,8 +1072,10 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
 
     params = {
         "cont_norm": np.array(1.0),
-        "line_dmu_group": np.zeros(tied_line_meta["n_vgroups"]),
-        "line_sig_group": tied_line_meta["sig_init_group"],
+        "line_dmu_group_std": np.zeros(tied_line_meta["n_vgroups"]),
+        "line_log_broad_fwhm_std": np.array(0.0),
+        "line_log_narrow_fwhm_std": np.array(0.0),
+        "line_log_fwhm_delta_group_std": np.zeros(tied_line_meta["n_wgroups"]),
         "line_amp_group": tied_line_meta["amp_init_group"],
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
@@ -963,6 +1117,39 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
     assert "obs" in tr_fit
     assert "model" not in tr_fit
     assert "line_model" not in tr_fit
+
+
+def test_smooth_bounded_affine_preserves_init_and_bound_gradients():
+    value0 = _smooth_bounded_affine(
+        jnp.asarray(0.0),
+        loc=jnp.asarray(0.5),
+        scale=jnp.asarray(0.2),
+        low=jnp.asarray(0.0),
+        high=jnp.asarray(1.0),
+    )
+    np.testing.assert_allclose(np.asarray(value0), 0.5, rtol=1.0e-12, atol=1.0e-12)
+
+    grad_hi = jax.grad(
+        lambda eps: _smooth_bounded_affine(
+            eps,
+            loc=jnp.asarray(0.5),
+            scale=jnp.asarray(0.2),
+            low=jnp.asarray(0.0),
+            high=jnp.asarray(1.0),
+        )
+    )(jnp.asarray(10.0))
+    grad_lo = jax.grad(
+        lambda eps: _smooth_bounded_affine(
+            eps,
+            loc=jnp.asarray(0.5),
+            scale=jnp.asarray(0.2),
+            low=jnp.asarray(0.0),
+            high=jnp.asarray(1.0),
+        )
+    )(jnp.asarray(-10.0))
+
+    assert float(grad_hi) > 0.0
+    assert float(grad_lo) > 0.0
 
 
 def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):
