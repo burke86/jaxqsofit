@@ -365,8 +365,8 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
 
     Velocity shifts use non-centered standardized offsets. Widths are sampled as
     broad/narrow log-FWHM family scales plus per-width-group log offsets. Line
-    amplitudes are sampled in log amplitude space. The returned arrays preserve
-    the historical physical group names via deterministic sites.
+    amplitudes use the direct bounded peak-amplitude prior. The returned arrays
+    preserve the historical physical group names.
     """
     n_v = int(tied_line_meta["n_vgroups"])
     n_w = int(tied_line_meta["n_wgroups"])
