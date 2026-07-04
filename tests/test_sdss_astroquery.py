@@ -104,6 +104,7 @@ def test_sdss_fit_wrms_below_threshold():
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=ra, dec=dec)
     q.config.inference.method = "optax+nuts"
     q.config.observation.apply_mw_deredden = False
+    q.config.preprocessing.mask_lya_forest = True
     q.config.lines.enabled = True
     q.config.host.enabled = True
     q.config.continuum.fit_feii = False

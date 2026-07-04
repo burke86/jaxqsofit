@@ -50,7 +50,7 @@ def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
         fit_fe=True,
         fit_bc=False,
         fit_poly=True,
-        mask_lya_forest=False,
+        mask_lya_forest=True,
         plot_fig=False,
         save_fig=False,
         save_result=False,
