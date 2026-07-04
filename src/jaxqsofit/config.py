@@ -25,6 +25,7 @@ class SpectroscopyData:
     fluxes: Sequence[float]
     errors: Sequence[float] | float | None = None
     wavelength_dispersion: Sequence[float] | None = None
+    resolving_power: float | None = None
     mask: Sequence[bool] | None = None
 
     def validate(self) -> None:
@@ -181,6 +182,9 @@ def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
             "low": _scalar_or_list(value.low),
             "high": _scalar_or_list(value.high),
         }
+    if name == "Exponential":
+        rate = _scalar_or_list(value.rate)
+        return {"dist": name, "scale": 1.0 / rate if np.isscalar(rate) else (1.0 / np.asarray(rate)).tolist()}
     raise TypeError(f"Unsupported NumPyro prior distribution: {name}")
 
 
@@ -216,6 +220,7 @@ class OutputConfig:
     save_name: str | None = None
     save_result: bool = True
     plot_fig: bool = True
+    plot_init: bool = False
     save_fig: bool = True
     show_plot: bool = False
 

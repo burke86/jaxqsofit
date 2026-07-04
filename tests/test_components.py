@@ -67,13 +67,75 @@ def test_evaluate_joint_spectral_components_uses_default_tied_lines():
         ),
     )
 
-    assert "jqf_line_dmu_group" in tr
-    assert "jqf_line_sig_group" in tr
+    assert "jqf_line_dmu_group_std" in tr
+    assert "jqf_line_log_fwhm_delta_group_std" in tr
     assert "jqf_line_amp_group" in tr
+    assert tr["jqf_line_dmu_group"]["type"] == "deterministic"
+    assert tr["jqf_line_sig_group"]["type"] == "deterministic"
+    assert tr["jqf_line_amp_group"]["type"] == "sample"
     assert "jqf_line_amp_per_component" in tr
     assert "jqf_line_model_broad" in tr
     assert "jqf_line_model_narrow" in tr
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
+
+
+def test_evaluate_joint_spectral_components_filters_tied_lines_to_coverage():
+    wave_obs = np.linspace(4850.0, 5010.0, 64)
+    continuum = np.full_like(wave_obs, 1.0)
+    line_table = [
+        {
+            "lambda": 4862.68,
+            "linename": "Hb",
+            "compname": "Hb",
+            "minwav": 4800.0,
+            "maxwav": 4920.0,
+            "inisca": 0.1,
+            "minsca": 1.0e-4,
+            "maxsca": 1.0,
+            "inisig": 1.0e-3,
+            "minsig": 1.0e-4,
+            "maxsig": 1.0e-2,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 1.0,
+        },
+        {
+            "lambda": 6564.61,
+            "linename": "Ha",
+            "compname": "Ha",
+            "minwav": 6400.0,
+            "maxwav": 6800.0,
+            "inisca": 0.1,
+            "minsca": 1.0e-4,
+            "maxsca": 1.0,
+            "inisig": 1.0e-3,
+            "minsig": 1.0e-4,
+            "maxsig": 1.0e-2,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 1.0,
+        },
+    ]
+
+    tr = trace(seed(evaluate_joint_spectral_components, jax.random.PRNGKey(8))).get_trace(
+        wave_obs=wave_obs,
+        redshift=0.0,
+        continuum_mjy=continuum,
+        config=SpectralComponentConfig(
+            use_lines=True,
+            use_tied_lines=True,
+            use_feii=False,
+            use_balmer_continuum=False,
+            line_table=line_table,
+            line_coverage_rest=(4800.0, 5050.0),
+        ),
+    )
+
+    assert np.asarray(tr["jqf_line_amp_per_component"]["value"]).shape == (1,)
 
 
 def test_evaluate_joint_spectral_components_accepts_prior_config_object_as_line_prior_config():
@@ -98,7 +160,8 @@ def test_evaluate_joint_spectral_components_accepts_prior_config_object_as_line_
         ),
     )
 
-    assert "jqf_line_dmu_group" in tr
+    assert "jqf_line_dmu_group_std" in tr
+    assert tr["jqf_line_dmu_group"]["type"] == "deterministic"
     assert "jqf_line_amp_per_component" in tr
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
 

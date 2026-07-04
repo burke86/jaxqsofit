@@ -64,6 +64,31 @@ def _np_to_jnp(x):
     return jnp.asarray(np.asarray(x, dtype=np.float64))
 
 
+def spectral_likelihood_weight_from_resolving_power(wave, resolving_power):
+    """Return the resolution-element spectral likelihood weight."""
+    if resolving_power is None:
+        return jnp.asarray(1.0, dtype=jnp.float64)
+    try:
+        resolving_power_value = float(resolving_power)
+    except Exception:
+        return jnp.asarray(1.0, dtype=jnp.float64)
+    if not np.isfinite(resolving_power_value) or resolving_power_value <= 0.0:
+        return jnp.asarray(1.0, dtype=jnp.float64)
+
+    wave = jnp.asarray(wave, dtype=jnp.float64)
+    if wave.size < 2:
+        return jnp.asarray(1.0, dtype=jnp.float64)
+    delta = jnp.abs(wave[1:] - wave[:-1])
+    prev_delta = jnp.zeros_like(wave).at[1:].set(delta)
+    next_delta = jnp.zeros_like(wave).at[:-1].set(delta)
+    pixel_width = 0.5 * (prev_delta + next_delta)
+    valid = jnp.isfinite(wave) & (wave > 0.0) & (pixel_width > 0.0)
+    resolution_width = wave / resolving_power_value
+    n_eff = jnp.sum(jnp.where(valid, pixel_width / jnp.maximum(resolution_width, 1.0e-30), 0.0))
+    n_pix = jnp.sum(valid.astype(jnp.float64))
+    return jnp.where(n_pix > 0.0, jnp.minimum(n_eff / n_pix, 1.0), jnp.asarray(1.0, dtype=jnp.float64))
+
+
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
     """Rescale a template so its robust peak amplitude is O(target_amp)."""
     f = np.asarray(flux, dtype=float)
@@ -294,6 +319,167 @@ def _broad_line_mask(names):
     )
 
 
+def _prefixed_site(prefix: str, name: str) -> str:
+    """Return a site name with an optional component prefix."""
+    return f"{prefix}_{name}" if prefix else name
+
+
+def _smooth_bounded_affine(eps, loc, scale, low, high):
+    """Map standardized coordinates into bounded space without flat clipping."""
+    loc = jnp.asarray(loc, dtype=jnp.float64)
+    scale = jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-12)
+    low = jnp.asarray(low, dtype=jnp.float64)
+    high = jnp.asarray(high, dtype=jnp.float64)
+    eps = jnp.asarray(eps, dtype=jnp.float64)
+
+    finite_bounds = jnp.isfinite(low) & jnp.isfinite(high)
+    raw_affine = loc + scale * eps
+
+    safe_low = jnp.where(jnp.isfinite(low), low, loc - 1.0)
+    safe_high = jnp.where(jnp.isfinite(high), high, loc + 1.0)
+    span = jnp.maximum(safe_high - safe_low, 1.0e-12)
+    unit_loc = jnp.clip((loc - safe_low) / span, 1.0e-6, 1.0 - 1.0e-6)
+    logit_loc = jnp.log(unit_loc) - jnp.log1p(-unit_loc)
+    local_slope = jnp.maximum(span * unit_loc * (1.0 - unit_loc), 1.0e-12)
+    raw_bounded = logit_loc + (scale / local_slope) * eps
+    bounded = safe_low + span * jax.nn.sigmoid(raw_bounded)
+    return jnp.where(finite_bounds, bounded, raw_affine)
+
+
+def _sample_bounded_affine_std(site_name, loc, scale, low, high):
+    """Sample standardized coordinates and transform smoothly into bounds."""
+    loc = jnp.asarray(loc, dtype=jnp.float64)
+    scale = jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-12)
+    low = jnp.asarray(low, dtype=jnp.float64)
+    high = jnp.asarray(high, dtype=jnp.float64)
+    eps_dist = dist.Normal(jnp.zeros_like(loc), jnp.ones_like(loc))
+    if int(jnp.ndim(loc)) > 0:
+        eps_dist = eps_dist.to_event(1)
+    eps = numpyro.sample(f"{site_name}_std", eps_dist)
+    value = _smooth_bounded_affine(eps, loc, scale, low, high)
+    return numpyro.deterministic(site_name, value)
+
+
+def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str = ""):
+    """Sample tied-line groups in geometry-friendly coordinates.
+
+    Velocity shifts use non-centered standardized offsets. Widths are sampled as
+    broad/narrow log-FWHM family scales plus per-width-group log offsets. Line
+    amplitudes are sampled in log amplitude space. The returned arrays preserve
+    the historical physical group names via deterministic sites.
+    """
+    n_v = int(tied_line_meta["n_vgroups"])
+    n_w = int(tied_line_meta["n_wgroups"])
+    n_f = int(tied_line_meta["n_fgroups"])
+    dmu_scale_mult = float(prior_config["line_dmu_scale_mult"])
+    sig_scale_mult = float(prior_config["line_sig_scale_mult"])
+    amp_scale_mult = float(prior_config["line_amp_scale_mult"])
+
+    dmu_group = jnp.zeros((0,), dtype=jnp.float64)
+    if n_v > 0:
+        dmu_min = _line_meta_array(tied_line_meta, "dmu_min_group", jax_key="dmu_min_group_jax")
+        dmu_max = _line_meta_array(tied_line_meta, "dmu_max_group", jax_key="dmu_max_group_jax")
+        dmu_group = _sample_bounded_affine_std(
+            _prefixed_site(site_prefix, "line_dmu_group"),
+            _line_meta_array(tied_line_meta, "dmu_init_group", jax_key="dmu_init_group_jax"),
+            jnp.maximum(dmu_scale_mult * (dmu_max - dmu_min), 1.0e-6),
+            dmu_min,
+            dmu_max,
+        )
+
+    sig_group = jnp.zeros((0,), dtype=jnp.float64)
+    if n_w > 0:
+        sig_init = np.clip(np.asarray(tied_line_meta["sig_init_group"], dtype=float), 1.0e-8, None)
+        sig_min = np.clip(np.asarray(tied_line_meta["sig_min_group"], dtype=float), 1.0e-8, None)
+        sig_max = np.clip(np.asarray(tied_line_meta["sig_max_group"], dtype=float), 1.0e-8, None)
+        log_fwhm_init = np.log(C_KMS * 2.354820045 * sig_init)
+        log_fwhm_min = np.log(C_KMS * 2.354820045 * sig_min)
+        log_fwhm_max = np.log(C_KMS * 2.354820045 * sig_max)
+        wgroup = np.asarray(tied_line_meta["wgroup"], dtype=int)
+        broad_mask = np.asarray(tied_line_meta.get("broad_mask", _broad_line_mask(tied_line_meta.get("names", []))), dtype=float)
+        wgroup_is_broad = np.asarray(
+            [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
+            dtype=bool,
+        )
+        broad_idx = np.where(wgroup_is_broad)[0]
+        narrow_idx = np.where(~wgroup_is_broad)[0]
+        broad_default = float(np.median(log_fwhm_init[broad_idx])) if broad_idx.size else np.log(3000.0)
+        narrow_default = float(np.median(log_fwhm_init[narrow_idx])) if narrow_idx.size else np.log(500.0)
+
+        log_broad_fwhm = (
+            _sample_bounded_affine_std(
+                _prefixed_site(site_prefix, "line_log_broad_fwhm"),
+                broad_default,
+                0.35,
+                float(np.min(log_fwhm_min[broad_idx])) if broad_idx.size else -jnp.inf,
+                float(np.max(log_fwhm_max[broad_idx])) if broad_idx.size else jnp.inf,
+            )
+            if broad_idx.size
+            else jnp.asarray(broad_default, dtype=jnp.float64)
+        )
+        log_narrow_fwhm = (
+            _sample_bounded_affine_std(
+                _prefixed_site(site_prefix, "line_log_narrow_fwhm"),
+                narrow_default,
+                0.25,
+                float(np.min(log_fwhm_min[narrow_idx])) if narrow_idx.size else -jnp.inf,
+                float(np.max(log_fwhm_max[narrow_idx])) if narrow_idx.size else jnp.inf,
+            )
+            if narrow_idx.size
+            else jnp.asarray(narrow_default, dtype=jnp.float64)
+        )
+        family_loc = np.where(wgroup_is_broad, broad_default, narrow_default)
+        family_base = jnp.where(
+            jnp.asarray(wgroup_is_broad, dtype=bool),
+            log_broad_fwhm,
+            log_narrow_fwhm,
+        )
+        delta_loc = jnp.asarray(log_fwhm_init - family_loc, dtype=jnp.float64)
+        delta_scale = jnp.maximum(
+            sig_scale_mult * jnp.asarray(log_fwhm_max - log_fwhm_min, dtype=jnp.float64),
+            1.0e-4,
+        )
+        delta = _sample_bounded_affine_std(
+            _prefixed_site(site_prefix, "line_log_fwhm_delta_group"),
+            delta_loc,
+            delta_scale,
+            jnp.asarray(log_fwhm_min, dtype=jnp.float64) - family_base,
+            jnp.asarray(log_fwhm_max, dtype=jnp.float64) - family_base,
+        )
+        log_fwhm_group = family_base + delta
+        numpyro.deterministic(_prefixed_site(site_prefix, "line_log_fwhm_group"), log_fwhm_group)
+        sig_group = numpyro.deterministic(
+            _prefixed_site(site_prefix, "line_sig_group"),
+            jnp.exp(log_fwhm_group) / (C_KMS * 2.354820045),
+        )
+
+    amp_group = jnp.zeros((0,), dtype=jnp.float64)
+    if n_f > 0:
+        amp_min = jnp.clip(
+            _line_meta_array(tied_line_meta, "amp_min_group", jax_key="amp_min_group_jax"),
+            AMPLITUDE_FLOOR,
+        )
+        amp_max = jnp.clip(
+            _line_meta_array(tied_line_meta, "amp_max_group", jax_key="amp_max_group_jax"),
+            AMPLITUDE_FLOOR,
+        )
+        amp_init = jnp.clip(
+            _line_meta_array(tied_line_meta, "amp_init_group", jax_key="amp_init_group_jax"),
+            AMPLITUDE_FLOOR,
+        )
+        amp_group = numpyro.sample(
+            _prefixed_site(site_prefix, "line_amp_group"),
+            dist.TruncatedNormal(
+                loc=amp_init,
+                scale=jnp.maximum(amp_scale_mult * (amp_max - amp_min), AMPLITUDE_FLOOR),
+                low=amp_min,
+                high=amp_max,
+            ),
+        )
+
+    return dmu_group, sig_group, amp_group
+
+
 def _synth_ab_mag_from_grid(wave_obs, flam_obs, filt_trans):
     """Compute an AB magnitude from flux density and filter transmission on one grid."""
     c_ang_s = 2.99792458e18
@@ -406,62 +592,149 @@ def _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel):
     return bc_conv
 
 
-def _cfg_norm_from_prior_config(prior_config, key):
-    """Read Normal/LogNormal `(loc, scale)` parameters from prior config."""
-    cfg = prior_config[key]
-    if isinstance(cfg, dict) and ('loc' in cfg and 'scale' in cfg):
-        return jnp.asarray(cfg['loc']), jnp.asarray(cfg['scale'])
+def _prior_distribution(prior_config, key, default_distribution):
+    """Read a NumPyro distribution-like prior from a flat prior mapping."""
+    cfg = prior_config.get(key, None)
+    if cfg is None:
+        return default_distribution
     if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
-        return jnp.asarray(cfg[0]), jnp.asarray(cfg[1])
-    return jnp.asarray(cfg['loc']), jnp.asarray(cfg['scale'])
+        return dist.Normal(
+            jnp.asarray(cfg[0], dtype=jnp.float64),
+            jnp.maximum(jnp.asarray(cfg[1], dtype=jnp.float64), 1.0e-6),
+        )
+    if not isinstance(cfg, Mapping):
+        return default_distribution
 
-
-def _sample_log_positive(prior_config, *, value_key, log_key, default_value, default_log_scale):
-    """Sample a positive parameter in log space and expose its physical value."""
-    cfg = prior_config.get(log_key, None)
-    if cfg is None:
-        legacy = prior_config.get(value_key, None)
-        if isinstance(legacy, dict):
-            dist_name = str(legacy.get("dist", "")).lower()
-            if dist_name in {"delta", "fixed", "deterministic"}:
-                value = jnp.asarray(legacy.get("value", legacy.get("loc", default_value)), dtype=jnp.float64)
-                return numpyro.deterministic(value_key, value)
-            if "loc" in legacy and "scale" in legacy and dist_name in {"normal", "gaussian"}:
-                cfg = {
-                    "dist": "normal",
-                    "loc": jnp.log(jnp.maximum(jnp.asarray(legacy["loc"], dtype=jnp.float64), 1.0e-30)),
-                    "scale": legacy["scale"],
-                }
-            elif "scale" in legacy:
-                cfg = {
-                    "dist": "normal",
-                    "loc": jnp.log(jnp.maximum(jnp.asarray(legacy["scale"], dtype=jnp.float64), 1.0e-30)),
-                    "scale": default_log_scale,
-                }
-        elif legacy is not None:
-            value = jnp.asarray(legacy, dtype=jnp.float64)
-            return numpyro.deterministic(value_key, value)
-    if cfg is None:
-        cfg = {"dist": "normal", "loc": np.log(default_value), "scale": default_log_scale}
-    dist_name = str(cfg.get("dist", "normal")).lower()
+    dist_name = str(cfg.get("dist", cfg.get("family", default_distribution.__class__.__name__))).lower()
     if dist_name in {"delta", "fixed", "deterministic"}:
-        log_value = jnp.asarray(cfg.get("value", cfg.get("loc", np.log(default_value))), dtype=jnp.float64)
-        value = jnp.exp(log_value)
-        numpyro.deterministic(log_key, log_value)
-        return numpyro.deterministic(value_key, value)
+        return None
     if dist_name in {"normal", "gaussian"}:
-        log_value = numpyro.sample(
-            log_key,
-            dist.Normal(jnp.asarray(cfg.get("loc", np.log(default_value))), jnp.asarray(cfg.get("scale", default_log_scale))),
+        return dist.Normal(
+            jnp.asarray(cfg.get("loc", 0.0), dtype=jnp.float64),
+            jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-6),
         )
-    elif dist_name == "uniform":
-        log_value = numpyro.sample(
-            log_key,
-            dist.Uniform(jnp.asarray(cfg.get("low", np.log(default_value) - 5.0)), jnp.asarray(cfg.get("high", np.log(default_value) + 5.0))),
+    if dist_name in {"truncatednormal", "truncated_normal", "truncnormal", "truncnorm"}:
+        return dist.TruncatedNormal(
+            loc=jnp.asarray(cfg.get("loc", 0.0), dtype=jnp.float64),
+            scale=jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-6),
+            low=jnp.asarray(cfg.get("low", -jnp.inf), dtype=jnp.float64),
+            high=jnp.asarray(cfg.get("high", jnp.inf), dtype=jnp.float64),
         )
+    if dist_name in {"lognormal", "log-normal", "log_normal"}:
+        return dist.LogNormal(
+            jnp.asarray(cfg.get("loc", 0.0), dtype=jnp.float64),
+            jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-6),
+        )
+    if dist_name in {"halfnormal", "half_normal"}:
+        return dist.HalfNormal(jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-6))
+    if dist_name in {"student_t", "studentt", "studentt", "t"}:
+        return dist.StudentT(
+            df=jnp.maximum(jnp.asarray(cfg.get("df", 5.0), dtype=jnp.float64), 1.0e-6),
+            loc=jnp.asarray(cfg.get("loc", 0.0), dtype=jnp.float64),
+            scale=jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-6),
+        )
+    if dist_name in {"uniform", "flat"}:
+        low = jnp.asarray(cfg.get("low", 0.0), dtype=jnp.float64)
+        high = jnp.asarray(cfg.get("high", 1.0), dtype=jnp.float64)
+        lo = jnp.minimum(low, high)
+        hi = jnp.maximum(jnp.maximum(low, high), lo + 1.0e-6)
+        return dist.Uniform(lo, hi)
+    if dist_name in {"exponential", "exp"}:
+        scale = jnp.maximum(jnp.asarray(cfg.get("scale", 1.0), dtype=jnp.float64), 1.0e-30)
+        return dist.Exponential(1.0 / scale)
+    return default_distribution
+
+
+def _fixed_prior_value(prior_config, key, default_value):
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, Mapping):
+        dist_name = str(cfg.get("dist", cfg.get("family", ""))).lower()
+        if dist_name in {"delta", "fixed", "deterministic"}:
+            return jnp.asarray(cfg.get("value", cfg.get("loc", default_value)), dtype=jnp.float64)
+    return None
+
+
+def _prior_family(prior_config, key, default_family=""):
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, Mapping):
+        return str(cfg.get("dist", cfg.get("family", default_family))).lower()
+    return default_family.lower()
+
+
+def _prior_loc_scale(prior_config, key, default_loc=0.0, default_scale=1.0):
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, Mapping):
+        return (
+            jnp.asarray(cfg.get("loc", default_loc), dtype=jnp.float64),
+            jnp.maximum(jnp.asarray(cfg.get("scale", default_scale), dtype=jnp.float64), 1.0e-6),
+        )
+    if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
+        return (
+            jnp.asarray(cfg[0], dtype=jnp.float64),
+            jnp.maximum(jnp.asarray(cfg[1], dtype=jnp.float64), 1.0e-6),
+        )
+    return jnp.asarray(default_loc, dtype=jnp.float64), jnp.asarray(default_scale, dtype=jnp.float64)
+
+
+def _halfnormal_prior(prior_config, key, default_scale, *, ref_scale=None):
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, Mapping) and "scale_mult_err" in cfg and ref_scale is not None:
+        return dist.HalfNormal(jnp.maximum(jnp.asarray(cfg["scale_mult_err"] * ref_scale, dtype=jnp.float64), 1.0e-6))
+    return _prior_distribution(prior_config, key, dist.HalfNormal(default_scale))
+
+
+def _sample_prior(prior_config, key, default_distribution):
+    """Sample a scalar site from a configured distribution or a default."""
+    fixed = _fixed_prior_value(prior_config, key, None)
+    if fixed is not None:
+        return numpyro.deterministic(key, fixed)
+    return numpyro.sample(key, _prior_distribution(prior_config, key, default_distribution))
+
+
+def _sample_log_positive_from_distribution(prior_config, *, value_key, log_key, default_distribution):
+    """Sample a log-parameter from a distribution and expose its physical value."""
+    fixed = _fixed_prior_value(prior_config, log_key, None)
+    if fixed is not None:
+        log_value = numpyro.deterministic(log_key, fixed)
     else:
-        raise ValueError(f"{log_key} must use a Normal, Uniform, or Delta prior.")
+        log_value = numpyro.sample(log_key, _prior_distribution(prior_config, log_key, default_distribution))
     return numpyro.deterministic(value_key, jnp.exp(log_value))
+
+
+def _sample_positive_distribution(
+    prior_config,
+    *,
+    value_key,
+    log_key,
+    default_value_distribution,
+    default_log_distribution,
+    default_to_log=False,
+):
+    """Sample a positive parameter, honoring either physical or log prior keys."""
+    if log_key in prior_config:
+        family = _prior_family(prior_config, log_key, default_log_distribution.__class__.__name__)
+        if family in {"lognormal", "log-normal", "log_normal", "exponential", "exp", "halfnormal", "half_normal"}:
+            fixed = _fixed_prior_value(prior_config, log_key, None)
+            if fixed is not None:
+                return numpyro.deterministic(value_key, fixed)
+            return numpyro.sample(value_key, _prior_distribution(prior_config, log_key, default_value_distribution))
+        return _sample_log_positive_from_distribution(
+            prior_config,
+            value_key=value_key,
+            log_key=log_key,
+            default_distribution=default_log_distribution,
+        )
+    fixed = _fixed_prior_value(prior_config, value_key, None)
+    if fixed is not None:
+        return numpyro.deterministic(value_key, fixed)
+    if value_key not in prior_config and default_to_log:
+        return _sample_log_positive_from_distribution(
+            prior_config,
+            value_key=value_key,
+            log_key=log_key,
+            default_distribution=default_log_distribution,
+        )
+    return numpyro.sample(value_key, _prior_distribution(prior_config, value_key, default_value_distribution))
 
 
 def _template_grid_age_met_arrays(fsps_grid):
@@ -477,7 +750,7 @@ def _template_grid_age_met_arrays(fsps_grid):
 
 def _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp):
     """Return template-wise prior logits for flexible host SSP weights."""
-    raw_w_loc, _ = _cfg_norm_from_prior_config(prior_config, "raw_w")
+    raw_w_loc, _ = _prior_loc_scale(prior_config, "raw_w", -0.5, 1.0)
     loc = jnp.full((ntemp,), raw_w_loc, dtype=jnp.float64)
     cfg = prior_config.get("host_template_age_prior", None)
     if cfg is None:
@@ -548,25 +821,9 @@ def _sample_log_host_aperture_scale(prior_config):
     galaxy light. Override this prior for fiber/slit spectra or known aperture
     losses.
     """
-    cfg = prior_config.get("log_host_aperture_scale", {"dist": "Delta", "value": 0.0})
-    if isinstance(cfg, dict):
-        dist_name = str(cfg.get("dist", "Delta")).lower()
-        if dist_name in {"delta", "fixed", "deterministic"}:
-            value = jnp.asarray(cfg.get("value", cfg.get("loc", 0.0)), dtype=jnp.float64)
-            return numpyro.deterministic("log_host_aperture_scale", value)
-        if dist_name in {"normal", "gaussian"}:
-            return numpyro.sample(
-                "log_host_aperture_scale",
-                dist.Normal(jnp.asarray(cfg.get("loc", 0.0)), jnp.asarray(cfg.get("scale", 1.0))),
-            )
-        if dist_name in {"uniform", "flat"}:
-            return numpyro.sample(
-                "log_host_aperture_scale",
-                dist.Uniform(jnp.asarray(cfg.get("low", -2.0)), jnp.asarray(cfg.get("high", 2.0))),
-            )
-    if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
-        return numpyro.sample("log_host_aperture_scale", dist.Normal(jnp.asarray(cfg[0]), jnp.asarray(cfg[1])))
-    return numpyro.deterministic("log_host_aperture_scale", jnp.asarray(cfg, dtype=jnp.float64))
+    if "log_host_aperture_scale" not in prior_config:
+        return numpyro.deterministic("log_host_aperture_scale", jnp.asarray(0.0, dtype=jnp.float64))
+    return _sample_prior(prior_config, "log_host_aperture_scale", dist.Normal(0.0, 1.0))
 
 
 def _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp):
@@ -654,24 +911,11 @@ def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
 
 def _sample_from_prior_config(key, cfg):
     """Sample one parameter from a lightweight prior config dictionary."""
-    dist_name = str(cfg.get("dist", "Normal")).lower()
-    if dist_name == "normal":
-        return numpyro.sample(key, dist.Normal(jnp.asarray(cfg["loc"]), jnp.asarray(cfg["scale"])))
-    if dist_name == "lognormal":
-        return numpyro.sample(key, dist.LogNormal(jnp.asarray(cfg["loc"]), jnp.asarray(cfg["scale"])))
-    if dist_name == "halfnormal":
-        return numpyro.sample(key, dist.HalfNormal(jnp.asarray(cfg["scale"])))
-    if dist_name == "truncatednormal":
-        return numpyro.sample(
-            key,
-            dist.TruncatedNormal(
-                loc=jnp.asarray(cfg["loc"]),
-                scale=jnp.asarray(cfg["scale"]),
-                low=jnp.asarray(cfg["low"]),
-                high=jnp.asarray(cfg["high"]),
-            ),
-        )
-    raise ValueError(f"Unsupported custom-component prior distribution: {cfg.get('dist')}")
+    if isinstance(cfg, Mapping):
+        return _sample_prior({key: cfg}, key, dist.Normal(0.0, 1.0))
+    if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
+        return _sample_prior({key: cfg}, key, dist.Normal(0.0, 1.0))
+    return numpyro.deterministic(key, jnp.asarray(cfg, dtype=jnp.float64))
 
 
 def _evaluate_custom_component_jax(wave, samples_or_values, comp, sample_value):
@@ -1151,9 +1395,12 @@ def build_tied_line_meta_from_linelist(linelist, wave):
             ln0 = np.log(float(row['lambda']))
             voff = float(row['voff'])
             dln = voff
+            init_amp = float(row['inisca'])
+            if not np.isfinite(init_amp) or init_amp <= 0.0:
+                init_amp = abs(float(row.get('fvalue', 0.0)))
             ln_lambda0.append(ln0)
             line_lambda.append(float(row['lambda']))
-            amp_init.append(float(row['inisca']))
+            amp_init.append(init_amp)
             amp_min.append(float(row['minsca']))
             amp_max.append(float(row['maxsca']))
             sig_init.append(max(float(row['inisig']), 1e-5))
@@ -1227,6 +1474,14 @@ def build_tied_line_meta_from_linelist(linelist, wave):
         amp_init_group[gid] = amp_init[ref]
         amp_min_group[gid] = amp_min[ref]
         amp_max_group[gid] = amp_max[ref]
+        if amp_max_group[gid] <= amp_min_group[gid]:
+            amp_max_group[gid] = max(amp_min_group[gid] * 1.1, amp_min_group[gid] + 1.0e-4)
+        amp_eps = max(1.0e-8 * (amp_max_group[gid] - amp_min_group[gid]), AMPLITUDE_FLOOR)
+        amp_init_group[gid] = np.clip(
+            amp_init_group[gid],
+            amp_min_group[gid] + amp_eps,
+            amp_max_group[gid] - amp_eps,
+        )
 
     dmu_init_group = np.zeros(n_vgroups, dtype=float)
     dmu_min_group = np.zeros(n_vgroups, dtype=float)
@@ -1300,6 +1555,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          custom_components: Sequence[CustomComponentSpec] | None = None,
                          custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
     """Joint AGN+host spectral forward model for NumPyro inference."""
+    has_observed_flux = flux is not None
     wave = _np_to_jnp(wave)
     flux = _np_to_jnp(flux)
     err = _np_to_jnp(err)
@@ -1327,19 +1583,6 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     )
     return_line_components = bool(return_line_components)
     emit_deterministics = bool(emit_deterministics)
-    _cfg_norm = lambda key: _cfg_norm_from_prior_config(prior_config, key)
-
-    def _cfg_halfnorm(key, ref_scale=None):
-        """Read HalfNormal scale from prior config."""
-        cfg = prior_config[key]
-        if isinstance(cfg, dict):
-            if 'scale' in cfg:
-                return jnp.asarray(cfg['scale'])
-            if 'scale_mult_err' in cfg:
-                return jnp.asarray(cfg['scale_mult_err'] * ref_scale)
-        if isinstance(cfg, (tuple, list)) and len(cfg) >= 1:
-            return jnp.asarray(cfg[0])
-        return jnp.asarray(cfg)
 
     host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
     physical_delayed_host = (
@@ -1349,20 +1592,38 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     )
 
     if decompose_host and not physical_delayed_host:
-        cont_norm = numpyro.sample('cont_norm', dist.LogNormal(*_cfg_norm('log_cont_norm')))
+        cont_norm = _sample_positive_distribution(
+            prior_config,
+            value_key='cont_norm',
+            log_key='log_cont_norm',
+            default_value_distribution=dist.LogNormal(0.0, 1.0),
+            default_log_distribution=dist.Normal(0.0, 1.0),
+        )
         if isinstance(prior_config.get('log_frac_host', None), dict) and ('df' in prior_config['log_frac_host']):
             log_frac_host_df = float(prior_config['log_frac_host']['df'])
         else:
             log_frac_host_df = float(prior_config.get('log_frac_host_df', 3.0))
-        log_frac_host_loc, log_frac_host_scale = _cfg_norm('log_frac_host')
+        log_frac_host_loc, log_frac_host_scale = _prior_loc_scale(prior_config, 'log_frac_host')
         host_redshift_prior_weight, host_redshift_prior_loc_offset, host_redshift_prior_scale_mult, host_redshift_prior_df_eff = _host_redshift_prior_params(prior_config, z_qso)
         log_frac_host_loc_eff = log_frac_host_loc + host_redshift_prior_loc_offset
         log_frac_host_scale_eff = jnp.maximum(log_frac_host_scale * host_redshift_prior_scale_mult, 1e-6)
         log_frac_host_df_eff = jnp.asarray(log_frac_host_df) if host_redshift_prior_df_eff is None else jnp.maximum(host_redshift_prior_df_eff, 1e-6)
-        log_frac_host_sample = numpyro.sample(
-            'log_frac_host',
-            dist.StudentT(df=log_frac_host_df_eff, loc=log_frac_host_loc_eff, scale=log_frac_host_scale_eff),
-        )
+        host_redshift_prior_enabled = bool(prior_config.get("host_redshift_prior", {}).get("enabled", True))
+        if (
+            not host_redshift_prior_enabled
+            and host_redshift_prior_df_eff is None
+            and _prior_family(prior_config, 'log_frac_host', 'student_t') not in {"normal", "gaussian"}
+        ):
+            log_frac_host_sample = _sample_prior(
+                prior_config,
+                'log_frac_host',
+                dist.StudentT(df=log_frac_host_df_eff, loc=log_frac_host_loc_eff, scale=log_frac_host_scale_eff),
+            )
+        else:
+            log_frac_host_sample = numpyro.sample(
+                'log_frac_host',
+                dist.StudentT(df=log_frac_host_df_eff, loc=log_frac_host_loc_eff, scale=log_frac_host_scale_eff),
+            )
         frac_host_sample = jax.nn.sigmoid(log_frac_host_sample)
         if emit_deterministics:
             numpyro.deterministic('host_redshift_prior_weight', host_redshift_prior_weight)
@@ -1376,16 +1637,16 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         frac_host_sample = jnp.asarray(jnp.nan)
     pl_pivot = _resolve_pl_pivot(wave, prior_config)
     if fit_pl:
-        pl_norm = numpyro.sample('PL_norm', dist.HalfNormal(_cfg_halfnorm('PL_norm')))
-        pl_slope_loc, pl_slope_scale = _cfg_norm('PL_slope')
-        pl_slope = numpyro.sample('PL_slope', dist.Normal(pl_slope_loc, pl_slope_scale))
+        pl_norm = _sample_prior(prior_config, 'PL_norm', dist.HalfNormal(1.0))
+        pl_slope = _sample_prior(prior_config, 'PL_slope', dist.Normal(0.0, 1.0))
         reddening_a2500 = (
-            _sample_log_positive(
+            _sample_positive_distribution(
                 prior_config,
                 value_key='reddening_a2500',
                 log_key='log_reddening_a2500',
-                default_value=0.1,
-                default_log_scale=1.0,
+                default_value_distribution=dist.LogNormal(np.log(0.1), 1.0),
+                default_log_distribution=dist.Normal(np.log(0.1), 1.0),
+                default_to_log=True,
             )
             if fit_reddening else jnp.asarray(0.0)
         )
@@ -1395,13 +1656,31 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         reddening_a2500 = jnp.asarray(0.0)
 
     if fit_fe:
-        fe_uv_norm = numpyro.sample('Fe_uv_norm', dist.LogNormal(*_cfg_norm('log_Fe_uv_norm')))
-        log_fe_op_over_uv = numpyro.sample('log_Fe_op_over_uv', dist.Normal(*_cfg_norm('log_Fe_op_over_uv')))
+        fe_uv_norm = _sample_positive_distribution(
+            prior_config,
+            value_key='Fe_uv_norm',
+            log_key='log_Fe_uv_norm',
+            default_value_distribution=dist.LogNormal(np.log(1.0e-3), 2.0),
+            default_log_distribution=dist.Normal(np.log(1.0e-3), 2.0),
+        )
+        log_fe_op_over_uv = _sample_prior(prior_config, 'log_Fe_op_over_uv', dist.Normal(0.0, 1.0))
         fe_op_norm = fe_uv_norm * jnp.exp(log_fe_op_over_uv)
-        fe_uv_fwhm = numpyro.sample('Fe_uv_FWHM', dist.LogNormal(*_cfg_norm('log_Fe_uv_FWHM')))
-        fe_op_fwhm = numpyro.sample('Fe_op_FWHM', dist.LogNormal(*_cfg_norm('log_Fe_op_FWHM')))
-        fe_uv_shift = numpyro.sample('Fe_uv_shift', dist.Normal(*_cfg_norm('Fe_uv_shift')))
-        fe_op_shift = numpyro.sample('Fe_op_shift', dist.Normal(*_cfg_norm('Fe_op_shift')))
+        fe_uv_fwhm = _sample_positive_distribution(
+            prior_config,
+            value_key='Fe_uv_FWHM',
+            log_key='log_Fe_uv_FWHM',
+            default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
+            default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
+        )
+        fe_op_fwhm = _sample_positive_distribution(
+            prior_config,
+            value_key='Fe_op_FWHM',
+            log_key='log_Fe_op_FWHM',
+            default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
+            default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
+        )
+        fe_uv_shift = _sample_prior(prior_config, 'Fe_uv_shift', dist.Normal(0.0, 0.01))
+        fe_op_shift = _sample_prior(prior_config, 'Fe_op_shift', dist.Normal(0.0, 0.01))
     else:
         fe_uv_norm = jnp.asarray(0.0)
         fe_op_norm = jnp.asarray(0.0)
@@ -1411,10 +1690,28 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         fe_op_shift = jnp.asarray(0.0)
 
     if fit_bc:
-        balmer_norm = numpyro.sample('Balmer_norm', dist.LogNormal(*_cfg_norm_from_prior_config(prior_config, 'log_Balmer_norm')))
+        balmer_norm = _sample_positive_distribution(
+            prior_config,
+            value_key='Balmer_norm',
+            log_key='log_Balmer_norm',
+            default_value_distribution=dist.LogNormal(np.log(1.0e-3), 2.0),
+            default_log_distribution=dist.Normal(np.log(1.0e-3), 2.0),
+        )
         balmer_te = jnp.asarray(15000.0)
-        balmer_tau = numpyro.sample('Balmer_Tau', dist.LogNormal(*_cfg_norm_from_prior_config(prior_config, 'log_Balmer_Tau')))
-        balmer_vel = numpyro.sample('Balmer_vel', dist.LogNormal(*_cfg_norm_from_prior_config(prior_config, 'log_Balmer_vel')))
+        balmer_tau = _sample_positive_distribution(
+            prior_config,
+            value_key='Balmer_Tau',
+            log_key='log_Balmer_Tau',
+            default_value_distribution=dist.LogNormal(np.log(0.5), 0.25),
+            default_log_distribution=dist.Normal(np.log(0.5), 0.25),
+        )
+        balmer_vel = _sample_positive_distribution(
+            prior_config,
+            value_key='Balmer_vel',
+            log_key='log_Balmer_vel',
+            default_value_distribution=dist.LogNormal(np.log(3000.0), 0.25),
+            default_log_distribution=dist.Normal(np.log(3000.0), 0.25),
+        )
     else:
         balmer_norm = jnp.asarray(0.0)
         balmer_te = jnp.asarray(15000.0)
@@ -1475,7 +1772,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         # Global low-order tilt
         poly_base = jnp.ones_like(wave)
         for k in range(1, poly_order + 1):
-            ck = numpyro.sample(f'poly_c{k}', dist.Normal(*_cfg_norm(f'poly_c{k}')))
+            ck = _sample_prior(prior_config, f'poly_c{k}', dist.Normal(0.0, 0.1))
             poly_base = poly_base + ck * (x ** k)
 
         poly_model = jnp.clip(poly_base, 0.2, 5.0)
@@ -1523,7 +1820,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                 z_qso,
             )
         elif host_sfh_model in {"flexible", "free", "template_weights", "ssp_weights"}:
-            tau_host = numpyro.sample('tau_host', dist.HalfNormal(_cfg_halfnorm('tau_host')))
+            tau_host = _sample_prior(prior_config, 'tau_host', dist.HalfNormal(1.0))
             tau_host_eff = jnp.maximum(tau_host, 1e-6)
             raw_w_loc = _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp)
             raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(raw_w_loc, tau_host_eff))
@@ -1533,13 +1830,14 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             gal_intrinsic_total = jnp.dot(templates, fsps_weights_total)
         else:
             raise ValueError("host_sfh_model must be one of: 'flexible', 'delayed'.")
-        gal_v_kms = numpyro.sample('gal_v_kms', dist.Normal(*_cfg_norm('gal_v_kms')))
-        gal_sigma_kms = _sample_log_positive(
+        gal_v_kms = _sample_prior(prior_config, 'gal_v_kms', dist.Normal(0.0, 150.0))
+        gal_sigma_kms = _sample_positive_distribution(
             prior_config,
             value_key='gal_sigma_kms',
             log_key='log_gal_sigma_kms',
-            default_value=150.0,
-            default_log_scale=0.4,
+            default_value_distribution=dist.LogNormal(np.log(150.0), 0.4),
+            default_log_distribution=dist.Normal(np.log(150.0), 0.4),
+            default_to_log=True,
         )
         gal_model_intrinsic_total = _shift_and_broaden_single_spectrum_lnlam(
             lnwave,
@@ -1576,69 +1874,10 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
 
     line_components_are_split = return_line_components or use_psf_phot or fit_reddening
     if use_lines and tied_line_meta['n_lines'] > 0:
-        n_v = tied_line_meta['n_vgroups']
-        n_w = tied_line_meta['n_wgroups']
-        n_f = tied_line_meta['n_fgroups']
-        dmu_scale_mult = float(prior_config['line_dmu_scale_mult'])
-        sig_scale_mult = float(prior_config['line_sig_scale_mult'])
-        amp_scale_mult = float(prior_config['line_amp_scale_mult'])
-
-        dmu_group = numpyro.sample(
-            'line_dmu_group',
-            dist.TruncatedNormal(
-                loc=_line_meta_array(tied_line_meta, 'dmu_init_group', jax_key='dmu_init_group_jax'),
-                scale=jnp.maximum(
-                    dmu_scale_mult * (
-                        _line_meta_array(tied_line_meta, 'dmu_max_group', jax_key='dmu_max_group_jax')
-                        - _line_meta_array(tied_line_meta, 'dmu_min_group', jax_key='dmu_min_group_jax')
-                    ),
-                    1e-6,
-                ),
-                low=_line_meta_array(tied_line_meta, 'dmu_min_group', jax_key='dmu_min_group_jax'),
-                high=_line_meta_array(tied_line_meta, 'dmu_max_group', jax_key='dmu_max_group_jax'),
-            )
-        ) if n_v > 0 else jnp.zeros((0,))
-
-        sig_group = numpyro.sample(
-            'line_sig_group',
-            dist.TruncatedNormal(
-                loc=jnp.clip(_line_meta_array(tied_line_meta, 'sig_init_group', jax_key='sig_init_group_jax'), 1e-5),
-                scale=jnp.maximum(
-                    sig_scale_mult * (
-                        _line_meta_array(tied_line_meta, 'sig_max_group', jax_key='sig_max_group_jax')
-                        - _line_meta_array(tied_line_meta, 'sig_min_group', jax_key='sig_min_group_jax')
-                    ),
-                    1e-6,
-                ),
-                low=jnp.clip(_line_meta_array(tied_line_meta, 'sig_min_group', jax_key='sig_min_group_jax'), 1e-5),
-                high=jnp.clip(_line_meta_array(tied_line_meta, 'sig_max_group', jax_key='sig_max_group_jax'), 1e-5),
-            )
-        ) if n_w > 0 else jnp.zeros((0,))
-
-        amp_group = numpyro.sample(
-            'line_amp_group',
-            dist.TruncatedNormal(
-                loc=jnp.clip(
-                    _line_meta_array(tied_line_meta, 'amp_init_group', jax_key='amp_init_group_jax'),
-                    AMPLITUDE_FLOOR,
-                ),
-                scale=jnp.maximum(
-                    amp_scale_mult * (
-                        _line_meta_array(tied_line_meta, 'amp_max_group', jax_key='amp_max_group_jax')
-                        - _line_meta_array(tied_line_meta, 'amp_min_group', jax_key='amp_min_group_jax')
-                    ),
-                    AMPLITUDE_FLOOR,
-                ),
-                low=jnp.clip(
-                    _line_meta_array(tied_line_meta, 'amp_min_group', jax_key='amp_min_group_jax'),
-                    AMPLITUDE_FLOOR,
-                ),
-                high=jnp.clip(
-                    _line_meta_array(tied_line_meta, 'amp_max_group', jax_key='amp_max_group_jax'),
-                    AMPLITUDE_FLOOR,
-                ),
-            )
-        ) if n_f > 0 else jnp.zeros((0,))
+        dmu_group, sig_group, amp_group = _sample_tied_line_groups(
+            tied_line_meta,
+            prior_config,
+        )
 
         vgroup = _line_meta_array(tied_line_meta, 'vgroup', jax_key='vgroup_jax', dtype=jnp.int32)
         wgroup = _line_meta_array(tied_line_meta, 'wgroup', jax_key='wgroup_jax', dtype=jnp.int32)
@@ -1759,8 +1998,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         log_frac_host = jnp.asarray(-jnp.inf)
         host_amp_out = jnp.asarray(0.0)
 
-    frac_jitter = numpyro.sample('frac_jitter', dist.HalfNormal(_cfg_halfnorm('frac_jitter')))
-    add_jitter = numpyro.sample('add_jitter', dist.HalfNormal(_cfg_halfnorm('add_jitter', ref_scale=jnp.mean(err))))
+    frac_jitter = _sample_prior(prior_config, 'frac_jitter', dist.HalfNormal(0.02))
+    add_jitter = numpyro.sample('add_jitter', _halfnormal_prior(prior_config, 'add_jitter', 0.1, ref_scale=jnp.mean(err)))
 
     continuum_model = agn_model + gal_model
     model = continuum_model + line_model
@@ -1857,7 +2096,15 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 
     student_t_df = float(prior_config.get('student_t_df', 3.0))
-    numpyro.sample('obs', dist.StudentT(df=student_t_df, loc=fiber_model, scale=sigma_tot), obs=flux)
+    spectral_likelihood_weight = spectral_likelihood_weight_from_resolving_power(
+        wave,
+        prior_config.get('resolving_power', None),
+    )
+    if emit_deterministics:
+        numpyro.deterministic('spectral_likelihood_weight', spectral_likelihood_weight)
+    if has_observed_flux:
+        pixel_log_prob = dist.StudentT(df=student_t_df, loc=fiber_model, scale=sigma_tot).log_prob(flux)
+        numpyro.factor('obs', spectral_likelihood_weight * jnp.sum(pixel_log_prob))
 
 
 def quasar_spectral_model(*args, **kwargs):

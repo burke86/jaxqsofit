@@ -113,6 +113,44 @@ def test_predictive_return_sites_include_requested_continuum_luminosities():
     assert "log_lambda_Llambda_2500_agn" in sites
     assert "log_lambda_Llambda_3000_agn" in sites
     assert "log_lambda_Llambda_5100_agn" in sites
+    assert "spectral_likelihood_weight" in sites
+
+
+def test_numpyro_geometry_reparam_config_disabled_for_map_warm_starts():
+    prior_config = {
+        "PL_slope": {"dist": "TruncatedNormal", "loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.5},
+        "log_Fe_uv_norm": {"dist": "Normal", "loc": -5.0, "scale": 0.2},
+        "log_Fe_uv_FWHM": {"dist": "LogNormal", "loc": np.log(3000.0), "scale": 0.3},
+        "gal_v_kms": {"dist": "Normal", "loc": 0.0, "scale": 150.0},
+    }
+
+    config = coremod._numpyro_geometry_reparam_config(
+        prior_config,
+        fit_pl=True,
+        fit_fe=True,
+        fit_bc=False,
+        decompose_host=True,
+    )
+
+    assert config == {}
+
+
+def test_spectral_likelihood_weight_from_resolving_power():
+    wave = np.arange(5000.0, 5010.0, 1.0)
+
+    weight = float(modelmod.spectral_likelihood_weight_from_resolving_power(wave, 2000.0))
+
+    assert weight == pytest.approx(0.36, rel=1.0e-2)
+    assert float(modelmod.spectral_likelihood_weight_from_resolving_power(wave, None)) == 1.0
+
+
+def test_from_arrays_stores_resolving_power():
+    lam, flux, err = _make_simple_spectrum()
+
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1, resolving_power=2000.0)
+
+    assert q.resolving_power == 2000.0
+    assert q.config.spectroscopy.resolving_power == 2000.0
 
 
 def test_prepare_psf_photometry_masks_invalid_and_builds_transmissions():
@@ -313,6 +351,29 @@ def test_fit_dispatch_optax(monkeypatch):
     assert called['kwargs']['plot_init'] is True
 
 
+def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+
+    called = {'kwargs': None}
+
+    def _stub_optax(**kwargs):
+        called['kwargs'] = kwargs
+
+    monkeypatch.setattr(q, 'run_fsps_optax_fit', _stub_optax)
+
+    q.config.inference.method = 'optax'
+    q.config.inference.plot_init = False
+    q.config.output.plot_init = True
+    q.config.observation.apply_mw_deredden = False
+    q.config.output.plot_fig = False
+    q.config.output.save_result = False
+    q.config.prior_config = build_default_prior_config(flux)
+    q.fit()
+
+    assert called['kwargs']['plot_init'] is True
+
+
 def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     z = 2.0
@@ -489,6 +550,87 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
     assert svi_calls[1]["wave"].shape[0] == q.wave.size
     assert svi_calls[1]["psf_filter_curves"]["trans"].shape == (2, q.wave.size)
     assert svi_calls[1]["psf_filter_curves"] is psf_filter_curves
+
+
+def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeypatch):
+    lam, flux, err = _make_wide_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.flux = flux
+    q.err = err
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.array([0.0, 0.0])
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.array([0.0, 0.0])
+    q.verbose = False
+
+    fsps_grid = coremod.FSPSTemplateGrid(
+        wave=lam,
+        templates=np.zeros((lam.size, 1)),
+        template_meta=[{"norm": 1.0}],
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        host_basis_jax=None,
+        t_obs_gyr=None,
+    )
+    monkeypatch.setattr(q, "_build_fsps_grid_for_fit", lambda **kwargs: fsps_grid)
+    monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
+
+    init_values_seen = []
+
+    def fake_init_to_value(*, values):
+        init_values_seen.append(dict(values))
+        return object()
+
+    class FakeSVIResult:
+        losses = np.array([0.0])
+        params = {}
+        state = object()
+
+    class FakeSVI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            return FakeSVIResult()
+
+    class FakeAutoDelta:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def median(self, params):
+            return {"PL_norm": np.array(1.0), "PL_slope": np.array(-1.5)}
+
+    class FakePredictive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(coremod, "init_to_value", fake_init_to_value)
+    monkeypatch.setattr(coremod, "SVI", FakeSVI)
+    monkeypatch.setattr(coremod, "AutoDelta", FakeAutoDelta)
+    monkeypatch.setattr(coremod, "Predictive", FakePredictive)
+
+    q.run_fsps_optax_fit(
+        num_steps=300,
+        use_lines=True,
+        decompose_host=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=False,
+        fit_reddening=False,
+        prior_config=build_default_prior_config(flux),
+    )
+
+    assert len(init_values_seen) == 2
+    stage2_values = init_values_seen[1]
+    assert np.allclose(stage2_values["line_dmu_group_std"], 0.0)
+    assert np.allclose(stage2_values["line_log_fwhm_delta_group_std"], 0.0)
+    assert np.all(stage2_values["line_amp_group"] > 0.0)
+    assert np.isclose(stage2_values["line_log_broad_fwhm_std"], 0.0)
+    assert np.isclose(stage2_values["line_log_narrow_fwhm_std"], 0.0)
 
 
 def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):
