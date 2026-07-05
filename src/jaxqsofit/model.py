@@ -267,11 +267,8 @@ def gaussian_bal_optical_depth_component(wave, params, metadata):
     line_lambda = jnp.asarray(metadata["line_lambda"], dtype=jnp.float64)
     v_out = jnp.maximum(params["v_out"], 0.0)
     center = line_lambda * (1.0 - v_out / C_KMS)
-    if "fwhm_kms" in params:
-        sigma_v_kms = jnp.maximum(params["fwhm_kms"], 1.0) / 2.354820045
-        sigma = jnp.maximum(jnp.abs(center) * sigma_v_kms / C_KMS, 1e-3)
-    else:
-        sigma = jnp.maximum(params["sigma"], 1e-3)
+    sigma_v_kms = jnp.maximum(params["fwhm_kms"], 1.0) / 2.354820045
+    sigma = jnp.maximum(jnp.abs(center) * sigma_v_kms / C_KMS, 1e-3)
     tau_peak = jnp.maximum(params["tau_peak"], 0.0)
     shape_power = jnp.maximum(params.get("shape_power", 2.0), 2.0)
     x = (wave - center) / sigma
