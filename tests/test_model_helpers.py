@@ -23,6 +23,7 @@ from jaxqsofit.model import (
     build_fsps_template_grid,
     build_tied_line_metadata,
     build_tied_line_meta_from_linelist,
+    gaussian_bal_optical_depth_component,
     negative_bal_component,
     quasar_spectral_model,
     qso_fsps_joint_model,
@@ -42,6 +43,27 @@ def test_extract_line_table_from_prior_config_uses_canonical_layout():
 
 def test_package_enables_jax_x64_explicitly():
     assert jax.config.jax_enable_x64 is True
+
+
+def test_gaussian_bal_optical_depth_component_uses_velocity_fwhm_width():
+    line_lambda = 1549.06
+    v_out = 6000.0
+    fwhm_kms = 8000.0
+    center = line_lambda * (1.0 - v_out / model_mod.C_KMS)
+    sigma_lambda = center * (fwhm_kms / 2.354820045) / model_mod.C_KMS
+    wave = jnp.asarray([center, center + sigma_lambda])
+    tau = gaussian_bal_optical_depth_component(
+        wave,
+        {
+            "v_out": jnp.asarray(v_out),
+            "fwhm_kms": jnp.asarray(fwhm_kms),
+            "tau_peak": jnp.asarray(1.0),
+            "shape_power": jnp.asarray(2.0),
+        },
+        {"line_lambda": line_lambda},
+    )
+
+    np.testing.assert_allclose(np.asarray(tau), np.asarray([1.0, np.exp(-0.5)]), rtol=1e-6)
 
 
 def test_public_model_names_delegate_to_legacy_implementations(monkeypatch):
