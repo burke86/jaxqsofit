@@ -7,7 +7,9 @@ import pytest
 import jaxqsofit
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
-from jaxqsofit import JAXQSOFit, build_default_prior_config
+from jaxqsofit import JAXQSOFit
+from jaxqsofit.config import PriorConfig
+from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 from jaxqsofit.results import FitResult, PredictionResult
 
 
