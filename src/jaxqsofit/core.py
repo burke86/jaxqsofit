@@ -1402,6 +1402,10 @@ class JAXQSOFit:
                 covering_loc=float(bal_cfg.covering_loc),
                 covering_scale=float(bal_cfg.covering_scale),
                 covering_high=float(bal_cfg.covering_high),
+                fwhm_kms_loc=float(bal_cfg.fwhm_kms_loc),
+                fwhm_kms_scale=float(bal_cfg.fwhm_kms_scale),
+                fwhm_kms_low=float(bal_cfg.fwhm_kms_low),
+                fwhm_kms_high=float(bal_cfg.fwhm_kms_high),
             )
             if bool(fit_bal)
             else ()

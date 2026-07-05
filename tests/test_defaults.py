@@ -270,6 +270,7 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     assert comps[2].metadata["shared_parameter_sites"]["v_out"] == "custom_bal_v_out"
     assert comps[2].metadata["shared_parameter_sites"]["tau_peak"] == "custom_bal_tau_peak"
     assert comps[2].metadata["shared_parameter_sites"]["covering"] == "custom_bal_covering"
+    assert comps[2].metadata["shared_parameter_sites"]["fwhm_kms"] == "custom_bal_fwhm_kms"
     assert np.isclose(comps[0].parameter_priors["tau_peak"]["scale"], 0.25)
     assert np.isclose(comps[1].parameter_priors["tau_peak"]["scale"], 0.25)
     tau_cfg = comps[2].parameter_priors["tau_peak"]
@@ -287,6 +288,12 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     assert v_out_cfg["scale"] == 2500.0
     assert v_out_cfg["low"] == 3000.0
     assert v_out_cfg["high"] == 12000.0
+    fwhm_cfg = comps[2].parameter_priors["fwhm_kms"]
+    assert fwhm_cfg["dist"] == "TruncatedNormal"
+    assert fwhm_cfg["loc"] == 8000.0
+    assert fwhm_cfg["scale"] == 2500.0
+    assert fwhm_cfg["low"] == 2000.0
+    assert fwhm_cfg["high"] == 15000.0
     shape_cfg = comps[2].parameter_priors["shape_power"]
     assert shape_cfg["dist"] == "TruncatedNormal"
     assert shape_cfg["loc"] == 2.0
@@ -301,6 +308,10 @@ def test_build_default_bal_components_accepts_prior_overrides():
         covering_loc=0.4,
         covering_scale=0.1,
         covering_high=0.85,
+        fwhm_kms_loc=6000.0,
+        fwhm_kms_scale=1500.0,
+        fwhm_kms_low=2500.0,
+        fwhm_kms_high=12000.0,
     )
 
     for comp in comps:
@@ -309,6 +320,11 @@ def test_build_default_bal_components_accepts_prior_overrides():
         assert np.isclose(covering_cfg["loc"], 0.4)
         assert np.isclose(covering_cfg["scale"], 0.1)
         assert np.isclose(covering_cfg["high"], 0.85)
+        fwhm_cfg = comp.parameter_priors["fwhm_kms"]
+        assert np.isclose(fwhm_cfg["loc"], 6000.0)
+        assert np.isclose(fwhm_cfg["scale"], 1500.0)
+        assert np.isclose(fwhm_cfg["low"], 2500.0)
+        assert np.isclose(fwhm_cfg["high"], 12000.0)
 
 
 def test_default_line_table_contains_expanded_uv_complexes():

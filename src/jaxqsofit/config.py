@@ -80,6 +80,10 @@ class BALConfig:
     covering_loc: float = 0.15
     covering_scale: float = 0.12
     covering_high: float = 0.70
+    fwhm_kms_loc: float = 8000.0
+    fwhm_kms_scale: float = 2500.0
+    fwhm_kms_low: float = 2000.0
+    fwhm_kms_high: float = 15000.0
 
 
 @dataclass
