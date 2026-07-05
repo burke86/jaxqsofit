@@ -269,7 +269,7 @@ DEFAULT_LINE_CONFIG: Dict[str, Any] = {
 
 # Additional narrow lines commonly used for emission-line galaxies (ELGs).
 # These can be appended to the default line list via
-# build_default_prior_config(..., include_elg_narrow_lines=True).
+# _build_default_prior_config(..., include_elg_narrow_lines=True).
 DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=3726.03, compname='OII', minwav=3650, maxwav=3800, linename='OII3726', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
     _line_row(lam=3728.82, compname='OII', minwav=3650, maxwav=3800, linename='OII3729', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
@@ -474,7 +474,7 @@ def build_default_bal_components(
     )
 
 
-def build_default_prior_config(
+def _build_default_prior_config(
     flux: np.ndarray,
     line_config: Dict[str, Any] | None = None,
     include_elg_narrow_lines: bool = False,

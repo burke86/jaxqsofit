@@ -9,7 +9,7 @@ import jax.numpy as jnp
 import numpyro
 import numpyro.distributions as dist
 
-from .defaults import build_default_prior_config
+from .defaults import _build_default_prior_config
 from .model import (
     _balmer_continuum_jax,
     _broad_line_mask,
@@ -67,7 +67,7 @@ def _as_config(config: SpectralComponentConfig | None) -> SpectralComponentConfi
 def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
     """Return a jaxqsofit-style prior config for external component fits."""
     if cfg.line_prior_config is None:
-        prior = build_default_prior_config(
+        prior = _build_default_prior_config(
             np.asarray([max(float(cfg.line_flux_scale_mjy), 1.0e-8)], dtype=float),
             include_elg_narrow_lines=bool(cfg.include_elg_narrow_lines),
             include_high_ionization_lines=bool(cfg.include_high_ionization_lines),

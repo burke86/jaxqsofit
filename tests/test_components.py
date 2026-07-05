@@ -3,7 +3,7 @@ import jax
 from numpyro.handlers import seed, substitute, trace
 
 from jaxqsofit.components import SpectralComponentConfig, evaluate_joint_spectral_components
-from jaxqsofit.defaults import build_default_prior_config
+from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 
 
 def test_evaluate_joint_spectral_components_uses_external_continuum():
