@@ -205,7 +205,42 @@ Line-table customization
 
 The built-in tied-line model is seeded from
 :data:`jaxqsofit.defaults.DEFAULT_LINE_PRIOR_ROWS`. Each row is a plain
-dictionary. The most commonly edited fields are:
+dictionary. See :doc:`api/defaults` for the defaults API reference and the
+`rendered defaults source
+<https://jaxqsofit.readthedocs.io/en/latest/_modules/jaxqsofit/defaults.html>`__
+for the complete line-list table values and helper functions, including
+``build_default_bal_components``.
+
+Optional line-list expansions are controlled when constructing the prior
+configuration from a spectrum:
+
+.. code-block:: python
+
+   from jaxqsofit import PriorConfig
+
+   cfg.prior_config = PriorConfig.from_spectrum(
+       flux=flux,
+       redshift=z,
+       include_elg_narrow_lines=True,
+       include_high_ionization_lines=True,
+   )
+
+``include_elg_narrow_lines=True`` appends
+:data:`jaxqsofit.defaults.DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS`, a denser
+narrow-line list for emission-line-galaxy and host-dominated spectra. It adds
+features such as the resolved [O II] doublet, [Ne III], additional Balmer
+narrow lines, He I, [O I], [N II], [S II], near-IR Paschen lines, and [S III].
+Leave it off for ordinary broad-line quasar fits when the extra weak narrow
+features are outside the wavelength range, not scientifically needed, or would
+only add unconstrained amplitudes.
+
+``include_high_ionization_lines=True`` appends
+:data:`jaxqsofit.defaults.DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS`, a compact
+set of high-ionization/coronal narrow lines such as [Ne V], [Fe VII], and
+[Fe X]. Enable it for AGN spectra where those features are expected or visible;
+otherwise keep it disabled to avoid extra weak-line parameters.
+
+The most commonly edited row fields are:
 
 ``linename``
    Output component name used in metadata and plots. Names containing

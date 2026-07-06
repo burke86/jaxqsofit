@@ -1,0 +1,107 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
+      - "notebooks/**"
+      - "src/**"
+      - "pyproject.toml"
+  pull_request:
+    paths:
+      - ".github/workflows/docs.yml"
+      - "docs/**"
+      - "notebooks/**"
+      - "src/**"
+      - "pyproject.toml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  tutorial-docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    env:
+      MPLBACKEND: Agg
+      MPLCONFIGDIR: ${{ github.workspace }}/.cache/matplotlib
+      JAX_PLATFORM_NAME: cpu
+      XLA_PYTHON_CLIENT_PREALLOCATE: "false"
+      NBSPHINX_EXECUTE: always
+      DUSTMAPS_CONFIG_FNAME: ${{ github.workspace }}/.dustmapsrc
+      DUSTMAPS_DATA_DIR: ${{ github.workspace }}/.cache/dustmaps
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install system docs deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+
+      - name: Install package and docs deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install "jax==0.4.31" "jaxlib==0.4.31" "numpyro==0.19.0"
+          pip install -e .
+          pip install -r docs/requirements.txt
+          pip install astroquery
+
+      - name: Configure dustmaps data directory
+        run: |
+          mkdir -p "${DUSTMAPS_DATA_DIR}" "${MPLCONFIGDIR}"
+          python -c "import json, os; open(os.environ['DUSTMAPS_CONFIG_FNAME'], 'w').write(json.dumps({'data_dir': os.environ['DUSTMAPS_DATA_DIR']}))"
+
+      - name: Restore SFD dust map cache
+        id: cache-sfd
+        uses: actions/cache@v4
+        with:
+          path: .cache/dustmaps
+          key: dustmaps-sfd-v1
+
+      - name: Download SFD dust maps on cache miss
+        if: steps.cache-sfd.outputs.cache-hit != 'true'
+        run: |
+          python -c "from dustmaps.sfd import fetch; fetch()"
+          test -s "${DUSTMAPS_DATA_DIR}/sfd/SFD_dust_4096_ngp.fits"
+          test -s "${DUSTMAPS_DATA_DIR}/sfd/SFD_dust_4096_sgp.fits"
+
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
+            https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
+            --output tempdata.h5
+          test -s tempdata.h5
+
+      - name: Make SSP template visible to linked notebooks
+        run: |
+          ln -sf ../tempdata.h5 docs/tempdata.h5
+
+      - name: Build docs with executed tutorials
+        run: |
+          sphinx-build -b html docs docs/_build/html
+
+      - name: Upload rendered docs
+        uses: actions/upload-artifact@v4
+        with:
+          name: docs-html
+          path: docs/_build/html/
