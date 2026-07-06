@@ -74,6 +74,132 @@ Set ``enabled=False`` for quasar-dominated spectra or quick tests. When the
 host is enabled, ``dsps_ssp_fn`` must point to a valid DSPS SSP HDF5 file; a
 missing or wrong path is one of the most common setup failures.
 
+The default host assumption is ``sfh_model="delayed"``, a delayed-:math:`\tau`
+star-formation history. In this model the host star-formation rate has the
+shape
+
+.. math::
+
+   \mathrm{SFR}(t) \propto t\,\exp(-t / \tau),
+
+from the onset of star formation until the fitted population age. The fit
+therefore samples a small set of physical host parameters such as
+``sfh_age_gyr``, ``sfh_tau_gyr``, stellar mass, and metallicity. This is the
+more stable default for most spectra.
+
+Use ``sfh_model="flexible"`` when the spectrum has enough host signal to
+support a less restrictive decomposition:
+
+.. code-block:: python
+
+   cfg.host = HostConfig(
+       enabled=True,
+       sfh_model="flexible",
+       dsps_ssp_fn="tempdata.h5",
+   )
+
+The flexible model fits free SSP template weights across the configured age
+and metallicity grid. It can absorb more detailed stellar-population
+structure, but it is higher-dimensional and is easier to underconstrain when
+host absorption features or wavelength coverage are weak. This is closest in
+spirit to the traditional PyQSOFit-style host decomposition: the host
+continuum is represented as a flexible mixture of stellar templates rather
+than by a parametric star-formation history. The tradeoff is that the fitted
+weights are less directly physical than the delayed-SFH age, tau, mass, and
+metallicity parameters.
+
+PSF photometry calibration
+--------------------------
+
+Optional PSF-aperture magnitudes add a broadband calibration likelihood on top
+of the spectral likelihood. They help constrain gray flux-calibration offsets
+and, when a host is enabled, help distinguish compact components from extended
+components. The AGN continuum and broad lines are treated as unresolved; the
+stellar host and narrow lines are multiplied by an aperture factor
+:math:`\eta_{\rm PSF}`.
+
+.. code-block:: python
+
+   from jaxqsofit import PSFPhotometryData
+
+   cfg.psf_photometry = PSFPhotometryData(
+       filter_names=["u", "g", "r", "i", "z"],
+       magnitudes=[18.9, 18.2, 17.9, 17.7, 17.6],
+       magnitude_errors=[0.05, 0.03, 0.03, 0.03, 0.05],
+   )
+
+For a gray magnitude offset :math:`\Delta m_{\rm PSF}`, the scale factor is
+
+.. math::
+
+   s_{\rm PSF} = 10^{-0.4\,\Delta m_{\rm PSF}}.
+
+The model spectrum compared to the PSF photometry is
+
+.. math::
+
+   f_{\lambda}^{\rm PSF}
+   =
+   s_{\rm PSF}
+   \left[
+   f_{\lambda}^{\rm AGN}
+   + f_{\lambda}^{\rm broad}
+   + \eta_{\rm PSF}
+     \left(f_{\lambda}^{\rm host} + f_{\lambda}^{\rm narrow}\right)
+   \right].
+
+For each band :math:`b`, ``jaxqsofit`` computes a synthetic AB magnitude
+:math:`m_b^{\rm syn}` from this PSF-space spectrum and applies
+
+.. math::
+
+   m_b^{\rm obs}
+   \sim
+   \mathcal{N}
+   \left(
+   m_b^{\rm syn},
+   \sqrt{\sigma_{m,b}^2 + \sigma_{\rm phot,extra}^2}
+   \right),
+
+where :math:`\sigma_{m,b}` is the catalog magnitude uncertainty and
+:math:`\sigma_{\rm phot,extra}` is an inferred extra photometric scatter term.
+The PSF bands should overlap the observed spectral wavelength range. This is a
+spectral recalibration constraint, not full broadband SED fitting; use
+``jaxsedfit`` for full joint SED plus spectroscopy modeling.
+
+Comparison with PyQSOFit
+------------------------
+
+``jaxqsofit`` follows the same broad decomposition idea as PyQSOFit: a smooth
+AGN continuum, optional Fe II and Balmer-continuum components, a host-galaxy
+continuum, and Gaussian emission-line complexes. The line-table fields also
+keep the familiar PyQSOFit-style concepts of line names, component names,
+velocity ties, width ties, and fixed flux-ratio ties.
+
+The main difference is the modeling and inference backend. ``jaxqsofit`` uses
+JAX/NumPyro, so the model can be optimized or sampled with differentiable
+probabilistic inference, and posterior predictive draws are available for
+component spectra and line measurements. This makes it natural to propagate
+uncertainties through quantities such as broad-line FWHM and luminosity.
+Because the continuum, host, Fe II, Balmer continuum, and line components are
+fit jointly in one probabilistic model, ``jaxqsofit`` also avoids the
+redshift-dependent systematics that can arise when the continuum is first fit
+in a fixed set of rest-frame windows and then subtracted before line fitting.
+In that sense it is a fully Bayesian alternative to a staged
+window-continuum workflow.
+
+The host model also differs. PyQSOFit-style host decomposition is closest to
+``sfh_model="flexible"`` in ``jaxqsofit``: the host is represented as a
+flexible mixture of stellar templates. The default ``sfh_model="delayed"``
+instead imposes a physical delayed-:math:`\tau` star-formation history, giving
+more interpretable parameters at the cost of a stronger assumption.
+
+The PSF-photometry option is another extension beyond a pure spectrum-only
+fit. It does not turn ``jaxqsofit`` into a full SED fitter, but it can use
+overlapping PSF magnitudes to constrain flux calibration and compact-versus-
+extended light. For full broadband SED plus spectroscopy modeling, use
+``jaxsedfit``.
+
 Line-table customization
 ------------------------
 
