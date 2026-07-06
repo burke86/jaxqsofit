@@ -72,7 +72,8 @@ def _fit_once(
     optax_lr: float,
     dsps_ssp_fn: str,
 ) -> dict[str, Any]:
-    from jaxqsofit import JAXQSOFit, build_default_prior_config
+    from jaxqsofit import JAXQSOFit
+    from jaxqsofit.defaults import build_default_prior_config
 
     prior_config = build_default_prior_config(flux)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=184.0307, dec=-2.2383)
