@@ -96,6 +96,13 @@ class ContinuumConfig:
     fit_polynomial_tilt: bool = True
     fit_reddening: bool = True
     polynomial_order: int = 2
+    broadening_convolution: str = "fft"
+
+    def __post_init__(self) -> None:
+        method = str(self.broadening_convolution).lower()
+        if method not in {"fft", "direct"}:
+            raise ValueError("ContinuumConfig.broadening_convolution must be 'fft' or 'direct'.")
+        self.broadening_convolution = method
 
 
 @dataclass

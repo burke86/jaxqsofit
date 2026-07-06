@@ -305,6 +305,19 @@ def _many_gauss_lnlam(lnlam, amps, mus, sigs):
     return jnp.sum(amps[None, :] * jnp.exp(-0.5 * z * z), axis=1)
 
 
+def _split_many_gauss_lnlam(lnlam, amps, mus, sigs, broad_mask, *, return_profiles=False):
+    """Evaluate tied Gaussian lines once and split them into broad/narrow sums."""
+    profiles_pixel_major = amps[None, :] * jnp.exp(
+        -0.5 * ((lnlam[:, None] - mus[None, :]) / sigs[None, :]) ** 2
+    )
+    total = jnp.sum(profiles_pixel_major, axis=1)
+    broad = jnp.sum(profiles_pixel_major * broad_mask[None, :], axis=1)
+    narrow = total - broad
+    if return_profiles:
+        return total, broad, narrow, jnp.swapaxes(profiles_pixel_major, 0, 1)
+    return total, broad, narrow, None
+
+
 def _line_meta_array(meta, key, *, jax_key=None, dtype=jnp.float64):
     """Return JAX-ready line metadata, preferring precomputed static arrays."""
     if jax_key is not None and jax_key in meta:
@@ -493,7 +506,7 @@ def _synth_ab_mag_from_grid(wave_obs, flam_obs, filt_trans):
     return -2.5 * jnp.log10(jnp.clip(fnu, 1e-30, None)) - 48.60
 
 
-def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms):
+def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms, *, convolution_method="fft"):
     """Apply LOS velocity shift and Gaussian broadening to one spectrum."""
     sigma_ln = jnp.maximum(sigma_kms / C_KMS, 1e-5)
 
@@ -501,7 +514,14 @@ def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms)
     shift_ln = v_kms / C_KMS
     shifted_wave = jnp.exp(lnwave - shift_ln)
     shifted = jnp.interp(shifted_wave, wave, spectrum, left=0.0, right=0.0)
-    return _convolve_velocity_space(lnwave, shifted, sigma_ln, radius_mult=5.0, max_half=512)
+    return _convolve_velocity_space(
+        lnwave,
+        shifted,
+        sigma_ln,
+        radius_mult=5.0,
+        max_half=512,
+        method=convolution_method,
+    )
 
 
 def _gaussian_kernel1d(sigma_pix, radius_mult=5.0, max_half=512):
@@ -515,7 +535,7 @@ def _gaussian_kernel1d(sigma_pix, radius_mult=5.0, max_half=512):
     return k / jnp.maximum(jnp.sum(k), 1e-30)
 
 
-def _convolve_same_length(signal, kernel):
+def _convolve_same_length_direct(signal, kernel):
     """Convolve and center-crop so the output matches the signal length."""
     signal = jnp.asarray(signal)
     kernel = jnp.asarray(kernel)
@@ -526,7 +546,35 @@ def _convolve_same_length(signal, kernel):
     return jax.lax.dynamic_slice(full, (start,), (n,))
 
 
-def _convolve_velocity_space(lnwave, signal, sigma_ln, radius_mult=5.0, max_half=512):
+def _convolve_same_length_fft(signal, kernel):
+    """Linear FFT convolution with the same centered crop as the direct path."""
+    signal = jnp.asarray(signal)
+    kernel = jnp.asarray(kernel)
+    n = signal.shape[0]
+    k = kernel.shape[0]
+    full_len = n + k - 1
+    signal_fft = jnp.fft.rfft(signal, n=full_len)
+    kernel_fft = jnp.fft.rfft(kernel, n=full_len)
+    full = jnp.fft.irfft(signal_fft * kernel_fft, n=full_len)
+    start = (k - 1) // 2
+    return jax.lax.dynamic_slice(full, (start,), (n,))
+
+
+def _convolve_same_length(signal, kernel, *, method="fft"):
+    """Convolve with a selectable JAX backend and direct fallback for short arrays."""
+    signal = jnp.asarray(signal)
+    kernel = jnp.asarray(kernel)
+    method = str(method).lower()
+    if method == "direct":
+        return _convolve_same_length_direct(signal, kernel)
+    if method != "fft":
+        raise ValueError("convolution method must be 'fft' or 'direct'.")
+    if signal.shape[0] <= kernel.shape[0]:
+        return _convolve_same_length_direct(signal, kernel)
+    return _convolve_same_length_fft(signal, kernel)
+
+
+def _convolve_velocity_space(lnwave, signal, sigma_ln, radius_mult=5.0, max_half=512, *, method="fft"):
     """Convolve a spectrum with a Gaussian of fixed width in log-wavelength.
 
     The input grid may be linear, logarithmic, or otherwise monotonic. The
@@ -541,15 +589,29 @@ def _convolve_velocity_space(lnwave, signal, sigma_ln, radius_mult=5.0, max_half
     sigma_pix = jnp.maximum(sigma_ln, 1e-8) / dln
     kern = _gaussian_kernel1d(sigma_pix, radius_mult=radius_mult, max_half=max_half)
     signal_uniform = jnp.interp(ln_uniform, lnwave, signal, left=0.0, right=0.0)
-    convolved_uniform = _convolve_same_length(signal_uniform, kern)
+    convolved_uniform = _convolve_same_length(signal_uniform, kern, method=method)
     return jnp.interp(lnwave, ln_uniform, convolved_uniform, left=0.0, right=0.0)
 
 
-def _fe_template_component(wave, wave_template, flux_template, norm, fwhm_kms, shift_frac, base_fwhm_kms=900.0):
+def _fe_template_component(
+    wave,
+    wave_template,
+    flux_template,
+    norm,
+    fwhm_kms,
+    shift_frac,
+    base_fwhm_kms=900.0,
+    *,
+    template_on_wave=None,
+    convolution_method="fft",
+):
     """Generate a broadened and shifted Fe template contribution."""
     # Enforce physically non-negative Fe pseudo-continuum and model broadening in velocity space.
-    flux_template = jnp.maximum(flux_template, 0.0)
-    template_on_wave = jnp.interp(wave, wave_template, flux_template, left=0.0, right=0.0)
+    if template_on_wave is None:
+        flux_template = jnp.maximum(flux_template, 0.0)
+        template_on_wave = jnp.interp(wave, wave_template, flux_template, left=0.0, right=0.0)
+    else:
+        template_on_wave = jnp.maximum(jnp.asarray(template_on_wave, dtype=jnp.float64), 0.0)
 
     min_fwhm_kms = 1.01 * base_fwhm_kms
     transition_kms = jnp.maximum(0.01 * base_fwhm_kms, 10.0)
@@ -558,12 +620,18 @@ def _fe_template_component(wave, wave_template, flux_template, norm, fwhm_kms, s
     sigma_kms = fwhm_eff / (2.0 * jnp.sqrt(2.0 * jnp.log(2.0)))
     v_kms = C_KMS * shift_frac
     lnwave = jnp.log(wave)
-    model = _shift_and_broaden_single_spectrum_lnlam(lnwave, template_on_wave, v_kms, sigma_kms)
+    model = _shift_and_broaden_single_spectrum_lnlam(
+        lnwave,
+        template_on_wave,
+        v_kms,
+        sigma_kms,
+        convolution_method=convolution_method,
+    )
     return norm * model
 
 
-def _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel):
-    """Compute Balmer continuum template with edge-normalized blackbody shape."""
+def _balmer_static_terms_jax(wave, balmer_te=15000.0):
+    """Return wavelength-only Balmer continuum terms for a fixed electron temperature."""
     lam_be = 3646.0
     h = 6.62607015e-27
     c = 2.99792458e10
@@ -571,6 +639,7 @@ def _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel):
 
     wave = jnp.asarray(wave)
     lam_cm = wave * 1e-8
+    balmer_te = jnp.asarray(balmer_te, dtype=jnp.float64)
 
     expo = jnp.clip((h * c) / (lam_cm * kb * balmer_te), 1e-9, 700.0)
     bb = (2.0 * h * c**2 / lam_cm**5) / jnp.expm1(expo)
@@ -582,14 +651,37 @@ def _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel):
     bb_edge = (2.0 * h * c**2 / lam_be_cm**5) / jnp.expm1(expo_edge)
     bb_edge = bb_edge * 1e-8 * jnp.pi
     bb = bb / jnp.maximum(bb_edge, 1e-30)
+    tau_shape = (wave / lam_be) ** 3
+    below_edge = wave <= lam_be
+    return bb, tau_shape, below_edge
 
-    tau = balmer_tau * (wave / lam_be) ** 3
+
+def _balmer_continuum_jax(
+    wave,
+    balmer_norm,
+    balmer_te,
+    balmer_tau,
+    balmer_vel,
+    *,
+    balmer_static_terms=None,
+    convolution_method="fft",
+):
+    """Compute Balmer continuum template with edge-normalized blackbody shape."""
+    if balmer_static_terms is None:
+        bb, tau_shape, below_edge = _balmer_static_terms_jax(wave, balmer_te=balmer_te)
+    else:
+        bb, tau_shape, below_edge = balmer_static_terms
+        bb = jnp.asarray(bb, dtype=jnp.float64)
+        tau_shape = jnp.asarray(tau_shape, dtype=jnp.float64)
+        below_edge = jnp.asarray(below_edge, dtype=bool)
+
+    tau = balmer_tau * tau_shape
     bc = balmer_norm * (1.0 - jnp.exp(-tau)) * bb
-    bc = jnp.where(wave <= lam_be, bc, 0.0)
+    bc = jnp.where(below_edge, bc, 0.0)
 
     lnwave = jnp.log(wave)
     sigma_ln = jnp.maximum(balmer_vel / C_KMS, 1e-5)
-    bc_conv = _convolve_velocity_space(lnwave, bc, sigma_ln)
+    bc_conv = _convolve_velocity_space(lnwave, bc, sigma_ln, method=convolution_method)
     return bc_conv
 
 
@@ -1106,6 +1198,7 @@ def reconstruct_posterior_components(
         templates = np.zeros((wave_out.size, n_templates), dtype=float)
     lnwave = np.log(wave_out)
     custom_components = normalize_custom_components(custom_components)
+    convolution_method = str(prior_config.get("convolution_method", "fft")).lower()
 
     n_total = int(np.asarray(next(iter(samples.values()))).shape[0]) if len(samples) > 0 else 0
     if n_total == 0:
@@ -1193,7 +1286,13 @@ def reconstruct_posterior_components(
     ):
         """Evaluate built-in host, continuum, Fe II, Balmer, and polynomial terms for one draw."""
         host_intrinsic = templates_j @ weights_i
-        host_model = _shift_and_broaden_single_spectrum_lnlam(lnwave_j, host_intrinsic, gal_v_i, gal_sigma_i)
+        host_model = _shift_and_broaden_single_spectrum_lnlam(
+            lnwave_j,
+            host_intrinsic,
+            gal_v_i,
+            gal_sigma_i,
+            convolution_method=convolution_method,
+        )
 
         pl_model = _powerlaw_jax(
             wave_j,
@@ -1217,6 +1316,7 @@ def reconstruct_posterior_components(
             fe_uv_norm_i,
             fe_uv_fwhm_i,
             fe_uv_shift_i,
+            convolution_method=convolution_method,
         )
         fe_op_model = _fe_template_component(
             wave_j,
@@ -1225,8 +1325,16 @@ def reconstruct_posterior_components(
             fe_op_norm_i,
             fe_op_fwhm_i,
             fe_op_shift_i,
+            convolution_method=convolution_method,
         )
-        bc_model = _balmer_continuum_jax(wave_j, balmer_norm_i, 15000.0, balmer_tau_i, balmer_vel_i)
+        bc_model = _balmer_continuum_jax(
+            wave_j,
+            balmer_norm_i,
+            15000.0,
+            balmer_tau_i,
+            balmer_vel_i,
+            convolution_method=convolution_method,
+        )
         if fit_reddening:
             fe_uv_model = fe_uv_model * reddening_atten
             fe_op_model = fe_op_model * reddening_atten
@@ -1551,6 +1659,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          fit_poly_order=2,
                          fit_reddening=False, z_qso=0.0, psf_mags=None, psf_mag_errs=None,
                          psf_filter_curves=None, use_psf_phot=False,
+                         fe_uv_flux_on_wave=None, fe_op_flux_on_wave=None,
+                         balmer_bb_shape=None, balmer_tau_shape=None, balmer_below_edge=None,
                          return_line_components=True,
                          emit_deterministics=True,
                          custom_components: Sequence[CustomComponentSpec] | None = None,
@@ -1566,8 +1676,18 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     fe_uv_flux = _np_to_jnp(fe_uv_flux)
     fe_op_wave = _np_to_jnp(fe_op_wave)
     fe_op_flux = _np_to_jnp(fe_op_flux)
+    fe_uv_flux_on_wave = None if fe_uv_flux_on_wave is None else _np_to_jnp(fe_uv_flux_on_wave)
+    fe_op_flux_on_wave = None if fe_op_flux_on_wave is None else _np_to_jnp(fe_op_flux_on_wave)
+    balmer_static_terms = None
+    if balmer_bb_shape is not None and balmer_tau_shape is not None and balmer_below_edge is not None:
+        balmer_static_terms = (
+            _np_to_jnp(balmer_bb_shape),
+            _np_to_jnp(balmer_tau_shape),
+            jnp.asarray(balmer_below_edge, dtype=bool),
+        )
     z_qso = jnp.asarray(z_qso, dtype=jnp.float64)
     prior_config = _materialize_prior_mapping(prior_config)
+    convolution_method = str(prior_config.get("convolution_method", "fft")).lower()
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
     bal_absorption_components = tuple(
@@ -1738,13 +1858,39 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         if fit_reddening else jnp.ones_like(wave)
     )
     if fit_fe:
-        fe_uv_model_intrinsic = _fe_template_component(wave, fe_uv_wave, fe_uv_flux, fe_uv_norm, fe_uv_fwhm, fe_uv_shift)
-        fe_op_model_intrinsic = _fe_template_component(wave, fe_op_wave, fe_op_flux, fe_op_norm, fe_op_fwhm, fe_op_shift)
+        fe_uv_model_intrinsic = _fe_template_component(
+            wave,
+            fe_uv_wave,
+            fe_uv_flux,
+            fe_uv_norm,
+            fe_uv_fwhm,
+            fe_uv_shift,
+            template_on_wave=fe_uv_flux_on_wave,
+            convolution_method=convolution_method,
+        )
+        fe_op_model_intrinsic = _fe_template_component(
+            wave,
+            fe_op_wave,
+            fe_op_flux,
+            fe_op_norm,
+            fe_op_fwhm,
+            fe_op_shift,
+            template_on_wave=fe_op_flux_on_wave,
+            convolution_method=convolution_method,
+        )
     else:
         fe_uv_model_intrinsic = jnp.zeros_like(wave)
         fe_op_model_intrinsic = jnp.zeros_like(wave)
     if fit_bc:
-        bc_model_intrinsic = _balmer_continuum_jax(wave, balmer_norm, balmer_te, balmer_tau, balmer_vel)
+        bc_model_intrinsic = _balmer_continuum_jax(
+            wave,
+            balmer_norm,
+            balmer_te,
+            balmer_tau,
+            balmer_vel,
+            balmer_static_terms=balmer_static_terms,
+            convolution_method=convolution_method,
+        )
     else:
         bc_model_intrinsic = jnp.zeros_like(wave)
     pl_model = pl_model_intrinsic * reddening_atten
@@ -1845,6 +1991,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             gal_intrinsic_total,
             gal_v_kms,
             gal_sigma_kms,
+            convolution_method=convolution_method,
         )
         gal_model_intrinsic = host_aperture_scale * gal_model_intrinsic_total
     else:
@@ -1888,13 +2035,23 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         amps = amp_group[fgroup] * _line_meta_array(tied_line_meta, 'flux_ratio', jax_key='flux_ratio_jax')
         mus = tied_line_meta['ln_lambda0'] + dmu
         line_component_broad_mask = _line_meta_array(tied_line_meta, 'broad_mask', jax_key='broad_mask_jax')
-        line_component_profiles = amps[:, None] * jnp.exp(
-            -0.5 * ((lnwave[None, :] - mus[:, None]) / sigs[:, None]) ** 2
-        )
 
         if line_components_are_split:
-            line_model_broad_intrinsic = _many_gauss_lnlam(lnwave, amps * line_component_broad_mask, mus, sigs)
-            line_model_narrow_intrinsic = _many_gauss_lnlam(lnwave, amps * (1.0 - line_component_broad_mask), mus, sigs)
+            (
+                line_model_intrinsic,
+                line_model_broad_intrinsic,
+                line_model_narrow_intrinsic,
+                line_component_profiles,
+            ) = _split_many_gauss_lnlam(
+                lnwave,
+                amps,
+                mus,
+                sigs,
+                line_component_broad_mask,
+                return_profiles=bool(emit_deterministics),
+            )
+            if line_component_profiles is None:
+                line_component_profiles = jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
             line_model_broad_intrinsic = line_model_broad_intrinsic + custom_line_broad_intrinsic
             line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
             line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
@@ -1902,6 +2059,11 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             line_model_intrinsic = _many_gauss_lnlam(lnwave, amps, mus, sigs) + custom_line_broad_intrinsic + custom_line_narrow_intrinsic
             line_model_broad_intrinsic = jnp.zeros_like(wave)
             line_model_narrow_intrinsic = jnp.zeros_like(wave)
+            line_component_profiles = (
+                amps[:, None] * jnp.exp(-0.5 * ((lnwave[None, :] - mus[:, None]) / sigs[:, None]) ** 2)
+                if emit_deterministics
+                else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+            )
         if emit_deterministics:
             numpyro.deterministic('line_amp_per_component', amps)
             numpyro.deterministic('line_mu_per_component', mus)

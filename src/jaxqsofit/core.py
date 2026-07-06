@@ -52,6 +52,7 @@ from .model import (
     C_KMS,
     _continuum_output_waves_from_prior_config,
     _extract_line_table_from_prior_config,
+    _balmer_static_terms_jax,
     _format_wave_label,
     _get_sfd_query,
     _normalize_template_flux,
@@ -995,6 +996,7 @@ class JAXQSOFit:
             fe_uv_flux=self.fe_uv_flux,
             fe_op_wave=self.fe_op_wave,
             fe_op_flux=self.fe_op_flux,
+            **self._static_component_cache_kwargs(),
             use_lines=use_lines,
             prior_config=prior_config,
             decompose_host=decompose_host,
@@ -1220,6 +1222,16 @@ class JAXQSOFit:
             _state=state,
         )
 
+    def _static_component_cache_kwargs(self) -> dict:
+        """Return precomputed wavelength-grid component caches when available."""
+        return {
+            "fe_uv_flux_on_wave": getattr(self, "_fe_uv_flux_on_wave", None),
+            "fe_op_flux_on_wave": getattr(self, "_fe_op_flux_on_wave", None),
+            "balmer_bb_shape": getattr(self, "_balmer_bb_shape", None),
+            "balmer_tau_shape": getattr(self, "_balmer_tau_shape", None),
+            "balmer_below_edge": getattr(self, "_balmer_below_edge", None),
+        }
+
     @classmethod
     def load_result(cls, *args, **kwargs) -> FitResult:
         """Load a posterior bundle and wrap it in a :class:`FitResult`."""
@@ -1276,6 +1288,7 @@ class JAXQSOFit:
         fit_poly = bool(cont_cfg.fit_polynomial_tilt)
         fit_reddening = bool(cont_cfg.fit_reddening)
         fit_poly_order = int(cont_cfg.polynomial_order)
+        broadening_convolution = str(cont_cfg.broadening_convolution).lower()
         method = str(infer_cfg.method)
         self._posterior_state = _PosteriorState(method=method)
         fsps_age_grid = host_cfg.age_grid_gyr
@@ -1382,6 +1395,27 @@ class JAXQSOFit:
         self._rest_frame(self.lam, self.flux, self.err, self.z)
         self._calculate_sn(self.wave, self.flux)
         self._orignial_spec(self.wave, self.flux, self.err)
+        self._fe_uv_flux_on_wave = np.interp(
+            self.wave,
+            self.fe_uv_wave,
+            np.maximum(self.fe_uv_flux, 0.0),
+            left=0.0,
+            right=0.0,
+        )
+        self._fe_op_flux_on_wave = np.interp(
+            self.wave,
+            self.fe_op_wave,
+            np.maximum(self.fe_op_flux, 0.0),
+            left=0.0,
+            right=0.0,
+        )
+        balmer_bb_shape, balmer_tau_shape, balmer_below_edge = _balmer_static_terms_jax(
+            _np_to_jnp(self.wave),
+            balmer_te=15000.0,
+        )
+        self._balmer_bb_shape = np.asarray(balmer_bb_shape, dtype=float)
+        self._balmer_tau_shape = np.asarray(balmer_tau_shape, dtype=float)
+        self._balmer_below_edge = np.asarray(balmer_below_edge, dtype=bool)
         resolving_power = self.resolving_power
         if resolving_power is None:
             warnings.warn(
@@ -1418,6 +1452,8 @@ class JAXQSOFit:
             prior_config = _materialize_prior_config(build_default_prior_config(self.flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
+        prior_config["convolution_method"] = broadening_convolution
+        self._fit_prior_config = prior_config
         prior_config["z_qso"] = float(self.z)
         prior_config["host_sfh_model"] = str(host_sfh_model)
         self._fit_host_sfh_model = str(prior_config.get("host_sfh_model", "flexible"))
@@ -1730,6 +1766,7 @@ class JAXQSOFit:
             fe_uv_flux=self.fe_uv_flux,
             fe_op_wave=self.fe_op_wave,
             fe_op_flux=self.fe_op_flux,
+            **self._static_component_cache_kwargs(),
             use_lines=use_lines,
             prior_config=prior_config,
             decompose_host=decompose_host,
@@ -1768,6 +1805,7 @@ class JAXQSOFit:
             fe_uv_flux=self.fe_uv_flux,
             fe_op_wave=self.fe_op_wave,
             fe_op_flux=self.fe_op_flux,
+            **self._static_component_cache_kwargs(),
             use_lines=use_lines,
             prior_config=prior_config,
             decompose_host=decompose_host,
@@ -2068,6 +2106,7 @@ class JAXQSOFit:
                 fe_uv_flux=self.fe_uv_flux,
                 fe_op_wave=self.fe_op_wave,
                 fe_op_flux=self.fe_op_flux,
+                **self._static_component_cache_kwargs(),
                 use_lines=use_lines_i,
                 prior_config=prior_config,
                 decompose_host=decompose_host_i,
@@ -2220,6 +2259,7 @@ class JAXQSOFit:
                 fe_uv_flux=self.fe_uv_flux,
                 fe_op_wave=self.fe_op_wave,
                 fe_op_flux=self.fe_op_flux,
+                **self._static_component_cache_kwargs(),
                 use_lines=False,
                 prior_config=prior_config,
                 decompose_host=decompose_host,
@@ -2290,6 +2330,7 @@ class JAXQSOFit:
             fe_uv_flux=self.fe_uv_flux,
             fe_op_wave=self.fe_op_wave,
             fe_op_flux=self.fe_op_flux,
+            **self._static_component_cache_kwargs(),
             use_lines=use_lines,
             prior_config=prior_config,
             decompose_host=decompose_host,
