@@ -5,13 +5,14 @@ from urllib.request import urlretrieve
 import numpy as np
 import pytest
 
+from jaxqsofit import JAXQSOFit
+from jaxqsofit.config import PriorConfig
+
 pytestmark = pytest.mark.integration
 
 
 def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
     """Fit Selsing composite and require Ly-alpha-masked normalized WRMS < threshold."""
-    from jaxqsofit import JAXQSOFit, build_default_prior_config
-
     url = "https://raw.githubusercontent.com/jselsing/QuasarComposite/master/Selsing2015.dat"
     dat_path = tmp_path / "Selsing2015.dat"
 
@@ -38,30 +39,29 @@ def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
     if lam.size < 200:
         pytest.skip("Not enough valid composite pixels")
 
-    prior_config = build_default_prior_config(flux, pl_pivot=3000.0)
+    prior_config = PriorConfig.from_spectrum(flux=flux, pl_pivot=3000.0)
 
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.0)
     q.config.inference.method = "optax+nuts"
-    q.fit(
-        deredden=False,
-        fit_lines=True,
-        decompose_host=False,
-        fit_pl=True,
-        fit_fe=True,
-        fit_bc=False,
-        fit_poly=True,
-        mask_lya_forest=True,
-        plot_fig=False,
-        save_fig=False,
-        save_result=False,
-        prior_config=prior_config,
-        optax_steps=int(os.getenv("JAXQSOFIT_SELSING_OPTAX_STEPS", "500")),
-        optax_lr=float(os.getenv("JAXQSOFIT_SELSING_OPTAX_LR", "1e-2")),
-        nuts_warmup=int(os.getenv("JAXQSOFIT_SELSING_NUTS_WARMUP", "30")),
-        nuts_samples=int(os.getenv("JAXQSOFIT_SELSING_NUTS_SAMPLES", "30")),
-        nuts_chains=1,
-        nuts_target_accept=0.9,
-    )
+    q.config.observation.apply_mw_deredden = False
+    q.config.preprocessing.mask_lya_forest = True
+    q.config.lines.enabled = True
+    q.config.host.enabled = False
+    q.config.continuum.fit_power_law = True
+    q.config.continuum.fit_feii = True
+    q.config.continuum.fit_balmer_continuum = False
+    q.config.continuum.fit_polynomial_tilt = True
+    q.config.output.plot_fig = False
+    q.config.output.save_fig = False
+    q.config.output.save_result = False
+    q.config.prior_config = prior_config
+    q.config.inference.map_steps = int(os.getenv("JAXQSOFIT_SELSING_OPTAX_STEPS", "500"))
+    q.config.inference.learning_rate = float(os.getenv("JAXQSOFIT_SELSING_OPTAX_LR", "1e-2"))
+    q.config.inference.num_warmup = int(os.getenv("JAXQSOFIT_SELSING_NUTS_WARMUP", "30"))
+    q.config.inference.num_samples = int(os.getenv("JAXQSOFIT_SELSING_NUTS_SAMPLES", "30"))
+    q.config.inference.num_chains = 1
+    q.config.inference.target_accept_prob = 0.9
+    q.fit()
 
     resid = np.asarray(q.flux, dtype=float) - np.asarray(q.model_total, dtype=float)
     sigma = np.asarray(q.err, dtype=float)

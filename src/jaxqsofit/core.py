@@ -47,7 +47,7 @@ from .custom_components import (
     normalize_custom_components,
     normalize_custom_line_components,
 )
-from .defaults import build_default_bal_components, build_default_prior_config
+from .defaults import build_default_bal_components, _build_default_prior_config
 from .model import (
     C_KMS,
     _continuum_output_waves_from_prior_config,
@@ -945,7 +945,7 @@ class JAXQSOFit:
 
         prior_config = getattr(self, "_fit_prior_config", None)
         if prior_config is None:
-            prior_config = _materialize_prior_config(build_default_prior_config(flux))
+            prior_config = _materialize_prior_config(_build_default_prior_config(flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
         custom_components = normalize_custom_components(getattr(self, "_fit_custom_components", ()))
@@ -1449,7 +1449,7 @@ class JAXQSOFit:
         )
 
         if prior_config_input is None:
-            prior_config = _materialize_prior_config(build_default_prior_config(self.flux))
+            prior_config = _materialize_prior_config(_build_default_prior_config(self.flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
         prior_config["convolution_method"] = broadening_convolution
@@ -1636,7 +1636,7 @@ class JAXQSOFit:
         custom_components = normalize_custom_components(custom_components)
         custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
-            prior_config = _materialize_prior_config(build_default_prior_config(flux))
+            prior_config = _materialize_prior_config(_build_default_prior_config(flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
@@ -1966,7 +1966,7 @@ class JAXQSOFit:
         custom_components = normalize_custom_components(custom_components)
         custom_line_components = normalize_custom_line_components(custom_line_components)
         if prior_config is None:
-            prior_config = _materialize_prior_config(build_default_prior_config(flux))
+            prior_config = _materialize_prior_config(_build_default_prior_config(flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
@@ -3076,7 +3076,7 @@ class JAXQSOFit:
 
         prior_config = getattr(self, '_fit_prior_config', None)
         if prior_config is None:
-            prior_config = _materialize_prior_config(build_default_prior_config(np.asarray(self.flux, dtype=float)))
+            prior_config = _materialize_prior_config(_build_default_prior_config(np.asarray(self.flux, dtype=float)))
         else:
             prior_config = _materialize_prior_config(prior_config)
         if prior_config.get("PL_pivot", None) is None:

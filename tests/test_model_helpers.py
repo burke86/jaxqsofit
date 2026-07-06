@@ -7,7 +7,7 @@ from types import SimpleNamespace
 from jaxsedfit.host import HostBasisJax
 
 import jaxqsofit.model as model_mod
-from jaxqsofit.defaults import build_default_prior_config
+from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
     _convolve_same_length,

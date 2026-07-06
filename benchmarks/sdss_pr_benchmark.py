@@ -72,10 +72,9 @@ def _fit_once(
     optax_lr: float,
     dsps_ssp_fn: str,
 ) -> dict[str, Any]:
-    from jaxqsofit import JAXQSOFit
-    from jaxqsofit.defaults import build_default_prior_config
+    from jaxqsofit import JAXQSOFit, PriorConfig
 
-    prior_config = build_default_prior_config(flux)
+    prior_config = PriorConfig.from_spectrum(flux=flux, redshift=z)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=184.0307, dec=-2.2383)
     q.config.observation.apply_mw_deredden = False
     q.config.lines.enabled = True

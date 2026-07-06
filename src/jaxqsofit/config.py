@@ -201,12 +201,10 @@ def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
 
 def _prior_to_mapping(value: Any) -> Any:
     """Convert public prior specs to low-level mappings."""
-    if isinstance(value, Mapping):
-        return dict(value)
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:
         return prior
-    raise TypeError("Prior fields must be mappings or supported numpyro.distributions objects.")
+    raise TypeError("Prior fields must be supported numpyro.distributions objects.")
 
 
 @dataclass
@@ -404,16 +402,16 @@ class PriorConfig:
     ) -> "PriorConfig":
         """Build default priors from an observed spectrum flux scale.
 
-        ``build_default_prior_config`` expects rest-frame flux density. This
+        The low-level model prior builder expects rest-frame flux density. This
         constructor accepts observed-frame flux and redshift, applying the
         standard ``flux_rest = flux * (1 + redshift)`` conversion when a
         redshift is provided.
         """
-        from .defaults import build_default_prior_config
+        from .defaults import _build_default_prior_config
 
         flux_arr = np.asarray(flux, dtype=float)
         flux_for_priors = flux_arr * (1.0 + float(redshift)) if redshift is not None else flux_arr
-        return build_default_prior_config(
+        return _build_default_prior_config(
             flux_for_priors,
             line_config=None if line_config is None else dict(line_config),
             include_elg_narrow_lines=include_elg_narrow_lines,

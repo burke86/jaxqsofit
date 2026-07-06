@@ -18,8 +18,8 @@ from jaxqsofit.config import (
 from jaxqsofit.defaults import (
     DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS,
     DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS,
+    _build_default_prior_config as build_default_prior_config,
     build_default_bal_components,
-    build_default_prior_config,
 )
 
 
@@ -28,7 +28,7 @@ def test_prior_config_object_exposes_model_mapping():
         continuum=ContinuumPriorConfig(power_law_pivot=3000.0, polynomial_pivot=2800.0),
         host=HostPriorConfig(redshift_weight_enabled=False),
         lines=LinePriorConfig(dmu_scale_mult=0.2, sig_scale_mult=0.3, amp_scale_mult=0.4),
-        feii=FeIIPriorConfig(uv_fwhm={"loc": np.log(1000.0), "scale": 0.2}),
+        feii=FeIIPriorConfig(uv_fwhm=dist.Normal(loc=np.log(1000.0), scale=0.2)),
     )
     prior.powerlaw.slope = dist.Normal(loc=-1.5, scale=0.3)
     mapping = prior.to_mapping()
@@ -113,22 +113,22 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     assert np.isclose(mapping["log_cont_norm"]["loc"], np.log(2.0 * np.median(np.abs(flux))))
 
 
-def test_prior_config_coerces_nested_semantic_mapping():
+def test_prior_config_coerces_nested_semantic_sections():
     prior = PriorConfig(
-        continuum={"powerlaw": {"slope": {"loc": -1.2, "scale": 0.2}}},
-        feii={"uv_norm": {"loc": -5.0, "scale": 0.1}},
+        continuum={"powerlaw": {"slope": dist.Normal(loc=-1.2, scale=0.2)}},
+        feii={"uv_norm": dist.Normal(loc=-5.0, scale=0.1)},
         lines={"dmu_scale_mult": 0.1, "sig_scale_mult": 0.2, "amp_scale_mult": 0.3},
-        host={"sfh_model": "delayed", "stellar_mass": {"loc": 10.5, "scale": 0.2}},
+        host={"sfh_model": "delayed", "stellar_mass": dist.Normal(loc=10.5, scale=0.2)},
     )
     mapping = prior.to_mapping()
 
-    assert mapping["PL_slope"] == {"loc": -1.2, "scale": 0.2}
-    assert mapping["log_Fe_uv_norm"] == {"loc": -5.0, "scale": 0.1}
+    assert mapping["PL_slope"] == {"dist": "Normal", "loc": -1.2, "scale": 0.2}
+    assert mapping["log_Fe_uv_norm"] == {"dist": "Normal", "loc": -5.0, "scale": 0.1}
     assert mapping["line_dmu_scale_mult"] == 0.1
     assert mapping["line_sig_scale_mult"] == 0.2
     assert mapping["line_amp_scale_mult"] == 0.3
     assert mapping["host_sfh_model"] == "delayed"
-    assert mapping["log_stellar_mass"] == {"loc": 10.5, "scale": 0.2}
+    assert mapping["log_stellar_mass"] == {"dist": "Normal", "loc": 10.5, "scale": 0.2}
 
 
 def test_fit_config_coerces_bal_mapping():

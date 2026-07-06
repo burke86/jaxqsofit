@@ -1,6 +1,7 @@
 import os
 
 import numpy as np
+import numpyro.distributions as dist
 import pytest
 
 pytestmark = pytest.mark.integration
@@ -37,7 +38,8 @@ def test_sdss_name_fe_width_prior_wrms_below_threshold():
     if not spectra:
         pytest.skip("No SDSS spectra returned")
 
-    from jaxqsofit import JAXQSOFit, build_default_prior_config
+    from jaxqsofit import JAXQSOFit
+    from jaxqsofit.config import PriorConfig
 
     hdu = spectra[0]
     data = hdu[1].data
@@ -53,9 +55,9 @@ def test_sdss_name_fe_width_prior_wrms_below_threshold():
 
     z = float(xid[0]["z"]) if "z" in xid.colnames else 0.1
 
-    prior_config = build_default_prior_config(flux)
-    prior_config["log_Fe_uv_FWHM"] = {"loc": np.log(100.0), "scale": 0.1}
-    prior_config["log_Fe_op_FWHM"] = {"loc": np.log(100.0), "scale": 0.1}
+    prior_config = PriorConfig.from_spectrum(flux=flux, redshift=z)
+    prior_config.fe.uv_fwhm = dist.Normal(loc=np.log(100.0), scale=0.1)
+    prior_config.fe.optical_fwhm = dist.Normal(loc=np.log(100.0), scale=0.1)
 
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=float(coord.ra.deg), dec=float(coord.dec.deg))
     q.config.inference.method = "optax+nuts"
