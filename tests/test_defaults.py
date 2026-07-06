@@ -1,8 +1,10 @@
 import numpy as np
 import numpyro.distributions as dist
+import pytest
 
 from jaxqsofit.config import (
     BALConfig,
+    ContinuumConfig,
     ContinuumPriorConfig,
     FeIIPriorConfig,
     FitConfig,
@@ -55,6 +57,13 @@ def test_fit_config_to_dict_serializes_numpyro_priors():
         "loc": -1.5,
         "scale": 0.3,
     }
+
+
+def test_continuum_config_broadening_convolution_default_and_validation():
+    assert ContinuumConfig().broadening_convolution == "fft"
+    assert ContinuumConfig(broadening_convolution="direct").broadening_convolution == "direct"
+    with pytest.raises(ValueError, match="broadening_convolution"):
+        ContinuumConfig(broadening_convolution="scipy")
 
 
 def test_prior_config_from_spectrum_exposes_semantic_prior_sections():

@@ -10,6 +10,10 @@ import jaxqsofit.model as model_mod
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 from jaxqsofit.custom_components import make_custom_component
 from jaxqsofit.model import (
+    _convolve_same_length,
+    _convolve_velocity_space,
+    _balmer_continuum_jax,
+    _balmer_static_terms_jax,
     _delayed_sfh_host_spectrum,
     _fe_template_component,
     _flexible_host_raw_weight_locs,
@@ -18,7 +22,9 @@ from jaxqsofit.model import (
     _smooth_bounded_affine,
     _extract_line_table_from_prior_config,
     _luminosity_distance_cm_jax,
+    _many_gauss_lnlam,
     _shift_and_broaden_single_spectrum_lnlam,
+    _split_many_gauss_lnlam,
     build_host_template_grid,
     build_fsps_template_grid,
     build_tied_line_metadata,
@@ -43,6 +49,58 @@ def test_extract_line_table_from_prior_config_uses_canonical_layout():
 
 def test_package_enables_jax_x64_explicitly():
     assert jax.config.jax_enable_x64 is True
+
+
+def test_fft_convolution_matches_direct_same_length_for_long_signal():
+    n_pix = 2049
+    x = jnp.linspace(-1.0, 1.0, n_pix)
+    signal = jnp.sin(7.0 * x) + 0.25 * jnp.cos(19.0 * x)
+    kx = jnp.arange(-128, 129, dtype=jnp.float64)
+    kernel = jnp.exp(-0.5 * (kx / 17.0) ** 2)
+    kernel = kernel / jnp.sum(kernel)
+
+    direct = _convolve_same_length(signal, kernel, method="direct")
+    fft = _convolve_same_length(signal, kernel, method="fft")
+
+    np.testing.assert_allclose(np.asarray(fft), np.asarray(direct), rtol=1e-10, atol=1e-10)
+
+
+def test_fft_velocity_convolution_matches_direct_backend():
+    n_pix = 4097
+    dln = 1e-4
+    lnwave = jnp.log(5000.0) + dln * (jnp.arange(n_pix) - n_pix // 2)
+    signal = jnp.exp(-0.5 * ((jnp.arange(n_pix) - 1800.0) / 70.0) ** 2)
+    signal = signal + 0.35 * jnp.exp(-0.5 * ((jnp.arange(n_pix) - 2500.0) / 30.0) ** 2)
+    sigma_ln = 3000.0 / model_mod.C_KMS
+
+    direct = _convolve_velocity_space(lnwave, signal, sigma_ln, method="direct")
+    fft = _convolve_velocity_space(lnwave, signal, sigma_ln, method="fft")
+
+    np.testing.assert_allclose(np.asarray(fft), np.asarray(direct), rtol=1e-9, atol=1e-9)
+
+
+def test_split_many_gauss_lnlam_matches_two_pass_broad_narrow_sum():
+    lnwave = jnp.linspace(jnp.log(3500.0), jnp.log(8500.0), 257)
+    mus = jnp.log(jnp.asarray([4100.0, 4862.68, 5008.24, 6564.61], dtype=jnp.float64))
+    sigs = jnp.asarray([0.002, 0.01, 0.0015, 0.012], dtype=jnp.float64)
+    amps = jnp.asarray([0.4, 2.0, 0.8, 1.5], dtype=jnp.float64)
+    broad_mask = jnp.asarray([0.0, 1.0, 0.0, 1.0], dtype=jnp.float64)
+
+    total, broad, narrow, profiles = _split_many_gauss_lnlam(
+        lnwave,
+        amps,
+        mus,
+        sigs,
+        broad_mask,
+        return_profiles=True,
+    )
+    expected_broad = _many_gauss_lnlam(lnwave, amps * broad_mask, mus, sigs)
+    expected_narrow = _many_gauss_lnlam(lnwave, amps * (1.0 - broad_mask), mus, sigs)
+
+    np.testing.assert_allclose(np.asarray(broad), np.asarray(expected_broad), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(narrow), np.asarray(expected_narrow), rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(np.asarray(total), np.asarray(expected_broad + expected_narrow), rtol=1e-12, atol=1e-12)
+    assert profiles.shape == (amps.shape[0], lnwave.shape[0])
 
 
 def test_gaussian_bal_optical_depth_component_uses_velocity_fwhm_width():
@@ -270,6 +328,118 @@ def test_fe_template_component_smoothly_bounds_fwhm_below_template_base():
     assert bool(jnp.all(jnp.isfinite(component)))
     assert float(jnp.max(component)) > 0.0
     assert bool(jnp.isfinite(grad))
+
+
+def test_fe_template_component_cached_grid_matches_internal_interpolation():
+    wave = jnp.linspace(1900.0, 3100.0, 256)
+    wave_template = jnp.linspace(1800.0, 3200.0, 192)
+    flux_template = jnp.exp(-0.5 * ((wave_template - 2500.0) / 95.0) ** 2)
+    template_on_wave = jnp.interp(wave, wave_template, flux_template, left=0.0, right=0.0)
+
+    uncached = _fe_template_component(
+        wave,
+        wave_template,
+        flux_template,
+        norm=1.7,
+        fwhm_kms=3500.0,
+        shift_frac=0.002,
+        base_fwhm_kms=900.0,
+        convolution_method="fft",
+    )
+    cached = _fe_template_component(
+        wave,
+        wave_template,
+        flux_template,
+        norm=1.7,
+        fwhm_kms=3500.0,
+        shift_frac=0.002,
+        base_fwhm_kms=900.0,
+        template_on_wave=template_on_wave,
+        convolution_method="fft",
+    )
+
+    np.testing.assert_allclose(np.asarray(cached), np.asarray(uncached), rtol=1e-12, atol=1e-12)
+
+
+def test_balmer_continuum_cached_static_terms_match_uncached():
+    wave = jnp.linspace(2500.0, 4500.0, 512)
+    static_terms = _balmer_static_terms_jax(wave, balmer_te=15000.0)
+
+    uncached = _balmer_continuum_jax(
+        wave,
+        balmer_norm=2.3,
+        balmer_te=15000.0,
+        balmer_tau=0.7,
+        balmer_vel=3200.0,
+        convolution_method="fft",
+    )
+    cached = _balmer_continuum_jax(
+        wave,
+        balmer_norm=2.3,
+        balmer_te=15000.0,
+        balmer_tau=0.7,
+        balmer_vel=3200.0,
+        balmer_static_terms=static_terms,
+        convolution_method="fft",
+    )
+
+    np.testing.assert_allclose(np.asarray(cached), np.asarray(uncached), rtol=1e-12, atol=1e-12)
+
+
+def test_qso_fsps_joint_model_cached_fe_balmer_terms_match_uncached():
+    wave = np.linspace(2500.0, 4500.0, 256)
+    flux = np.ones_like(wave)
+    err = np.full_like(wave, 0.1)
+    cfg = build_default_prior_config(flux).to_mapping()
+    tied_line_meta = build_tied_line_meta_from_linelist([], wave)
+    fe_wave = np.linspace(2200.0, 4800.0, 128)
+    fe_flux = np.exp(-0.5 * ((fe_wave - 3000.0) / 200.0) ** 2)
+    fe_flux_on_wave = np.interp(wave, fe_wave, fe_flux, left=0.0, right=0.0)
+    balmer_static_terms = _balmer_static_terms_jax(jnp.asarray(wave), balmer_te=15000.0)
+
+    class _Grid:
+        templates = np.zeros((wave.size, 1), dtype=float)
+        template_meta = [{"tage_gyr": 1.0, "logzsol": 0.0}]
+
+    common_kwargs = dict(
+        wave=wave,
+        flux=None,
+        err=err,
+        conti_priors={},
+        tied_line_meta=tied_line_meta,
+        fsps_grid=_Grid(),
+        fe_uv_wave=fe_wave,
+        fe_uv_flux=fe_flux,
+        fe_op_wave=fe_wave,
+        fe_op_flux=fe_flux,
+        use_lines=False,
+        prior_config=cfg,
+        decompose_host=False,
+        fit_pl=False,
+        fit_fe=True,
+        fit_bc=True,
+        fit_poly=False,
+        fit_reddening=False,
+        return_line_components=False,
+        emit_deterministics=True,
+    )
+    uncached = trace(seed(qso_fsps_joint_model, jax.random.PRNGKey(3))).get_trace(**common_kwargs)
+    cached = trace(seed(qso_fsps_joint_model, jax.random.PRNGKey(3))).get_trace(
+        **common_kwargs,
+        fe_uv_flux_on_wave=fe_flux_on_wave,
+        fe_op_flux_on_wave=fe_flux_on_wave,
+        balmer_bb_shape=np.asarray(balmer_static_terms[0]),
+        balmer_tau_shape=np.asarray(balmer_static_terms[1]),
+        balmer_below_edge=np.asarray(balmer_static_terms[2]),
+    )
+
+    for name in ("f_fe_mgii_model", "f_fe_balmer_model", "f_bc_model", "agn_model", "model"):
+        np.testing.assert_allclose(
+            np.asarray(cached[name]["value"]),
+            np.asarray(uncached[name]["value"]),
+            rtol=1e-12,
+            atol=1e-12,
+        )
 
 
 def test_shift_and_broaden_uses_wide_kernel_for_broad_components():

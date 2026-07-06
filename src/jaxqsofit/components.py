@@ -14,9 +14,9 @@ from .model import (
     _balmer_continuum_jax,
     _broad_line_mask,
     _fe_template_component,
-    _many_gauss_lnlam,
     _np_to_jnp,
     _sample_tied_line_groups,
+    _split_many_gauss_lnlam,
     build_tied_line_meta_from_linelist,
 )
 
@@ -55,8 +55,15 @@ class SpectralComponentConfig:
     line_velocity_sigma_kms: float = 500.0
     feii_fwhm_kms_default: float = 3000.0
     balmer_velocity_kms_default: float = 3000.0
+    broadening_convolution: str = "fft"
     feii_fnu_pivot_rest: float | None = None
     balmer_fnu_pivot_rest: float | None = 3000.0
+
+    def __post_init__(self) -> None:
+        method = str(self.broadening_convolution).lower()
+        if method not in {"fft", "direct"}:
+            raise ValueError("SpectralComponentConfig.broadening_convolution must be 'fft' or 'direct'.")
+        object.__setattr__(self, "broadening_convolution", method)
 
 
 def _as_config(config: SpectralComponentConfig | None) -> SpectralComponentConfig:
@@ -161,9 +168,13 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
         jnp.asarray(float(cfg.narrow_fwhm_kms_default), dtype=jnp.float64),
     )
     lnwave = jnp.log(wave_rest)
-    broad = _many_gauss_lnlam(lnwave, amps * broad_mask, mus, sigs)
-    narrow = _many_gauss_lnlam(lnwave, amps * (1.0 - broad_mask), mus, sigs)
-    total = broad + narrow
+    total, broad, narrow, _ = _split_many_gauss_lnlam(
+        lnwave,
+        amps,
+        mus,
+        sigs,
+        broad_mask,
+    )
     diagnostics = {
         "line_amp_per_component": amps,
         "line_mu_per_component": mus,
@@ -320,6 +331,7 @@ def evaluate_joint_spectral_components(
             feii_norm,
             feii_fwhm,
             feii_shift,
+            convolution_method=cfg.broadening_convolution,
         )
         feii_model = _flambda_shape_to_fnu_mjy_shape(
             wave_rest,
@@ -335,7 +347,14 @@ def evaluate_joint_spectral_components(
             f"{site_prefix}_balmer_vel",
             dist.LogNormal(jnp.log(max(cfg.balmer_velocity_kms_default, 1.0)), 0.4),
         )
-        balmer_flambda_shape = _balmer_continuum_jax(wave_rest, balmer_norm, 15000.0, balmer_tau, balmer_vel)
+        balmer_flambda_shape = _balmer_continuum_jax(
+            wave_rest,
+            balmer_norm,
+            15000.0,
+            balmer_tau,
+            balmer_vel,
+            convolution_method=cfg.broadening_convolution,
+        )
         balmer_model = _flambda_shape_to_fnu_mjy_shape(
             wave_rest,
             balmer_flambda_shape,
