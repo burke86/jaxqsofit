@@ -47,6 +47,121 @@ The ``fluxes`` and ``errors`` arrays should be in units of
    result.samples
    result.plot_corner(show_plot=False)
 
+Continuum and host switches
+---------------------------
+
+Use the continuum flags to choose which non-line AGN components are fitted:
+
+.. code-block:: python
+
+   cfg.continuum.fit_feii = True
+   cfg.continuum.fit_balmer_continuum = True
+
+Fe II and the Balmer continuum add useful flexibility when the observed
+wavelength range covers those features and the spectrum has enough signal to
+constrain them. Leave one or both disabled for faster smoke tests, narrow
+wavelength coverage, or low signal-to-noise spectra where the extra
+components are poorly constrained.
+
+The host-galaxy model is controlled separately:
+
+.. code-block:: python
+
+   cfg.host = HostConfig(enabled=True, dsps_ssp_fn="tempdata.h5")
+   cfg.host = HostConfig(enabled=False)
+
+Set ``enabled=False`` for quasar-dominated spectra or quick tests. When the
+host is enabled, ``dsps_ssp_fn`` must point to a valid DSPS SSP HDF5 file; a
+missing or wrong path is one of the most common setup failures.
+
+Line-table customization
+------------------------
+
+The built-in tied-line model is seeded from
+:data:`jaxqsofit.defaults.DEFAULT_LINE_PRIOR_ROWS`. Each row is a plain
+dictionary. The most commonly edited fields are:
+
+``linename``
+   Output component name used in metadata and plots. Names containing
+   ``"_br"`` are treated as broad-line components; other built-in line names
+   are treated as narrow components.
+
+``compname``
+   The line-complex name used to scope tie indices. Reusing a tie index in
+   different complexes does not tie unrelated lines together.
+
+``ngauss``
+   Number of Gaussian components expanded from that row. The default table
+   already uses multiple broad components for lines such as ``Ha_br``,
+   ``Hb_br``, ``MgII_br``, ``CIV_br``, and ``Lya_br``.
+
+Copy the default table before editing it, because the table is a module-level
+list of mutable dictionaries:
+
+.. code-block:: python
+
+   from copy import deepcopy
+
+   from jaxqsofit import PriorConfig
+   from jaxqsofit.defaults import DEFAULT_LINE_PRIOR_ROWS
+
+   line_table = deepcopy(DEFAULT_LINE_PRIOR_ROWS)
+   for row in line_table:
+       if row["linename"] == "Hb_br":
+           row["ngauss"] = 3
+
+   if cfg.prior_config is None:
+       cfg.prior_config = PriorConfig()
+   cfg.prior_config.lines.table = line_table
+
+The tie columns follow PyQSOFit-style conventions, scoped by ``compname``:
+``vindex`` ties velocity shifts, ``windex`` ties Gaussian widths, and
+``findex`` ties amplitudes/flux ratios. Only positive tie indices create a
+shared group; zero means the row is independent. Within a positive
+``findex`` group, ``fvalue`` sets each component's fixed relative peak
+amplitude. For rows with ``findex=0``, ``fvalue`` is only the initial/default
+amplitude scale used to seed the independent amplitude prior.
+
+Broad-line measurements
+-----------------------
+
+After fitting, per-component line draws are available in ``q.pred_out``:
+
+.. code-block:: python
+
+   amp = np.asarray(q.pred_out["line_amp_per_component"])
+   mu = np.asarray(q.pred_out["line_mu_per_component"])
+   sig = np.asarray(q.pred_out["line_sig_per_component"])
+
+For most workflows, use the helper methods that reconstruct a named broad-line
+profile from those draws and then measure FWHM and integrated area:
+
+.. code-block:: python
+
+   from astropy.cosmology import FlatLambdaCDM
+
+   cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
+
+   def flux_to_luminosity(area_1e17, z):
+       d_l_cm = cosmo.luminosity_distance(z).to("cm").value
+       return area_1e17 * 1.0e-17 * 4.0 * np.pi * d_l_cm**2
+
+   for line_key in ["CIV_br", "MgII_br", "Hb_br", "Ha_br"]:
+       fwhm_draws = []
+       log_l_draws = []
+       for draw_index in range(amp.shape[0]):
+           profile = q.line_profile_from_draw(draw_index, line_key)
+           fwhm_kms, area_1e17 = q.line_props(profile)
+           fwhm_draws.append(fwhm_kms)
+           if np.isfinite(area_1e17) and area_1e17 > 0.0:
+               log_l_draws.append(np.log10(flux_to_luminosity(area_1e17, q.z)))
+           else:
+               log_l_draws.append(np.nan)
+
+       f16, f50, f84 = np.nanpercentile(fwhm_draws, [16, 50, 84])
+       l16, l50, l84 = np.nanpercentile(log_l_draws, [16, 50, 84])
+       print(line_key, f50, f84 - f50, f50 - f16, l50, l84 - l50, l50 - l16)
+
 Fast mode
 ---------
 
