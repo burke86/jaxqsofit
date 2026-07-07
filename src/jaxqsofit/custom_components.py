@@ -9,6 +9,8 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 import jax.numpy as jnp
 import numpy as np
 
+from .config import _numpyro_distribution_to_mapping
+
 
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
     """Rescale a template so its robust peak amplitude is O(target_amp)."""
@@ -69,6 +71,19 @@ def custom_component_param_site(comp: Any, param_name: str) -> str:
     return comp.site_name(param_name)
 
 
+def _normalize_parameter_prior(value: Any) -> dict[str, Any]:
+    """Normalize a public custom-component prior to the low-level prior schema."""
+    prior = _numpyro_distribution_to_mapping(value)
+    if prior is not None:
+        return prior
+    if isinstance(value, Mapping):
+        return dict(value)
+    raise TypeError(
+        "Custom component parameter priors must be supported "
+        "numpyro.distributions objects or low-level prior mappings."
+    )
+
+
 @dataclass(frozen=True)
 class CustomComponentSpec:
     """Generic additive continuum component.
@@ -92,7 +107,7 @@ class CustomComponentSpec:
         object.__setattr__(self, "name", safe_name)
         if not callable(self.evaluate):
             raise TypeError("Custom component evaluate must be callable.")
-        priors = {str(k): dict(v) for k, v in dict(self.parameter_priors).items()}
+        priors = {str(k): _normalize_parameter_prior(v) for k, v in dict(self.parameter_priors).items()}
         object.__setattr__(self, "parameter_priors", priors)
         object.__setattr__(self, "metadata", dict(self.metadata))
 
@@ -152,7 +167,7 @@ class CustomLineComponentSpec:
         object.__setattr__(self, "name", safe_name)
         if not callable(self.evaluate):
             raise TypeError("Custom line component evaluate must be callable.")
-        priors = {str(k): dict(v) for k, v in dict(self.parameter_priors).items()}
+        priors = {str(k): _normalize_parameter_prior(v) for k, v in dict(self.parameter_priors).items()}
         object.__setattr__(self, "parameter_priors", priors)
         kind = str(self.line_kind).strip().lower()
         if kind not in {"broad", "narrow"}:

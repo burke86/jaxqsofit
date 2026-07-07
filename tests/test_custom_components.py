@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import numpyro.distributions as dist
 
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
@@ -47,6 +48,24 @@ def test_custom_component_prior_injection_and_site_names():
         "custom_alt_feii_model",
         "custom_blue_tilt_model",
     ]
+
+
+def test_custom_component_accepts_numpyro_distribution_priors():
+    comp = make_custom_component(
+        name="Blue Tilt",
+        parameter_priors={
+            "c0": dist.Normal(0.0, 0.2),
+            "amp": dist.LogNormal(np.log(0.1), 0.5),
+        },
+        evaluate=lambda wave, params, metadata: np.zeros_like(np.asarray(wave)) + params["c0"] + params["amp"],
+    )
+
+    cfg = inject_default_custom_component_priors({}, np.array([1.0, 2.0, 3.0]), [comp])
+
+    assert cfg["custom_blue_tilt_c0"] == {"dist": "Normal", "loc": 0.0, "scale": 0.2}
+    assert cfg["custom_blue_tilt_amp"]["dist"] == "LogNormal"
+    assert np.isclose(cfg["custom_blue_tilt_amp"]["loc"], np.log(0.1))
+    assert cfg["custom_blue_tilt_amp"]["scale"] == 0.5
 
 
 def test_custom_component_shared_parameter_site_injection():

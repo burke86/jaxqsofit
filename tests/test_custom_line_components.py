@@ -1,5 +1,6 @@
 import numpy as np
 import jax
+import numpyro.distributions as dist
 from numpyro.infer import Predictive
 
 import jaxqsofit.model as modelmod
@@ -27,6 +28,27 @@ def test_custom_line_component_prior_injection_and_site_names():
     assert "custom_line_exp_wing_amp" in cfg
     assert "custom_line_exp_wing_tau" in cfg
     assert custom_line_component_site_names(comps) == ["custom_line_exp_wing_model"]
+
+
+def test_custom_line_component_accepts_numpyro_distribution_priors():
+    comp = make_custom_line_component(
+        name="exp_wing",
+        parameter_priors={
+            "amp": dist.LogNormal(np.log(0.3), 0.8),
+            "tau": dist.LogNormal(np.log(35.0), 0.5),
+        },
+        evaluate=lambda wave, params, metadata: np.zeros_like(np.asarray(wave)) + params["amp"],
+        line_kind="broad",
+    )
+
+    cfg = inject_default_custom_line_component_priors({}, np.array([1.0, 2.0, 3.0]), [comp])
+
+    assert cfg["custom_line_exp_wing_amp"]["dist"] == "LogNormal"
+    assert np.isclose(cfg["custom_line_exp_wing_amp"]["loc"], np.log(0.3))
+    assert cfg["custom_line_exp_wing_amp"]["scale"] == 0.8
+    assert cfg["custom_line_exp_wing_tau"]["dist"] == "LogNormal"
+    assert np.isclose(cfg["custom_line_exp_wing_tau"]["loc"], np.log(35.0))
+    assert cfg["custom_line_exp_wing_tau"]["scale"] == 0.5
 
 
 def test_custom_line_components_add_to_broad_and_narrow_models():
