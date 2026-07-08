@@ -1,5 +1,6 @@
 import os
 import h5py
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import jaxqsofit
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
+import jaxqsofit.plotting as plottingmod
 from jaxqsofit import JAXQSOFit
 from jaxqsofit.config import PriorConfig
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
@@ -374,6 +376,41 @@ def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
     q.fit()
 
     assert called['kwargs']['plot_init'] is True
+
+
+def test_plot_initialization_uses_packaged_matplotlib_style(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    pred_out = {
+        "model": np.asarray([flux]),
+        "gal_model": np.asarray([0.2 * flux]),
+        "f_pl_model": np.asarray([0.8 * flux]),
+        "line_model": np.zeros((1, flux.size)),
+        "continuum_model": np.asarray([flux]),
+    }
+    entered = {"style": 0}
+
+    @contextmanager
+    def _style_context():
+        entered["style"] += 1
+        yield
+
+    monkeypatch.setattr("jaxqsofit.mplstyle.use_style", _style_context)
+    monkeypatch.setattr("jaxqsofit.plotting.plt.show", lambda: None)
+
+    q._plot_initialization(
+        lam,
+        flux,
+        err,
+        pred_out,
+        {"x": 1.0},
+        stage_name="test init",
+        attr_prefix="init_test",
+        model_label="init model",
+    )
+
+    assert entered["style"] == 1
+    assert hasattr(q, "init_test_model")
 
 
 def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
@@ -828,7 +865,7 @@ def test_plot_trace_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=False)
 
@@ -866,7 +903,7 @@ def test_plot_trace_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=True)
 
@@ -888,7 +925,7 @@ def test_plot_corner_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=False)
 
@@ -910,7 +947,7 @@ def test_plot_corner_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=True)
 
@@ -953,7 +990,7 @@ def test_plot_corner_uses_light_curve_full_corner_rendering(monkeypatch):
 
     def _stub_corner(*args, **kwargs):
         called.update(kwargs)
-        fig, _ = coremod.plt.subplots()
+        fig, _ = plottingmod.plt.subplots()
         return fig
 
     monkeypatch.setattr("corner.corner", _stub_corner)
