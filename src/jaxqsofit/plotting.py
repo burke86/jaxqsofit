@@ -209,6 +209,13 @@ def plot_initialization(
         comp_floor = max(1e-8, 0.005 * flux_ref)
 
         def _show_component(arr):
+            """_show_component helper.
+
+            Parameters
+            ----------
+            arr : object
+                arr value.
+            """
             arr = np.asarray(arr, dtype=float)
             arr = arr[np.isfinite(arr)]
             return arr.size > 0 and float(np.nanmax(np.abs(arr))) >= comp_floor
@@ -702,17 +709,37 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
     custom_line_components = list(getattr(fitter, 'custom_line_components', {}).items())
 
     def _is_bal_component_name(name):
-        """Return True for fitted BAL custom components."""
+        """Return True for fitted BAL custom components.
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        """
         return str(name).startswith('bal_')
 
     def _custom_component_color(name, idx):
-        """Return the plotting color for one custom component."""
+        """Return the plotting color for one custom component.
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        idx : object
+            idx value.
+        """
         if _is_bal_component_name(name):
             return 'red'
         return custom_component_colors[idx % len(custom_component_colors)]
 
     def _show_component(arr):
-        """Return True when a component has finite amplitude worth plotting."""
+        """Return True when a component has finite amplitude worth plotting.
+
+        Parameters
+        ----------
+        arr : object
+            arr value.
+        """
         arr = np.asarray(arr, dtype=float)
         arr = arr[np.isfinite(arr)]
         if arr.size == 0:
@@ -720,7 +747,14 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
         return float(np.nanmax(np.abs(arr))) >= comp_floor
 
     def _finite_component_values(*arrays):
-        """Collect finite values from one or more component arrays."""
+        """Collect finite values from one or more component arrays.
+
+
+        Parameters
+        ----------
+        *arrays : tuple
+            Additional positional arguments.
+        """
         vals = []
         for arr in arrays:
             if arr is None:

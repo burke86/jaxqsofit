@@ -77,6 +77,45 @@ def _line_row(
 
     Wavelength fields are rest-frame vacuum Angstroms, matching SDSS spectra
     and the rest-frame wavelength grid used by the fitter.
+
+    Parameters
+    ----------
+    lam : object
+        lam value.
+    compname : object
+        compname value.
+    minwav : object
+        minwav value.
+    maxwav : object
+        maxwav value.
+    linename : object
+        linename value.
+    ngauss : object
+        ngauss value.
+    inisca : object
+        inisca value.
+    minsca : object
+        minsca value.
+    maxsca : object
+        maxsca value.
+    inisig : object
+        inisig value.
+    minsig : object
+        minsig value.
+    maxsig : object
+        maxsig value.
+    voff : object
+        voff value.
+    vindex : object
+        vindex value.
+    windex : object
+        windex value.
+    findex : object
+        findex value.
+    fvalue : object
+        fvalue value.
+    vary : object
+        vary value.
     """
     return {
         "lambda": lam,
@@ -109,6 +148,15 @@ def _lnlam_peak_ratio_for_flux_ratio(
 
     Line ties are applied to Gaussian peak amplitudes in ln-lambda space. For
     equal ln-lambda widths, integrated flux scales as peak * rest wavelength.
+
+    Parameters
+    ----------
+    flux_ratio : object
+        flux_ratio value.
+    numerator_lam : object
+        numerator_lam value.
+    denominator_lam : object
+        denominator_lam value.
     """
     return flux_ratio * denominator_lam / numerator_lam
 
@@ -326,7 +374,17 @@ def _apply_robust_line_scale_priors(
     fscale: float,
     fmax: float,
 ) -> List[Dict[str, Any]]:
-    """Apply flux-aware robust bounds/initialization to line-scale priors."""
+    """Apply flux-aware robust bounds/initialization to line-scale priors.
+
+    Parameters
+    ----------
+    line_rows : object
+        line_rows value.
+    fscale : object
+        fscale value.
+    fmax : object
+        fmax value.
+    """
     if len(line_rows) == 0:
         return line_rows
 
@@ -365,7 +423,17 @@ def _append_unique_by_wavelength(
     extra_rows: List[Dict[str, Any]],
     atol_angstrom: float = 1.0,
 ) -> List[Dict[str, Any]]:
-    """Append rows from `extra_rows` only if no near-duplicate wavelength exists."""
+    """Append rows from `extra_rows` only if no near-duplicate wavelength exists.
+
+    Parameters
+    ----------
+    base_rows : object
+        base_rows value.
+    extra_rows : object
+        extra_rows value.
+    atol_angstrom : object
+        atol_angstrom value.
+    """
     out = list(base_rows)
     for row in extra_rows:
         lam_new = float(row.get("lambda", np.nan))
@@ -394,7 +462,29 @@ def build_default_bal_components(
     fwhm_kms_low: float = 2000.0,
     fwhm_kms_high: float = 15000.0,
 ) -> tuple[CustomComponentSpec, ...]:
-    """Return built-in BAL custom components with conservative depth priors."""
+    """Return built-in BAL custom components with conservative depth priors.
+
+    Parameters
+    ----------
+    flux : object
+        flux value.
+    tau_scale : object
+        tau_scale value.
+    covering_loc : object
+        covering_loc value.
+    covering_scale : object
+        covering_scale value.
+    covering_high : object
+        covering_high value.
+    fwhm_kms_loc : object
+        fwhm_kms_loc value.
+    fwhm_kms_scale : object
+        fwhm_kms_scale value.
+    fwhm_kms_low : object
+        fwhm_kms_low value.
+    fwhm_kms_high : object
+        fwhm_kms_high value.
+    """
     def _bal_component(
         name: str,
         tau_scale: float,
@@ -404,7 +494,25 @@ def build_default_bal_components(
         v_out_low: float,
         v_out_high: float,
     ):
-        """Build one multiplicative BAL optical-depth component spec."""
+        """Build one multiplicative BAL optical-depth component spec.
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        tau_scale : object
+            tau_scale value.
+        line_lambda : object
+            line_lambda value.
+        v_out_loc : object
+            v_out_loc value.
+        v_out_scale : object
+            v_out_scale value.
+        v_out_low : object
+            v_out_low value.
+        v_out_high : object
+            v_out_high value.
+        """
         return make_custom_component(
             name=name,
             parameter_priors={

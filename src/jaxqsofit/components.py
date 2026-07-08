@@ -67,12 +67,25 @@ class SpectralComponentConfig:
 
 
 def _as_config(config: SpectralComponentConfig | None) -> SpectralComponentConfig:
-    """Return an explicit spectral-component config, filling defaults when absent."""
+    """Return an explicit spectral-component config, filling defaults when absent.
+
+
+    Parameters
+    ----------
+    config : object
+        config value.
+    """
     return config if isinstance(config, SpectralComponentConfig) else SpectralComponentConfig()
 
 
 def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
-    """Return a jaxqsofit-style prior config for external component fits."""
+    """Return a jaxqsofit-style prior config for external component fits.
+
+    Parameters
+    ----------
+    cfg : object
+        cfg value.
+    """
     if cfg.line_prior_config is None:
         prior = _build_default_prior_config(
             np.asarray([max(float(cfg.line_flux_scale_mjy), 1.0e-8)], dtype=float),
@@ -93,7 +106,13 @@ def _component_prior_config(cfg: SpectralComponentConfig) -> dict[str, Any]:
 
 
 def _line_table_from_prior_config(prior_config: Mapping[str, Any]):
-    """Extract a line table from the canonical ``line.table`` layout."""
+    """Extract a line table from the canonical ``line.table`` layout.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    """
     line_cfg = prior_config.get("line", None)
     if isinstance(line_cfg, Mapping):
         if "table" in line_cfg:
@@ -105,7 +124,15 @@ def _filter_line_table_to_rest_coverage(
     line_table: Sequence[Mapping[str, Any]],
     coverage_rest: tuple[float, float] | None,
 ) -> list[Mapping[str, Any]]:
-    """Keep only line-table rows whose fitting window overlaps rest coverage."""
+    """Keep only line-table rows whose fitting window overlaps rest coverage.
+
+    Parameters
+    ----------
+    line_table : object
+        line_table value.
+    coverage_rest : object
+        coverage_rest value.
+    """
     if coverage_rest is None:
         return [dict(row) for row in line_table]
     lo, hi = sorted((float(coverage_rest[0]), float(coverage_rest[1])))
@@ -122,7 +149,17 @@ def _filter_line_table_to_rest_coverage(
 
 
 def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, site_prefix: str):
-    """Evaluate jaxqsofit's grouped tied-line model on a rest-frame grid."""
+    """Evaluate jaxqsofit's grouped tied-line model on a rest-frame grid.
+
+    Parameters
+    ----------
+    wave_rest : object
+        wave_rest value.
+    cfg : object
+        cfg value.
+    site_prefix : object
+        site_prefix value.
+    """
     prior_config = _component_prior_config(cfg)
     line_table = _line_table_from_prior_config(prior_config)
     if line_table is None:
@@ -186,7 +223,19 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
 
 
 def _evaluate_simple_line_components(wave_rest, continuum_model, cfg: SpectralComponentConfig, *, site_prefix: str):
-    """Backward-compatible explicit Gaussian line list."""
+    """Backward-compatible explicit Gaussian line list.
+
+    Parameters
+    ----------
+    wave_rest : object
+        wave_rest value.
+    continuum_model : object
+        continuum_model value.
+    cfg : object
+        cfg value.
+    site_prefix : object
+        site_prefix value.
+    """
     line_model = jnp.zeros_like(wave_rest)
     broad_model = jnp.zeros_like(wave_rest)
     narrow_model = jnp.zeros_like(wave_rest)
@@ -240,6 +289,15 @@ def _flambda_shape_to_fnu_mjy_shape(wave_rest, flambda_shape, pivot_rest):
     The conversion is normalized at ``pivot_rest`` so component amplitudes stay
     in the same mJy-like scale. This preserves the external API while avoiding
     adding f_lambda-shaped Fe/Balmer templates directly to an f_nu continuum.
+
+    Parameters
+    ----------
+    wave_rest : object
+        wave_rest value.
+    flambda_shape : object
+        flambda_shape value.
+    pivot_rest : object
+        pivot_rest value.
     """
     wave_rest = jnp.asarray(wave_rest, dtype=jnp.float64)
     flambda_shape = jnp.asarray(flambda_shape, dtype=jnp.float64)
@@ -276,6 +334,9 @@ def evaluate_joint_spectral_components(
         Rest-frame Fe II template sampled as an f_lambda-shaped relative
         spectrum. The evaluated Fe II component is converted to f_nu shape
         before being added to the mJy continuum.
+
+    config : object
+        config value.
 
     Returns
     -------

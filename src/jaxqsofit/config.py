@@ -160,7 +160,14 @@ class InferenceConfig:
 
 
 def _scalar_or_list(value: Any) -> Any:
-    """Convert scalar array-like distribution parameters into plain Python values."""
+    """Convert scalar array-like distribution parameters into plain Python values.
+
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     arr = np.asarray(value)
     if arr.shape == ():
         return float(arr)
@@ -168,7 +175,13 @@ def _scalar_or_list(value: Any) -> Any:
 
 
 def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
-    """Convert supported NumPyro distributions into the model prior schema."""
+    """Convert supported NumPyro distributions into the model prior schema.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     module = getattr(value.__class__, "__module__", "")
     if not module.startswith("numpyro.distributions"):
         return None
@@ -220,7 +233,13 @@ def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
 
 
 def _prior_to_mapping(value: Any) -> Any:
-    """Convert public prior specs to low-level mappings."""
+    """Convert public prior specs to low-level mappings.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:
         return prior
@@ -404,7 +423,13 @@ class PriorConfig:
 
     @classmethod
     def _from_model_priors(cls, model_priors: Mapping[str, Any]) -> "PriorConfig":
-        """Build a PriorConfig from the low-level default-prior payload."""
+        """Build a PriorConfig from the low-level default-prior payload.
+
+        Parameters
+        ----------
+        model_priors : object
+            model_priors value.
+        """
         out = cls()
         out._model_priors = dict(model_priors)
         return out
@@ -426,6 +451,21 @@ class PriorConfig:
         constructor accepts observed-frame flux and redshift, applying the
         standard ``flux_rest = flux * (1 + redshift)`` conversion when a
         redshift is provided.
+
+        Parameters
+        ----------
+        flux : object
+            flux value.
+        redshift : object
+            redshift value.
+        line_config : object
+            line_config value.
+        include_elg_narrow_lines : object
+            include_elg_narrow_lines value.
+        include_high_ionization_lines : object
+            include_high_ionization_lines value.
+        pl_pivot : object
+            pl_pivot value.
         """
         from .defaults import _build_default_prior_config
 
@@ -446,7 +486,13 @@ class PriorConfig:
 
     @powerlaw.setter
     def powerlaw(self, value: PowerLawPriorConfig | Mapping[str, Any]) -> None:
-        """Set the semantic power-law prior section."""
+        """Set the semantic power-law prior section.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self.continuum.powerlaw = _coerce_dataclass(PowerLawPriorConfig, value)
 
     @property
@@ -456,7 +502,13 @@ class PriorConfig:
 
     @fe.setter
     def fe(self, value: FeIIPriorConfig | Mapping[str, Any]) -> None:
-        """Set the Fe II prior section through the shorter alias."""
+        """Set the Fe II prior section through the shorter alias.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self.feii = _coerce_dataclass(FeIIPriorConfig, value)
 
     def to_mapping(self) -> dict[str, Any]:
@@ -543,7 +595,14 @@ class FitConfig:
             raise ValueError("agn.agn_type must be 1 or 2.")
 
     def set_agn_type(self, agn_type: int) -> None:
-        """Set ``agn.agn_type`` and apply the corresponding component defaults."""
+        """Set ``agn.agn_type`` and apply the corresponding component defaults.
+
+
+        Parameters
+        ----------
+        agn_type : object
+            agn_type value.
+        """
 
         self.agn = AGNConfig(agn_type=int(agn_type))
         self.apply_agn_type_defaults()
@@ -560,7 +619,13 @@ class FitConfig:
 
 
 def _coerce_dataclass(cls, value: Any):
-    """Convert an existing instance or mapping into the requested dataclass."""
+    """Convert an existing instance or mapping into the requested dataclass.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if isinstance(value, cls):
         return value
     if isinstance(value, Mapping):
@@ -573,7 +638,13 @@ def _coerce_dataclass(cls, value: Any):
 
 
 def _coerce_prior_config(value: Any) -> PriorConfig:
-    """Coerce structured prior mappings into :class:`PriorConfig`."""
+    """Coerce structured prior mappings into :class:`PriorConfig`.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if isinstance(value, PriorConfig):
         return value
     if value is None:
@@ -597,7 +668,13 @@ def _coerce_prior_config(value: Any) -> PriorConfig:
 
 
 def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
-    """Build a validated FitConfig from a nested mapping."""
+    """Build a validated FitConfig from a nested mapping.
+
+    Parameters
+    ----------
+    data : object
+        data value.
+    """
 
     psf_raw = data.get("psf_photometry")
     psf_obj = None if psf_raw is None else _coerce_dataclass(PSFPhotometryData, psf_raw)
@@ -620,7 +697,14 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
 
 
 def serialize_config(value: Any) -> Any:
-    """Convert config-like objects into JSON-serializable Python values."""
+    """Convert config-like objects into JSON-serializable Python values.
+
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
 
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:
