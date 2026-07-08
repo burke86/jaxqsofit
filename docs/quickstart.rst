@@ -18,6 +18,7 @@ The ``fluxes`` and ``errors`` arrays should be in units of
 
    import numpy as np
    from jaxqsofit import (
+       AGNConfig,
        ContinuumConfig,
        HostConfig,
        InferenceConfig,
@@ -49,6 +50,31 @@ The ``fluxes`` and ``errors`` arrays should be in units of
 
 Continuum and host switches
 ---------------------------
+
+AGN type presets provide a quick way to choose coherent spectral components:
+
+.. code-block:: python
+
+   cfg.agn = AGNConfig(agn_type=1)
+   cfg.apply_agn_type_defaults()
+
+   cfg.agn = AGNConfig(agn_type=2)
+   cfg.apply_agn_type_defaults()
+
+``agn_type=1`` is the broad-line AGN preset: broad and narrow lines are enabled,
+Fe II is enabled, the Balmer continuum is enabled, and the host is enabled.
+``agn_type=2`` is the narrow-line/host-dominated preset: broad built-in line
+components are removed, narrow lines remain enabled, Fe II and the Balmer
+continuum are disabled, and the host is enabled. The preset mutates ordinary
+component switches, so call it before any explicit manual overrides that
+should win:
+
+.. code-block:: python
+
+   cfg.set_agn_type(2)
+   cfg.continuum.fit_feii = True  # explicit override after the preset
+
+For fine-grained control, set the component switches directly.
 
 Use the continuum flags to choose which non-line AGN components are fitted:
 
@@ -199,6 +225,38 @@ fit. It does not turn ``jaxqsofit`` into a full SED fitter, but it can use
 overlapping PSF magnitudes to constrain flux calibration and compact-versus-
 extended light. For full broadband SED plus spectroscopy modeling, use
 ``jaxsedfit``.
+
+Prior configuration
+-------------------
+
+Build the default prior bundle from the spectrum with
+:meth:`jaxqsofit.PriorConfig.from_spectrum`, then edit semantic prior sections
+with ``numpyro.distributions`` objects:
+
+.. code-block:: python
+
+   import numpy as np
+   import numpyro.distributions as dist
+
+   from jaxqsofit import PriorConfig
+
+   cfg.prior_config = PriorConfig.from_spectrum(flux=flux, redshift=z)
+   cfg.prior_config.powerlaw.slope = dist.TruncatedNormal(
+       loc=-1.5,
+       scale=0.3,
+       low=-3.5,
+       high=0.5,
+   )
+   cfg.prior_config.fe.uv_norm = dist.LogNormal(
+       loc=np.log(max(1e-3 * np.nanmedian(np.abs(flux)), 1e-10)),
+       scale=0.04,
+   )
+   cfg.prior_config.host.aperture_scale = dist.Normal(loc=0.0, scale=0.5)
+
+Do not pass flat ``{"dist": ...}`` dictionaries as public prior fields, and
+do not use the old ``prior_config.overrides[...]`` style. The low-level model
+still serializes priors internally, but user code should stay on the
+``PriorConfig`` plus NumPyro-distribution interface.
 
 Line-table customization
 ------------------------

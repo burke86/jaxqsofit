@@ -3,6 +3,7 @@ import numpyro.distributions as dist
 import pytest
 
 from jaxqsofit.config import (
+    AGNConfig,
     BALConfig,
     ContinuumConfig,
     ContinuumPriorConfig,
@@ -10,6 +11,7 @@ from jaxqsofit.config import (
     FitConfig,
     HostConfig,
     HostPriorConfig,
+    LineConfig,
     LinePriorConfig,
     Observation,
     PriorConfig,
@@ -64,6 +66,50 @@ def test_continuum_config_broadening_convolution_default_and_validation():
     assert ContinuumConfig(broadening_convolution="direct").broadening_convolution == "direct"
     with pytest.raises(ValueError, match="broadening_convolution"):
         ContinuumConfig(broadening_convolution="scipy")
+
+
+def test_agn_type_presets_configure_component_switches():
+    cfg = FitConfig(
+        observation=Observation(redshift=0.1),
+        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
+        agn=AGNConfig(agn_type=2),
+    )
+
+    cfg.apply_agn_type_defaults()
+
+    assert cfg.lines.enabled is True
+    assert cfg.lines.use_broad_lines is False
+    assert cfg.lines.use_narrow_lines is True
+    assert cfg.continuum.fit_feii is False
+    assert cfg.continuum.fit_balmer_continuum is False
+    assert cfg.host.enabled is True
+
+    cfg.set_agn_type(1)
+
+    assert cfg.agn.agn_type == 1
+    assert cfg.lines.use_broad_lines is True
+    assert cfg.lines.use_narrow_lines is True
+    assert cfg.continuum.fit_feii is True
+    assert cfg.continuum.fit_balmer_continuum is True
+
+
+def test_agn_config_rejects_unknown_type():
+    with pytest.raises(ValueError, match="AGNConfig.agn_type"):
+        AGNConfig(agn_type=3)
+
+
+def test_fit_config_coerces_agn_and_line_mappings():
+    cfg = FitConfig(
+        observation=Observation(redshift=0.1),
+        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
+        agn={"agn_type": 2},
+        lines={"enabled": True, "use_broad_lines": False, "use_narrow_lines": True},
+    )
+
+    assert isinstance(cfg.agn, AGNConfig)
+    assert isinstance(cfg.lines, LineConfig)
+    assert cfg.agn.agn_type == 2
+    assert cfg.lines.use_broad_lines is False
 
 
 def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
