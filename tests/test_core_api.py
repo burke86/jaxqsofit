@@ -8,6 +8,7 @@ import pytest
 import jaxqsofit
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
+import jaxqsofit.plotting as plottingmod
 from jaxqsofit import JAXQSOFit
 from jaxqsofit.config import PriorConfig
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
@@ -864,7 +865,7 @@ def test_plot_trace_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=False)
 
@@ -902,7 +903,7 @@ def test_plot_trace_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=True)
 
@@ -924,7 +925,7 @@ def test_plot_corner_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=False)
 
@@ -946,7 +947,7 @@ def test_plot_corner_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=True)
 
@@ -989,7 +990,7 @@ def test_plot_corner_uses_light_curve_full_corner_rendering(monkeypatch):
 
     def _stub_corner(*args, **kwargs):
         called.update(kwargs)
-        fig, _ = coremod.plt.subplots()
+        fig, _ = plottingmod.plt.subplots()
         return fig
 
     monkeypatch.setattr("corner.corner", _stub_corner)

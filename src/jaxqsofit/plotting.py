@@ -143,7 +143,7 @@ def plot_initialization(
     model_label,
     show_plot=True,
 ):
-    """Plot an Optax initialization model using the packaged style."""
+    """Plot an Optax initialization model using the final spectrum-plot style."""
     from .mplstyle import use_style
 
     wave = np.asarray(wave, dtype=float)
@@ -152,30 +152,91 @@ def plot_initialization(
     host = np.asarray(host, dtype=float)
     powerlaw = np.asarray(powerlaw, dtype=float)
     line = np.asarray(line, dtype=float)
+    finite_flux = flux[np.isfinite(flux)]
 
     with use_style():
+        matplotlib.rc('xtick', labelsize=20)
+        matplotlib.rc('ytick', labelsize=20)
         fig, (ax, axr) = plt.subplots(
             2,
             1,
             sharex=True,
-            figsize=(12, 6),
-            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+            figsize=(15, 8),
+            gridspec_kw={"height_ratios": [4.0, 1.2], "hspace": 0.05},
         )
-        ax.plot(wave, flux, color="black", lw=0.8, alpha=0.8, label="data")
-        ax.plot(wave, model, color="blue", lw=1.6, label=model_label)
-        ax.plot(wave, host, color="purple", lw=1.2, label="host galaxy")
-        ax.plot(wave, powerlaw, color="orange", lw=1.2, label="power law")
-        if np.nanmax(np.abs(line)) > 0:
-            ax.plot(wave, line, color="lightskyblue", lw=1.0, label="lines")
-        ax.set_ylabel(r"$f_\lambda$")
-        ax.set_title(f"{stage_name} (reduced chi2 = {redchi2:.2f})")
-        ax.legend(loc="best")
+        flux_ref = float(np.nanpercentile(np.abs(finite_flux), 95)) if finite_flux.size else 1.0
+        comp_floor = max(1e-8, 0.005 * flux_ref)
+
+        def _show_component(arr):
+            arr = np.asarray(arr, dtype=float)
+            arr = arr[np.isfinite(arr)]
+            return arr.size > 0 and float(np.nanmax(np.abs(arr))) >= comp_floor
+
+        ax.plot(wave, flux, color="k", lw=1.0, alpha=1.0, label="data", zorder=2, rasterized=True)
+        ax.plot(wave, model, color="b", lw=1.8, label=model_label, zorder=6, rasterized=True)
+        if _show_component(host):
+            ax.plot(wave, host, color="purple", lw=1.8, label="host galaxy", zorder=4, rasterized=True)
+        else:
+            ax.plot(wave, host, color="purple", lw=1.8, zorder=4, rasterized=True)
+        if _show_component(powerlaw):
+            ax.plot(wave, powerlaw, color="orange", lw=1.5, label="power law", zorder=5, rasterized=True)
+        else:
+            ax.plot(wave, powerlaw, color="orange", lw=1.5, zorder=5, rasterized=True)
+        if _show_component(line):
+            ax.plot(wave, line, color="lightskyblue", lw=1.5, label="lines", zorder=5, rasterized=True)
+
+        ax.set_xlim(float(np.nanmin(wave)), float(np.nanmax(wave)))
+        y_arrays = [arr[np.isfinite(arr)] for arr in (flux, model, host, powerlaw, line)]
+        y_arrays = [arr for arr in y_arrays if arr.size > 0]
+        if y_arrays:
+            yplot = np.concatenate(y_arrays)
+            ymin = float(np.nanpercentile(yplot, 0.5))
+            ymax = float(np.nanpercentile(yplot, 99.9))
+            if np.isfinite(ymin) and np.isfinite(ymax):
+                pad = 0.10 * (ymax - ymin) if ymax > ymin else max(0.1 * abs(ymax), 1.0)
+                ax.set_ylim(ymin - pad, ymax + pad)
+
+        broad_line_markers = [
+            ("Ly$\\alpha$", 1215.67),
+            ("CIV", 1549.06),
+            ("CIII]", 1908.73),
+            ("MgII", 2798.75),
+            ("H$\\beta$", 4862.68),
+            ("H$\\alpha$", 6564.61),
+        ]
+        xlo, xhi = ax.get_xlim()
+        y_top = ax.get_ylim()[1]
+        text_x_offset = 0.01 * (xhi - xlo)
+        for label, lam0 in broad_line_markers:
+            if xlo <= lam0 <= xhi:
+                ax.axvline(lam0, color="gray", ls="--", lw=0.8, alpha=0.35, zorder=1)
+                ax.text(
+                    lam0 - text_x_offset,
+                    y_top * 0.985,
+                    label,
+                    rotation=90,
+                    va="top",
+                    ha="center",
+                    fontsize=12,
+                    color="dimgray",
+                    alpha=0.9,
+                    zorder=7,
+                )
+
+        ax.set_ylabel(r"$f_{\lambda}$ (10$^{-17}$ erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$)", fontsize=20)
+        ax.set_title(stage_name)
+        ax.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=12, ncol=2)
 
         resid = flux - model
         axr.axhline(0.0, color="black", lw=0.8, ls="--", alpha=0.6)
-        axr.plot(wave, resid, color="gray", lw=0.8, ls=":", alpha=0.9)
-        axr.set_ylabel("resid")
-        axr.set_xlabel(r"Rest Wavelength ($\AA$)")
+        axr.plot(wave, resid, color="gray", lw=1.0, ls=":", alpha=0.9, rasterized=True)
+        r = resid[np.isfinite(resid)]
+        if r.size > 0:
+            rlim = np.nanpercentile(np.abs(r), 99)
+            if np.isfinite(rlim) and rlim > 0:
+                axr.set_ylim(-1.15 * rlim, 1.15 * rlim)
+        axr.set_ylabel("resid", fontsize=20)
+        axr.set_xlabel("Rest Wavelength (Å)", fontsize=20)
         style_axis(ax)
         style_axis(axr)
         if show_plot:

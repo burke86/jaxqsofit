@@ -130,7 +130,7 @@ class InferenceConfig:
     """Inference defaults for Optax and NUTS."""
 
     method: str = "optax+nuts"
-    map_steps: int = 600
+    map_steps: int = 2000
     learning_rate: float = 1.0e-2
     num_warmup: int = 50
     num_samples: int = 50
