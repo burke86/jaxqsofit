@@ -1,5 +1,6 @@
 import os
 import h5py
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -374,6 +375,41 @@ def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
     q.fit()
 
     assert called['kwargs']['plot_init'] is True
+
+
+def test_plot_initialization_uses_packaged_matplotlib_style(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    pred_out = {
+        "model": np.asarray([flux]),
+        "gal_model": np.asarray([0.2 * flux]),
+        "f_pl_model": np.asarray([0.8 * flux]),
+        "line_model": np.zeros((1, flux.size)),
+        "continuum_model": np.asarray([flux]),
+    }
+    entered = {"style": 0}
+
+    @contextmanager
+    def _style_context():
+        entered["style"] += 1
+        yield
+
+    monkeypatch.setattr("jaxqsofit.mplstyle.use_style", _style_context)
+    monkeypatch.setattr("jaxqsofit.plotting.plt.show", lambda: None)
+
+    q._plot_initialization(
+        lam,
+        flux,
+        err,
+        pred_out,
+        {"x": 1.0},
+        stage_name="test init",
+        attr_prefix="init_test",
+        model_label="init model",
+    )
+
+    assert entered["style"] == 1
+    assert hasattr(q, "init_test_model")
 
 
 def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):

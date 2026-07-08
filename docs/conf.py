@@ -71,8 +71,8 @@ html_theme_options = {
     'use_download_button': True,
 }
 
-# Render tutorial notebooks as documentation pages. Do not execute notebooks by
-# default: several examples query remote services or run expensive samplers.
-# Set NBSPHINX_EXECUTE=always locally or in CI to pre-execute notebooks.
-nbsphinx_execute = os.environ.get('NBSPHINX_EXECUTE', 'never')
+# Render tutorial notebooks as documentation pages. Execute notebooks by
+# default so Read the Docs and CI render fresh outputs. Set
+# NBSPHINX_EXECUTE=never locally when iterating on text-only docs changes.
+nbsphinx_execute = os.environ.get('NBSPHINX_EXECUTE', 'always')
 nbsphinx_allow_errors = False

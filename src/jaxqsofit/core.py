@@ -9,7 +9,6 @@ from pathlib import Path
 import extinction
 import h5py
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy import units as u
@@ -1865,29 +1864,20 @@ class JAXQSOFit:
         setattr(self, f"{attr_prefix}_line_model", line)
         setattr(self, f"{attr_prefix}_redchi2", redchi2)
 
-        fig, (ax, axr) = plt.subplots(
-            2,
-            1,
-            sharex=True,
-            figsize=(12, 6),
-            gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.05},
-        )
-        ax.plot(wave, flux, color='black', lw=0.8, alpha=0.8, label='data')
-        ax.plot(wave, model, color='blue', lw=1.6, label=model_label)
-        ax.plot(wave, host, color='purple', lw=1.2, label='host galaxy')
-        ax.plot(wave, pl, color='orange', lw=1.2, label='power law')
-        if np.nanmax(np.abs(line)) > 0:
-            ax.plot(wave, line, color='lightskyblue', lw=1.0, label='lines')
-        ax.set_ylabel(r'$f_\lambda$')
-        ax.set_title(f'{stage_name} (reduced chi2 = {redchi2:.2f})')
-        ax.legend(loc='best')
+        from .plotting import plot_initialization
 
-        resid = flux - model
-        axr.axhline(0.0, color='black', lw=0.8, ls='--', alpha=0.6)
-        axr.plot(wave, resid, color='gray', lw=0.8, ls=':', alpha=0.9)
-        axr.set_ylabel('resid')
-        axr.set_xlabel(r'Rest Wavelength ($\AA$)')
-        plt.show()
+        plot_initialization(
+            wave=wave,
+            flux=flux,
+            model=model,
+            host=host,
+            powerlaw=pl,
+            line=line,
+            redchi2=redchi2,
+            stage_name=stage_name,
+            model_label=model_label,
+            show_plot=True,
+        )
 
     def _plot_stage1_initialization(self, wave, flux, err, pred_out, samples):
         """Plot and store the stage-1 Optax continuum/host warm-start model."""

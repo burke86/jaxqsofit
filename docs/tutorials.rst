@@ -5,9 +5,9 @@ Notebook tutorials
 ------------------
 
 The notebooks below are rendered into the documentation with ``nbsphinx``.
-By default, the docs build uses the outputs already saved in each notebook. To
-pre-execute notebooks during a local or CI docs build, set
-``NBSPHINX_EXECUTE=always`` before invoking Sphinx.
+By default, docs builds execute the notebooks so Read the Docs and CI render
+fresh outputs. To skip execution during a local text-only docs edit, set
+``NBSPHINX_EXECUTE=never`` before invoking Sphinx.
 
 .. toctree::
    :maxdepth: 1

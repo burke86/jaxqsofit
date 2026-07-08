@@ -29,6 +29,7 @@ __all__ = [
     "plot_trace",
     "plot_corner",
     "plot_mcmc_diagnostics",
+    "plot_initialization",
     "plot_spectrum",
     "plot_fig",
 ]
@@ -127,6 +128,60 @@ def style_axis(ax, spine_lw=1.5):
     )
     for spine in ax.spines.values():
         spine.set_linewidth(spine_lw)
+
+
+def plot_initialization(
+    *,
+    wave,
+    flux,
+    model,
+    host,
+    powerlaw,
+    line,
+    redchi2,
+    stage_name,
+    model_label,
+    show_plot=True,
+):
+    """Plot an Optax initialization model using the packaged style."""
+    from .mplstyle import use_style
+
+    wave = np.asarray(wave, dtype=float)
+    flux = np.asarray(flux, dtype=float)
+    model = np.asarray(model, dtype=float)
+    host = np.asarray(host, dtype=float)
+    powerlaw = np.asarray(powerlaw, dtype=float)
+    line = np.asarray(line, dtype=float)
+
+    with use_style():
+        fig, (ax, axr) = plt.subplots(
+            2,
+            1,
+            sharex=True,
+            figsize=(12, 6),
+            gridspec_kw={"height_ratios": [3, 1], "hspace": 0.05},
+        )
+        ax.plot(wave, flux, color="black", lw=0.8, alpha=0.8, label="data")
+        ax.plot(wave, model, color="blue", lw=1.6, label=model_label)
+        ax.plot(wave, host, color="purple", lw=1.2, label="host galaxy")
+        ax.plot(wave, powerlaw, color="orange", lw=1.2, label="power law")
+        if np.nanmax(np.abs(line)) > 0:
+            ax.plot(wave, line, color="lightskyblue", lw=1.0, label="lines")
+        ax.set_ylabel(r"$f_\lambda$")
+        ax.set_title(f"{stage_name} (reduced chi2 = {redchi2:.2f})")
+        ax.legend(loc="best")
+
+        resid = flux - model
+        axr.axhline(0.0, color="black", lw=0.8, ls="--", alpha=0.6)
+        axr.plot(wave, resid, color="gray", lw=0.8, ls=":", alpha=0.9)
+        axr.set_ylabel("resid")
+        axr.set_xlabel(r"Rest Wavelength ($\AA$)")
+        style_axis(ax)
+        style_axis(axr)
+        if show_plot:
+            plt.show()
+    return fig
+
 
 def synthetic_photometry_for_plot(fitter, model_attr='model_total'):
     """Return rest-frame synthetic photometry points for plotting, if available."""
