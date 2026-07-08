@@ -71,7 +71,13 @@ _SDSS_FILTER_CACHE = None
 
 
 def _materialize_prior_config(prior_config) -> dict:
-    """Return a mutable flat prior mapping for low-level model code."""
+    """Return a mutable flat prior mapping for low-level model code.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    """
     if prior_config is None:
         return {}
     if isinstance(prior_config, PriorConfig):
@@ -79,6 +85,96 @@ def _materialize_prior_config(prior_config) -> dict:
     if hasattr(prior_config, "to_mapping"):
         return dict(prior_config.to_mapping())
     return dict(prior_config)
+
+
+def _line_row_is_broad(row) -> bool:
+    """Return True when a line-table row represents a broad component.
+
+
+    Parameters
+    ----------
+    row : object
+        row value.
+    """
+    name = str(row.get("linename", "")).lower()
+    return name.endswith("_br") or ("_br" in name)
+
+
+def _filter_line_table_by_kind(line_table, *, use_broad_lines=True, use_narrow_lines=True):
+    """Filter built-in line rows by broad/narrow kind.
+
+    Parameters
+    ----------
+    line_table : object
+        line_table value.
+    use_broad_lines : object
+        use_broad_lines value.
+    use_narrow_lines : object
+        use_narrow_lines value.
+    """
+    if line_table is None:
+        return None
+    rows = []
+    for row in line_table:
+        row_is_broad = _line_row_is_broad(row)
+        if row_is_broad and not bool(use_broad_lines):
+            continue
+        if not row_is_broad and not bool(use_narrow_lines):
+            continue
+        rows.append(dict(row))
+    return rows
+
+
+def _filter_prior_line_table_by_kind(prior_config, *, use_broad_lines=True, use_narrow_lines=True):
+    """Return a prior mapping whose ``line.table`` respects line-kind switches.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    use_broad_lines : object
+        use_broad_lines value.
+    use_narrow_lines : object
+        use_narrow_lines value.
+    """
+    if prior_config is None:
+        return None
+    prior_config = dict(prior_config)
+    line_cfg = prior_config.get("line", None)
+    if not isinstance(line_cfg, dict) or "table" not in line_cfg:
+        return prior_config
+    line_cfg = dict(line_cfg)
+    line_cfg["table"] = _filter_line_table_by_kind(
+        line_cfg.get("table"),
+        use_broad_lines=use_broad_lines,
+        use_narrow_lines=use_narrow_lines,
+    )
+    prior_config["line"] = line_cfg
+    return prior_config
+
+
+def _filter_custom_line_components_by_kind(custom_line_components, *, use_broad_lines=True, use_narrow_lines=True):
+    """Filter custom line components by their broad/narrow classification.
+
+    Parameters
+    ----------
+    custom_line_components : object
+        custom_line_components value.
+    use_broad_lines : object
+        use_broad_lines value.
+    use_narrow_lines : object
+        use_narrow_lines value.
+    """
+    components = normalize_custom_line_components(custom_line_components)
+    out = []
+    for comp in components:
+        line_kind = str(getattr(comp, "line_kind", "narrow")).lower()
+        if line_kind == "broad" and not bool(use_broad_lines):
+            continue
+        if line_kind != "broad" and not bool(use_narrow_lines):
+            continue
+        out.append(comp)
+    return tuple(out)
 
 
 def _numpyro_geometry_reparam_config(
@@ -99,6 +195,25 @@ def _numpyro_geometry_reparam_config(
     ``LocScaleReparam`` layer here: it rewrites physical sample-site names to
     decentered names, so Optax MAP warm starts keyed by physical names can miss
     the actual NUTS latent sites and produce bad post-Optax fits.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    fit_pl : object
+        fit_pl value.
+    fit_fe : object
+        fit_fe value.
+    fit_bc : object
+        fit_bc value.
+    fit_poly : object
+        fit_poly value.
+    fit_reddening : object
+        fit_reddening value.
+    fit_poly_order : object
+        fit_poly_order value.
+    decompose_host : object
+        decompose_host value.
     """
     return {}
 
@@ -113,33 +228,70 @@ def _get_sdss_filters():
 
 
 def _filter_wave_to_angstrom_array(value):
-    """Return a filter wavelength grid as a float ndarray in Angstrom."""
+    """Return a filter wavelength grid as a float ndarray in Angstrom.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if hasattr(value, "to_value"):
         return np.asarray(value.to_value(u.AA), dtype=np.float64)
     return np.asarray(value, dtype=np.float64)
 
 
 def _filter_wave_to_angstrom_scalar(value):
-    """Return a scalar wavelength-like object as a float in Angstrom."""
+    """Return a scalar wavelength-like object as a float in Angstrom.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if hasattr(value, "to_value"):
         return float(value.to_value(u.AA))
     return float(value)
 
 
 def _ab_mag_to_fnu(mag):
-    """Convert AB magnitude to flux density in cgs units."""
+    """Convert AB magnitude to flux density in cgs units.
+
+
+    Parameters
+    ----------
+    mag : object
+        mag value.
+    """
     mag = np.asarray(mag, dtype=np.float64)
     return 10.0 ** (-0.4 * (mag + 48.60))
 
 
 def _fnu_to_ab_mag(fnu):
-    """Convert flux density in cgs units to AB magnitude."""
+    """Convert flux density in cgs units to AB magnitude.
+
+    Parameters
+    ----------
+    fnu : object
+        fnu value.
+    """
     fnu = np.asarray(fnu, dtype=np.float64)
     return -2.5 * np.log10(np.clip(fnu, 1e-300, None)) - 48.60
 
 
 def _mw_band_attenuation_factor(wave_obs, filt_trans, ebv, r_v=3.1):
-    """Return the AB-weighted Galactic attenuation factor through a filter."""
+    """Return the AB-weighted Galactic attenuation factor through a filter.
+
+    Parameters
+    ----------
+    wave_obs : object
+        wave_obs value.
+    filt_trans : object
+        filt_trans value.
+    ebv : object
+        ebv value.
+    r_v : object
+        r_v value.
+    """
     wave_obs = np.asarray(wave_obs, dtype=np.float64)
     filt_trans = np.clip(np.asarray(filt_trans, dtype=np.float64), 0.0, None)
     if (not np.isfinite(ebv)) or ebv == 0.0:
@@ -162,7 +314,14 @@ class JAXQSOFit:
     _POSTERIOR_BUNDLE_SUFFIX = ".h5"
 
     def __init__(self, config: "jaxqsofit.config.FitConfig"):
-        """Initialize a config-first JAXQSOFit spectral fitter."""
+        """Initialize a config-first JAXQSOFit spectral fitter.
+
+
+        Parameters
+        ----------
+        config : object
+            config value.
+        """
         if not isinstance(config, FitConfig):
             raise TypeError("JAXQSOFit expects a FitConfig. Build one with jaxqsofit.FitConfig(...).")
         config.validate()
@@ -240,6 +399,13 @@ class JAXQSOFit:
 
     @numpyro_samples.setter
     def numpyro_samples(self, value) -> None:
+        """numpyro_samples helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().samples = value
 
     @property
@@ -249,6 +415,13 @@ class JAXQSOFit:
 
     @pred_out.setter
     def pred_out(self, value) -> None:
+        """pred_out helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().predictive = value
 
     @property
@@ -258,6 +431,13 @@ class JAXQSOFit:
 
     @pred_bands.setter
     def pred_bands(self, value) -> None:
+        """pred_bands helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().bands = value
 
     @property
@@ -267,6 +447,13 @@ class JAXQSOFit:
 
     @fig.setter
     def fig(self, value) -> None:
+        """fig helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().figure = value
 
     @property
@@ -276,6 +463,13 @@ class JAXQSOFit:
 
     @trace_fig.setter
     def trace_fig(self, value) -> None:
+        """trace_fig helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().trace_figure = value
 
     @property
@@ -285,6 +479,13 @@ class JAXQSOFit:
 
     @corner_fig.setter
     def corner_fig(self, value) -> None:
+        """corner_fig helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().corner_figure = value
 
     @property
@@ -294,6 +495,13 @@ class JAXQSOFit:
 
     @_loaded_posterior_path.setter
     def _loaded_posterior_path(self, value) -> None:
+        """_loaded_posterior_path helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().path = None if value is None else Path(value)
 
     @property
@@ -303,6 +511,13 @@ class JAXQSOFit:
 
     @_posterior_hydrated.setter
     def _posterior_hydrated(self, value: bool) -> None:
+        """_posterior_hydrated helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().hydrated = bool(value)
 
     @property
@@ -312,6 +527,13 @@ class JAXQSOFit:
 
     @_resumed_from_samples.setter
     def _resumed_from_samples(self, value: bool) -> None:
+        """_resumed_from_samples helper.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         self._ensure_posterior_state().resumed_from_samples = bool(value)
 
     @classmethod
@@ -332,7 +554,37 @@ class JAXQSOFit:
         psf_mag_errs=None,
         psf_bands=None,
     ):
-        """Build a config-first fitter from raw arrays."""
+        """Build a config-first fitter from raw arrays.
+
+        Parameters
+        ----------
+        lam : array-like
+            Observed-frame wavelength array in Angstrom.
+        flux : array-like
+            Observed spectral flux-density array.
+        err : array-like or float, optional
+            Flux-density uncertainty. If omitted, a small positive uncertainty
+            is supplied by the downstream data preparation.
+        z : float, optional
+            Source redshift.
+        ra, dec : float, optional
+            Sky coordinates in degrees, used for Milky Way dereddening when
+            enabled.
+        filename : str, optional
+            Object name and default output basename.
+        output_path : str or pathlib.Path, optional
+            Directory for saved figures and posterior bundles.
+        wdisp : array-like, optional
+            Per-pixel wavelength dispersion, usually from SDSS ``wdisp``.
+        resolving_power : float, optional
+            Effective resolving power used to downweight oversampled spectral
+            likelihoods.
+        psf_mags, psf_mag_errs : array-like, optional
+            PSF-aperture magnitudes and uncertainties used for spectral
+            recalibration.
+        psf_bands : sequence of str, optional
+            Filter names corresponding to ``psf_mags``.
+        """
         psf = None
         if psf_mags is not None and psf_mag_errs is not None:
             psf = PSFPhotometryData(
@@ -361,7 +613,17 @@ class JAXQSOFit:
 
     @staticmethod
     def _resolve_filename(filename=None, ra=-999, dec=-999):
-        """Resolve a filesystem-safe basename for outputs."""
+        """Resolve a filesystem-safe basename for outputs.
+
+        Parameters
+        ----------
+        filename : object
+            filename value.
+        ra : object
+            ra value.
+        dec : object
+            dec value.
+        """
         if filename is not None and str(filename).strip() != "":
             return str(filename).strip()
         try:
@@ -374,7 +636,15 @@ class JAXQSOFit:
         return "result"
 
     def _predictive_return_sites(self, custom_components=None, custom_line_components=None):
-        """Return posterior predictive sites needed for summaries and plots."""
+        """Return posterior predictive sites needed for summaries and plots.
+
+        Parameters
+        ----------
+        custom_components : object
+            custom_components value.
+        custom_line_components : object
+            custom_line_components value.
+        """
         return_sites = [
             'f_pl_model',
             'f_fe_mgii_model',
@@ -431,6 +701,21 @@ class JAXQSOFit:
         with no transmission overlap on the observed spectral wavelength grid
         are dropped; use ``jaxsedfit`` for full joint spectrum + broadband SED
         modeling.
+
+        Parameters
+        ----------
+        wave_obs : object
+            wave_obs value.
+        psf_mags : object
+            psf_mags value.
+        psf_mag_errs : object
+            psf_mag_errs value.
+        psf_bands : object
+            psf_bands value.
+        use_psf_phot : object
+            use_psf_phot value.
+        min_filter_coverage : object
+            min_filter_coverage value.
         """
         if psf_mags is not None:
             self.psf_mags = np.asarray(psf_mags, dtype=np.float64)
@@ -535,7 +820,15 @@ class JAXQSOFit:
         )
 
     def _posterior_bundle_path(self, save_name=None, save_path=None):
-        """Return the compressed on-disk path for a saved posterior bundle."""
+        """Return the compressed on-disk path for a saved posterior bundle.
+
+        Parameters
+        ----------
+        save_name : object
+            save_name value.
+        save_path : object
+            save_path value.
+        """
         out_name = self._normalize_posterior_bundle_name(
             f"{self.filename}_samples" if save_name is None else save_name
         )
@@ -546,7 +839,15 @@ class JAXQSOFit:
         return os.path.join(out_dir, out_name)
 
     def _intrinsic_powerlaw_draws(self, wave_out=None, apply_psf_scale=False):
-        """Return posterior draws for the intrinsic AGN power law on ``wave_out``."""
+        """Return posterior draws for the intrinsic AGN power law on ``wave_out``.
+
+        Parameters
+        ----------
+        wave_out : object
+            wave_out value.
+        apply_psf_scale : object
+            apply_psf_scale value.
+        """
         samples = getattr(self, 'numpyro_samples', None)
         if samples is None or 'PL_slope' not in samples:
             return None
@@ -581,7 +882,14 @@ class JAXQSOFit:
         return draws
     @classmethod
     def _normalize_posterior_bundle_name(cls, name):
-        """Normalize posterior bundle names to the enforced ``.h5`` suffix."""
+        """Normalize posterior bundle names to the enforced ``.h5`` suffix.
+
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        """
         name = str(name)
         if name.endswith(cls._POSTERIOR_BUNDLE_SUFFIX):
             return name
@@ -605,7 +913,14 @@ class JAXQSOFit:
 
     @staticmethod
     def _is_matplotlib_state(value):
-        """Return True when value is a matplotlib figure/axes object."""
+        """Return True when value is a matplotlib figure/axes object.
+
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         classes = []
         fig_cls = getattr(getattr(matplotlib, "figure", None), "Figure", None)
         axes_cls = getattr(getattr(matplotlib, "axes", None), "Axes", None)
@@ -619,7 +934,15 @@ class JAXQSOFit:
 
     @classmethod
     def _exclude_from_posterior_bundle(cls, key, value):
-        """Return True when an attribute should be skipped during bundle save."""
+        """Return True when an attribute should be skipped during bundle save.
+
+        Parameters
+        ----------
+        key : object
+            key value.
+        value : object
+            value value.
+        """
         if key in cls._bundle_excluded_keys():
             return True
         if key.startswith("_pred_"):
@@ -630,7 +953,13 @@ class JAXQSOFit:
 
     @staticmethod
     def _serialize_for_hdf5(value):
-        """Recursively convert model state into HDF5-serializable objects."""
+        """Recursively convert model state into HDF5-serializable objects.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         if isinstance(value, CustomComponentSpec):
             return value.to_state()
         if isinstance(value, CustomLineComponentSpec):
@@ -655,7 +984,13 @@ class JAXQSOFit:
 
     @staticmethod
     def _deserialize_from_hdf5(value):
-        """Rebuild custom serialized objects after reading HDF5 state."""
+        """Rebuild custom serialized objects after reading HDF5 state.
+
+        Parameters
+        ----------
+        value : object
+            value value.
+        """
         if isinstance(value, dict):
             if value.get("__custom_component__", False):
                 return CustomComponentSpec.from_state(value)
@@ -679,7 +1014,17 @@ class JAXQSOFit:
 
     @classmethod
     def _write_hdf5_node(cls, parent, name, value):
-        """Write one recursively serialized Python value into an HDF5 group."""
+        """Write one recursively serialized Python value into an HDF5 group.
+
+        Parameters
+        ----------
+        parent : object
+            parent value.
+        name : object
+            name value.
+        value : object
+            value value.
+        """
         value = cls._serialize_for_hdf5(value)
         if value is None:
             grp = parent.create_group(name)
@@ -742,7 +1087,15 @@ class JAXQSOFit:
 
     @classmethod
     def _read_hdf5_node(cls, parent, name):
-        """Read one recursively serialized Python value from an HDF5 group."""
+        """Read one recursively serialized Python value from an HDF5 group.
+
+        Parameters
+        ----------
+        parent : object
+            parent value.
+        name : object
+            name value.
+        """
         node = parent[name]
         if isinstance(node, h5py.Dataset):
             node_type = node.attrs.get("node_type", "ndarray")
@@ -876,7 +1229,13 @@ class JAXQSOFit:
 
     @staticmethod
     def _require_posterior_bundle_fsps_metadata(state):
-        """Return required FSPS bundle metadata or raise on incomplete bundles."""
+        """Return required FSPS bundle metadata or raise on incomplete bundles.
+
+        Parameters
+        ----------
+        state : object
+            state value.
+        """
         required_keys = (
             "_fit_fsps_age_grid",
             "_fit_fsps_logzsol_grid",
@@ -901,7 +1260,17 @@ class JAXQSOFit:
 
     @staticmethod
     def _validate_fsps_weights_shape(pred_out, expected_templates, context):
-        """Ensure hydrated or reconstructed FSPS weights match the expected basis width."""
+        """Ensure hydrated or reconstructed FSPS weights match the expected basis width.
+
+        Parameters
+        ----------
+        pred_out : object
+            pred_out value.
+        expected_templates : object
+            expected_templates value.
+        context : object
+            context value.
+        """
         if pred_out is None or "fsps_weights" not in pred_out:
             raise ValueError(f"{context} requires pred_out['fsps_weights'] to be present.")
         fsps_weights = np.asarray(pred_out["fsps_weights"], dtype=float)
@@ -1028,7 +1397,17 @@ class JAXQSOFit:
         )
 
     def save_posterior_bundle(self, save_name=None, save_path=None, *, _state: _PosteriorState | None = None):
-        """Persist posterior samples plus minimal metadata for compact reloads."""
+        """Persist posterior samples plus minimal metadata for compact reloads.
+
+        Parameters
+        ----------
+        save_name : object
+            save_name value.
+        save_path : object
+            save_path value.
+        _state : object
+            _state value.
+        """
         state = self._ensure_posterior_state() if _state is None else _state
         if state.samples is None:
             raise RuntimeError("No posterior samples available. Run fit() before saving a posterior bundle.")
@@ -1053,12 +1432,38 @@ class JAXQSOFit:
         return out_file
 
     def save(self, path=None, *, save_name=None, _state: _PosteriorState | None = None):
-        """Persist posterior samples and fit metadata to a compact bundle."""
+        """Persist posterior samples and fit metadata to a compact bundle.
+
+        Parameters
+        ----------
+        path : object
+            path value.
+        save_name : object
+            save_name value.
+        _state : object
+            _state value.
+        """
         return self.save_posterior_bundle(save_name=save_name, save_path=path, _state=_state)
 
     @staticmethod
     def _build_fsps_grid_for_fit(wave, age_grid_gyr, logzsol_grid, dsps_ssp_fn, decompose_host, z_qso=0.0):
-        """Build the host-template grid only when host decomposition is enabled."""
+        """Build the host-template grid only when host decomposition is enabled.
+
+        Parameters
+        ----------
+        wave : object
+            wave value.
+        age_grid_gyr : object
+            age_grid_gyr value.
+        logzsol_grid : object
+            logzsol_grid value.
+        dsps_ssp_fn : object
+            dsps_ssp_fn value.
+        decompose_host : object
+            decompose_host value.
+        z_qso : object
+            z_qso value.
+        """
         if decompose_host:
             return build_fsps_template_grid(
                 wave_out=wave,
@@ -1106,7 +1511,25 @@ class JAXQSOFit:
         kwargs_plot=None,
         diagnostics_kwargs=None,
     ):
-        """Load a compressed HDF5 posterior bundle and return a JAXQSOFit object."""
+        """Load a compressed HDF5 posterior bundle and return a JAXQSOFit object.
+
+        Parameters
+        ----------
+        filename : object
+            filename value.
+        output_path : object
+            output_path value.
+        save_name : object
+            save_name value.
+        plot_fig : object
+            plot_fig value.
+        plot_diagnostics : object
+            plot_diagnostics value.
+        kwargs_plot : object
+            kwargs_plot value.
+        diagnostics_kwargs : object
+            diagnostics_kwargs value.
+        """
         if save_name is not None:
             bundle_name = cls._normalize_posterior_bundle_name(save_name)
             bundle_dir = '.' if output_path is None else output_path
@@ -1200,7 +1623,17 @@ class JAXQSOFit:
         path=None,
         figure=None,
     ) -> FitResult:
-        """Build a public result object from the current mirrored fit state."""
+        """Build a public result object from the current mirrored fit state.
+
+        Parameters
+        ----------
+        method : object
+            method value.
+        path : object
+            path value.
+        figure : object
+            figure value.
+        """
         state = self._ensure_posterior_state()
         if method is not None:
             state.method = str(method)
@@ -1233,14 +1666,22 @@ class JAXQSOFit:
 
     @classmethod
     def load_result(cls, *args, **kwargs) -> FitResult:
-        """Load a posterior bundle and wrap it in a :class:`FitResult`."""
+        """Load a posterior bundle and wrap it in a :class:`FitResult`.
+
+        Parameters
+        ----------
+        *args : tuple
+            Additional positional arguments.
+        **kwargs : dict
+            Additional keyword arguments.
+        """
         fitter = cls.load(*args, **kwargs)
         return fitter._make_result(
             method=getattr(fitter, "_fit_inference_method", "loaded"),
             path=getattr(fitter, "_loaded_posterior_path", None),
         )
 
-    def fit(self, *, verbose=True, kwargs_plot=None):
+    def fit(self, *, verbose=True, kwargs_plot=None, **kwargs):
         """Run preprocessing, inference, persistence, and plotting.
 
         The public API is configuration-first: construct ``JAXQSOFit`` with a
@@ -1254,6 +1695,10 @@ class JAXQSOFit:
             Verbose optimizer output where applicable.
         kwargs_plot : dict or None, optional
             Extra keyword arguments passed to :meth:`plot_fig`.
+        **kwargs
+            Removed legacy fit keyword arguments. Passing any value here raises
+            a configuration-first error message with the corresponding config
+            field when one exists.
 
         Returns
         -------
@@ -1261,6 +1706,46 @@ class JAXQSOFit:
             Result object exposing samples, medians, persistence, and plotting
             helpers while the fitter keeps mirrored posterior state.
         """
+        if kwargs:
+            legacy_targets = {
+                "deredden": "config.observation.apply_mw_deredden",
+                "fit_lines": "config.lines.enabled",
+                "decompose_host": "config.host.enabled",
+                "fit_pl": "config.continuum.fit_power_law",
+                "fit_fe": "config.continuum.fit_feii",
+                "fit_bc": "config.continuum.fit_balmer_continuum",
+                "fit_poly": "config.continuum.fit_polynomial_tilt",
+                "fit_reddening": "config.continuum.fit_reddening",
+                "fit_poly_order": "config.continuum.polynomial_order",
+                "save_result": "config.output.save_result",
+                "plot_fig": "config.output.plot_fig",
+                "save_fig": "config.output.save_fig",
+                "output_path": "config.output.output_path",
+                "fig_path": "config.output.output_path",
+                "result_path": "config.output.output_path",
+                "nuts_warmup": "config.inference.num_warmup",
+                "nuts_samples": "config.inference.num_samples",
+                "nuts_chains": "config.inference.num_chains",
+                "target_accept_prob": "config.inference.target_accept_prob",
+                "dense_mass": "config.inference.dense_mass",
+                "max_tree_depth": "config.inference.max_tree_depth",
+                "optax_steps": "config.inference.map_steps",
+                "optax_lr": "config.inference.learning_rate",
+                "fit_method": "config.inference.method",
+                "method": "config.inference.method",
+            }
+            details = []
+            for key in sorted(kwargs):
+                target = legacy_targets.get(key)
+                if target is None:
+                    details.append(f"{key}: no public fit() keyword exists")
+                else:
+                    details.append(f"{key}: set q.{target} before q.fit()")
+            joined = "; ".join(details)
+            raise TypeError(
+                "JAXQSOFit.fit() is configuration-first and does not accept "
+                f"model/inference keyword arguments. {joined}."
+            )
 
         cfg = self.config
         obs_cfg = cfg.observation
@@ -1279,6 +1764,8 @@ class JAXQSOFit:
         wave_mask = prep_cfg.wave_mask
         mask_lya_forest = bool(prep_cfg.mask_lya_forest)
         fit_lines = bool(line_cfg.enabled)
+        use_broad_lines = bool(line_cfg.use_broad_lines)
+        use_narrow_lines = bool(line_cfg.use_narrow_lines)
         decompose_host = bool(host_cfg.enabled)
         fit_pl = bool(cont_cfg.fit_power_law)
         fit_fe = bool(cont_cfg.fit_feii)
@@ -1298,6 +1785,8 @@ class JAXQSOFit:
         nuts_samples = int(infer_cfg.num_samples)
         nuts_chains = int(infer_cfg.num_chains)
         nuts_target_accept = float(infer_cfg.target_accept_prob)
+        nuts_dense_mass = bool(infer_cfg.dense_mass)
+        nuts_max_tree_depth = int(infer_cfg.max_tree_depth)
         optax_steps = int(infer_cfg.map_steps)
         optax_lr = float(infer_cfg.learning_rate)
         plot_init = bool(infer_cfg.plot_init or out_cfg.plot_init)
@@ -1331,6 +1820,8 @@ class JAXQSOFit:
         self._fit_deredden = bool(deredden)
         self._fit_decompose_host = bool(decompose_host)
         self._fit_fit_lines = bool(fit_lines)
+        self._fit_use_broad_lines = bool(use_broad_lines)
+        self._fit_use_narrow_lines = bool(use_narrow_lines)
         self._fit_fit_pl = bool(fit_pl)
         self._fit_fit_fe = bool(fit_fe)
         self._fit_fit_bc = bool(fit_bc)
@@ -1348,7 +1839,11 @@ class JAXQSOFit:
         self._fit_use_psf_phot = bool(use_psf_phot)
         requested_custom_components = normalize_custom_components(custom_components)
         self._fit_custom_components = requested_custom_components
-        self._fit_custom_line_components = normalize_custom_line_components(custom_line_components)
+        self._fit_custom_line_components = _filter_custom_line_components_by_kind(
+            custom_line_components,
+            use_broad_lines=use_broad_lines,
+            use_narrow_lines=use_narrow_lines,
+        )
 
         self.wave_range = wave_range
         self.wave_mask = wave_mask
@@ -1466,6 +1961,11 @@ class JAXQSOFit:
             flux=self.flux,
             custom_line_components=self._fit_custom_line_components,
         )
+        prior_config = _filter_prior_line_table_by_kind(
+            prior_config,
+            use_broad_lines=use_broad_lines,
+            use_narrow_lines=use_narrow_lines,
+        )
         out_params = prior_config.get('out_params', {})
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
         self._fit_prior_config = prior_config
@@ -1494,6 +1994,8 @@ class JAXQSOFit:
                 num_samples=nuts_samples,
                 num_chains=nuts_chains,
                 target_accept_prob=nuts_target_accept,
+                dense_mass=nuts_dense_mass,
+                max_tree_depth=nuts_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -1545,6 +2047,8 @@ class JAXQSOFit:
                 num_samples=nuts_samples,
                 num_chains=nuts_chains,
                 target_accept_prob=nuts_target_accept,
+                dense_mass=nuts_dense_mass,
+                max_tree_depth=nuts_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -1584,6 +2088,8 @@ class JAXQSOFit:
 
     def run_fsps_numpyro_fit(self, num_warmup=500, num_samples=1000, num_chains=1,
                              target_accept_prob=0.9,
+                             dense_mass=True,
+                             max_tree_depth=8,
                              age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                              logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                              prior_config=None,
@@ -1613,6 +2119,10 @@ class JAXQSOFit:
             Number of MCMC chains.
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
+        dense_mass : bool, optional
+            If True, use a dense mass matrix during NUTS adaptation.
+        max_tree_depth : int, optional
+            Maximum NUTS tree depth.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -1627,6 +2137,19 @@ class JAXQSOFit:
             Polynomial order for the multiplicative continuum tilt.
         init_values : dict or None, optional
             Optional initial values for ``init_to_value``.
+
+        psf_mags : object
+            psf_mags value.
+        psf_mag_errs : object
+            psf_mag_errs value.
+        psf_filter_curves : object
+            psf_filter_curves value.
+        use_psf_phot : object
+            use_psf_phot value.
+        custom_components : object
+            custom_components value.
+        custom_line_components : object
+            custom_line_components value.
         """
         wave = np.asarray(self.wave, dtype=float)
         flux = np.asarray(self.flux, dtype=float)
@@ -1750,7 +2273,13 @@ class JAXQSOFit:
             if reparam_config
             else qso_fsps_joint_model
         )
-        kernel = NUTS(nuts_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
+        kernel = NUTS(
+            nuts_model,
+            init_strategy=init_strategy,
+            target_accept_prob=target_accept_prob,
+            dense_mass=bool(dense_mass),
+            max_tree_depth=int(max_tree_depth),
+        )
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
         rng_key = jax.random.PRNGKey(0)
         mcmc.run(
@@ -1834,7 +2363,27 @@ class JAXQSOFit:
         )
 
     def _plot_initialization(self, wave, flux, err, pred_out, samples, *, stage_name, attr_prefix, model_label):
-        """Plot and store an Optax initialization model."""
+        """Plot and store an Optax initialization model.
+
+        Parameters
+        ----------
+        wave : object
+            wave value.
+        flux : object
+            flux value.
+        err : object
+            err value.
+        pred_out : object
+            pred_out value.
+        samples : object
+            samples value.
+        stage_name : object
+            stage_name value.
+        attr_prefix : object
+            attr_prefix value.
+        model_label : object
+            model_label value.
+        """
         wave = np.asarray(wave, dtype=float)
         flux = np.asarray(flux, dtype=float)
         err = np.asarray(err, dtype=float)
@@ -1880,7 +2429,21 @@ class JAXQSOFit:
         )
 
     def _plot_stage1_initialization(self, wave, flux, err, pred_out, samples):
-        """Plot and store the stage-1 Optax continuum/host warm-start model."""
+        """Plot and store the stage-1 Optax continuum/host warm-start model.
+
+        Parameters
+        ----------
+        wave : object
+            wave value.
+        flux : object
+            flux value.
+        err : object
+            err value.
+        pred_out : object
+            pred_out value.
+        samples : object
+            samples value.
+        """
         self._plot_initialization(
             wave,
             flux,
@@ -1893,7 +2456,21 @@ class JAXQSOFit:
         )
 
     def _plot_stage2_initialization(self, wave, flux, err, pred_out, samples):
-        """Plot and store the full stage-2 Optax MAP model passed to NUTS."""
+        """Plot and store the full stage-2 Optax MAP model passed to NUTS.
+
+        Parameters
+        ----------
+        wave : object
+            wave value.
+        flux : object
+            flux value.
+        err : object
+            err value.
+        pred_out : object
+            pred_out value.
+        samples : object
+            samples value.
+        """
         self._plot_initialization(
             wave,
             flux,
@@ -1948,6 +2525,19 @@ class JAXQSOFit:
         plot_init : bool, optional
             If True, plot and store the stage-1 continuum/host warm-start
             model before starting the full model stage.
+
+        psf_mags : object
+            psf_mags value.
+        psf_mag_errs : object
+            psf_mag_errs value.
+        psf_filter_curves : object
+            psf_filter_curves value.
+        use_psf_phot : object
+            use_psf_phot value.
+        custom_components : object
+            custom_components value.
+        custom_line_components : object
+            custom_line_components value.
         """
         wave = np.asarray(self.wave, dtype=float)
         flux = np.asarray(self.flux, dtype=float)
@@ -2007,7 +2597,15 @@ class JAXQSOFit:
         self.tied_line_meta = tied_line_meta
 
         def _subset_fsps_grid(grid, keep_mask):
-            """Return an FSPS grid restricted to the selected wavelength pixels."""
+            """Return an FSPS grid restricted to the selected wavelength pixels.
+
+            Parameters
+            ----------
+            grid : object
+                grid value.
+            keep_mask : object
+                keep_mask value.
+            """
             keep_mask = np.asarray(keep_mask, dtype=bool)
             host_basis = getattr(grid, "host_basis_jax", None)
             if host_basis is not None:
@@ -2026,7 +2624,13 @@ class JAXQSOFit:
             )
 
         def _stage1_continuum_keep_mask(wave_in):
-            """Mask strong optical emission-line windows for continuum warm start."""
+            """Mask strong optical emission-line windows for continuum warm start.
+
+            Parameters
+            ----------
+            wave_in : object
+                wave_in value.
+            """
             line_windows = (
                 (3700.0, 3755.0),   # [O II]
                 (3850.0, 3895.0),   # [Ne III]
@@ -2049,7 +2653,15 @@ class JAXQSOFit:
             return keep
 
         def _subset_psf_filter_curves(curves, keep_mask):
-            """Return PSF filter curves restricted to a wavelength subset."""
+            """Return PSF filter curves restricted to a wavelength subset.
+
+            Parameters
+            ----------
+            curves : object
+                curves value.
+            keep_mask : object
+                keep_mask value.
+            """
             if curves is None:
                 return None
             subset = dict(curves)
@@ -2074,7 +2686,41 @@ class JAXQSOFit:
             fsps_grid_i=None,
             psf_filter_curves_i=None,
         ):
-            """Run an SVI stage and return optimizer state/results."""
+            """Run an SVI stage and return optimizer state/results.
+
+            Parameters
+            ----------
+            guide : object
+                guide value.
+            steps : object
+                steps value.
+            use_lines_i : object
+                use_lines_i value.
+            fit_pl_i : object
+                fit_pl_i value.
+            fit_fe_i : object
+                fit_fe_i value.
+            fit_bc_i : object
+                fit_bc_i value.
+            fit_poly_i : object
+                fit_poly_i value.
+            fit_reddening_i : object
+                fit_reddening_i value.
+            fit_poly_order_i : object
+                fit_poly_order_i value.
+            decompose_host_i : object
+                decompose_host_i value.
+            wave_i : object
+                wave_i value.
+            flux_i : object
+                flux_i value.
+            err_i : object
+                err_i value.
+            fsps_grid_i : object
+                fsps_grid_i value.
+            psf_filter_curves_i : object
+                psf_filter_curves_i value.
+            """
             wave_run = wave if wave_i is None else wave_i
             flux_run = flux if flux_i is None else flux_i
             err_run = err if err_i is None else err_i
@@ -2120,7 +2766,17 @@ class JAXQSOFit:
             return svi, result
 
         def _prior_field(key, field, default):
-            """Read a scalar field from a prior-config entry."""
+            """Read a scalar field from a prior-config entry.
+
+            Parameters
+            ----------
+            key : object
+                key value.
+            field : object
+                field value.
+            default : object
+                default value.
+            """
             cfg = prior_config.get(key, default)
             if isinstance(cfg, dict):
                 value = cfg.get(field, cfg.get('value', cfg.get('loc', default)))
@@ -2365,6 +3021,8 @@ class JAXQSOFit:
     def run_fsps_optax_nuts_fit(self, optax_steps=2000, optax_learning_rate=1e-2,
                                 num_warmup=500, num_samples=1000, num_chains=1,
                                 target_accept_prob=0.9,
+                                dense_mass=True,
+                                max_tree_depth=8,
                                 age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                                 logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                                 prior_config=None,
@@ -2398,6 +3056,10 @@ class JAXQSOFit:
             Number of MCMC chains.
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
+        dense_mass : bool, optional
+            If True, use a dense mass matrix during NUTS adaptation.
+        max_tree_depth : int, optional
+            Maximum NUTS tree depth.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -2413,6 +3075,19 @@ class JAXQSOFit:
         plot_init : bool, optional
             If True, plot and store the stage-1 Optax warm-start model before
             starting the full Optax stage and NUTS.
+
+        psf_mags : object
+            psf_mags value.
+        psf_mag_errs : object
+            psf_mag_errs value.
+        psf_filter_curves : object
+            psf_filter_curves value.
+        use_psf_phot : object
+            use_psf_phot value.
+        custom_components : object
+            custom_components value.
+        custom_line_components : object
+            custom_line_components value.
         """
         self.run_fsps_optax_fit(
             num_steps=optax_steps,
@@ -2443,6 +3118,8 @@ class JAXQSOFit:
             num_samples=num_samples,
             num_chains=num_chains,
             target_accept_prob=target_accept_prob,
+            dense_mass=dense_mass,
+            max_tree_depth=max_tree_depth,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             prior_config=prior_config,
@@ -2558,7 +3235,13 @@ class JAXQSOFit:
         self.eta_psf_err = float(np.nanstd(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
         self.scale_psf = 10.0 ** (-0.4 * self.delta_m_psf) if np.isfinite(self.delta_m_psf) else np.nan
         def _optional_draw_summary(key):
-            """Return median/std for an optional predictive diagnostic."""
+            """Return median/std for an optional predictive diagnostic.
+
+            Parameters
+            ----------
+            key : object
+                key value.
+            """
             if key not in pred_out:
                 return np.nan, np.nan
             draws = np.asarray(pred_out[key], dtype=float)
@@ -2573,7 +3256,13 @@ class JAXQSOFit:
         self.host_redshift_prior_df_eff, self.host_redshift_prior_df_eff_err = _optional_draw_summary('host_redshift_prior_df_eff')
 
         def _band(x):
-            """Compute 16th/84th percentile uncertainty band across samples."""
+            """Compute 16th/84th percentile uncertainty band across samples.
+
+            Parameters
+            ----------
+            x : object
+                x value.
+            """
             a = np.asarray(x)
             return np.percentile(a, 16, axis=0), np.percentile(a, 84, axis=0)
 
@@ -2881,7 +3570,15 @@ class JAXQSOFit:
 
     @staticmethod
     def _validate_deredden_coordinates(ra, dec):
-        """Validate sky coordinates before Galactic dereddening."""
+        """Validate sky coordinates before Galactic dereddening.
+
+        Parameters
+        ----------
+        ra : object
+            ra value.
+        dec : object
+            dec value.
+        """
         ra_f = float(ra)
         dec_f = float(dec)
         invalid_placeholder = (ra_f == -999.0 and dec_f == -999.0)
@@ -2966,7 +3663,14 @@ class JAXQSOFit:
         return self._component_fraction_at_wave(self.host, w0)
 
     def _host_fraction_psf_at_wave(self, w0):
-        """Return PSF-space host fraction at wavelength ``w0``."""
+        """Return PSF-space host fraction at wavelength ``w0``.
+
+
+        Parameters
+        ----------
+        w0 : object
+            w0 value.
+        """
         qso_psf = np.asarray(getattr(self, 'qso_psf', []), dtype=float)
         host_psf = np.asarray(getattr(self, 'host_psf', []), dtype=float)
         if qso_psf.size != len(getattr(self, 'wave', [])) or host_psf.size != len(getattr(self, 'wave', [])):
@@ -3030,6 +3734,9 @@ class JAXQSOFit:
         return_components : bool, optional
             If True, include per-component draws and medians in the return value.
             This includes any fitted custom components.
+
+        _state : object
+            _state value.
         """
         state = self._ensure_posterior_state() if _state is None else _state
         if state.samples is None:
@@ -3161,7 +3868,27 @@ class JAXQSOFit:
         min_width: float,
         depth_threshold: float,
     ) -> tuple[float, list[tuple[float, float]]]:
-        """Compute a simple BI-like integral from a BAL model and reference model."""
+        """Compute a simple BI-like integral from a BAL model and reference model.
+
+        Parameters
+        ----------
+        wave : object
+            wave value.
+        bal_sum : object
+            bal_sum value.
+        reference : object
+            reference value.
+        line_center : object
+            line_center value.
+        vmin : object
+            vmin value.
+        vmax : object
+            vmax value.
+        min_width : object
+            min_width value.
+        depth_threshold : object
+            depth_threshold value.
+        """
         wave = np.asarray(wave, dtype=float)
         bal_sum = np.asarray(bal_sum, dtype=float)
         reference = np.asarray(reference, dtype=float)
@@ -3231,6 +3958,25 @@ class JAXQSOFit:
         model. The returned BI uses the standard-style integrand
         ``1 - f_norm / 0.9`` over contiguous troughs at least ``min_width`` wide
         and deeper than ``depth_threshold``.
+
+        Parameters
+        ----------
+        component_names : object
+            component_names value.
+        line_center : object
+            line_center value.
+        vmin : object
+            vmin value.
+        vmax : object
+            vmax value.
+        min_width : object
+            min_width value.
+        depth_threshold : object
+            depth_threshold value.
+        include_line_emission : object
+            include_line_emission value.
+        return_details : object
+            return_details value.
         """
         self._ensure_hydrated_from_samples()
         if not hasattr(self, 'wave') or len(self.wave) == 0:
@@ -3490,14 +4236,29 @@ class JAXQSOFit:
         return
 
     def _posterior_series(self, param_names=None, max_vector_elems=2):
-        """Flatten posterior samples into labeled 1D series for diagnostics."""
+        """Flatten posterior samples into labeled 1D series for diagnostics.
+
+        Parameters
+        ----------
+        param_names : object
+            param_names value.
+        max_vector_elems : object
+            max_vector_elems value.
+        """
         from .plotting import posterior_series
 
         return posterior_series(self, param_names=param_names, max_vector_elems=max_vector_elems)
 
     @staticmethod
     def _build_result_arrays(entries):
-        """Convert ``(name, value, type)`` entries into legacy result arrays."""
+        """Convert ``(name, value, type)`` entries into legacy result arrays.
+
+
+        Parameters
+        ----------
+        entries : object
+            entries value.
+        """
         return (
             np.array([value for _, value, _ in entries], dtype=object),
             np.array([dtype for _, _, dtype in entries], dtype=object),
@@ -3506,26 +4267,54 @@ class JAXQSOFit:
 
     @staticmethod
     def _filter_half_width_angstrom(filt):
-        """Return an approximate half-width for a photometric filter."""
+        """Return an approximate half-width for a photometric filter.
+
+
+        Parameters
+        ----------
+        filt : object
+            filt value.
+        """
         from .plotting import filter_half_width_angstrom
 
         return filter_half_width_angstrom(filt)
 
     def _plot_filter_metadata(self, bands):
-        """Return plotting metadata arrays for the requested photometric bands."""
+        """Return plotting metadata arrays for the requested photometric bands.
+
+
+        Parameters
+        ----------
+        bands : object
+            bands value.
+        """
         from .plotting import plot_filter_metadata
 
         return plot_filter_metadata(self, bands)
 
     @staticmethod
     def _style_axis(ax, spine_lw=1.5):
-        """Apply consistent axis styling."""
+        """Apply consistent axis styling.
+
+        Parameters
+        ----------
+        ax : object
+            ax value.
+        spine_lw : object
+            spine_lw value.
+        """
         from .plotting import style_axis
 
         return style_axis(ax, spine_lw=spine_lw)
 
     def _synthetic_photometry_for_plot(self, model_attr='model_total'):
-        """Return rest-frame synthetic photometry points for plotting, if available."""
+        """Return rest-frame synthetic photometry points for plotting, if available.
+
+        Parameters
+        ----------
+        model_attr : object
+            model_attr value.
+        """
         from .plotting import synthetic_photometry_for_plot
 
         return synthetic_photometry_for_plot(self, model_attr=model_attr)
@@ -3544,7 +4333,22 @@ class JAXQSOFit:
         save_fig_name=None,
         show_plot=False,
     ):
-        """Plot posterior trace series for selected parameters."""
+        """Plot posterior trace series for selected parameters.
+
+        Parameters
+        ----------
+        param_names : list[str] | str | None, optional
+            Parameter selector. Use ``'all'`` to include all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        save_fig_name : str or None, optional
+            Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+        """
         from .plotting import plot_trace
 
         return plot_trace(
@@ -3566,7 +4370,26 @@ class JAXQSOFit:
         save_fig_name=None,
         show_plot=False,
     ):
-        """Plot posterior projections with ``corner.corner``."""
+        """Plot posterior projections with ``corner.corner``.
+
+        Parameters
+        ----------
+        param_names : list[str] | str | None, optional
+            Parameter selector. Use ``'all'`` to include all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        bins : int, optional
+            Histogram bin count.
+        max_points : int, optional
+            Maximum posterior draws to plot.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        save_fig_name : str or None, optional
+            Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+        """
         from .plotting import plot_corner
 
         return plot_corner(
@@ -3586,7 +4409,30 @@ class JAXQSOFit:
                               corner_bins=30, corner_max_points=2000,
                               save_fig_path=None,
                               show_plot=False):
-        """Plot trace and/or corner diagnostics in a single convenience call."""
+        """Plot trace and/or corner diagnostics in a single convenience call.
+
+        Parameters
+        ----------
+        do_trace : bool, optional
+            If True, render the trace plot.
+        do_corner : bool, optional
+            If True, render the corner plot.
+        param_names : list[str] | str | None, optional
+            Parameter selector shared by both plots. Use ``'all'`` to include
+            all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        corner_bins : int, optional
+            Histogram bin count for the corner plot.
+        corner_max_points : int, optional
+            Maximum posterior draws to use in the corner plot.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        show_plot : bool, optional
+            If True, display each enabled figure interactively with
+            ``plt.show()``.
+        """
         from .plotting import plot_mcmc_diagnostics
 
         return plot_mcmc_diagnostics(
@@ -3602,14 +4448,49 @@ class JAXQSOFit:
         )
 
     def plot_spectrum(self, **kwargs):
-        """Plot the fitted spectrum, model components, and residuals."""
+        """Plot the fitted spectrum, model components, and residuals.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments forwarded to :meth:`plot_fig`.
+        """
         from .plotting import plot_spectrum
 
         return plot_spectrum(self, **kwargs)
 
     def plot_fig(self, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
                  plot_1sigma=True, sigma_alpha=0.12, show_plot=True, plot_psf_space=False, plot_intrinsic_powerlaw=False):
-        """Plot data, model components, line decomposition, and residuals."""
+        """Plot data, model components, line decomposition, and residuals.
+
+        Parameters
+        ----------
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        broad_fwhm : float, optional
+            Reserved broad-line threshold kept for compatibility.
+        plot_legend : bool, optional
+            If True, draw a legend.
+        ylims : tuple[float, float] or None, optional
+            Optional y-axis limits for the spectrum panel.
+        plot_residual : bool, optional
+            If True, draw the residual panel below the spectrum.
+        show_title : bool, optional
+            Reserved title toggle kept for compatibility.
+        plot_1sigma : bool, optional
+            If True, draw 16th-84th percentile posterior bands where available.
+        sigma_alpha : float, optional
+            Alpha transparency for posterior uncertainty bands.
+        show_plot : bool, optional
+            If True, call ``plt.show()``.
+        plot_psf_space : bool, optional
+            If True, plot the PSF-space model/components instead of the
+            fiber-scale model/components.
+        plot_intrinsic_powerlaw : bool, optional
+            If True, overlay the intrinsic AGN power law before tilt and edge
+            corrections.
+        """
         from .plotting import plot_fig
 
         return plot_fig(

@@ -4,6 +4,16 @@ build:
   os: ubuntu-24.04
   tools:
     python: "3.11"
+  apt_packages:
+    - pandoc
+  jobs:
+    pre_build:
+      - mkdir -p .cache/dustmaps
+      - python -c "import json, pathlib; pathlib.Path.home().joinpath('.dustmapsrc').write_text(json.dumps({'data_dir': str(pathlib.Path('.cache/dustmaps').resolve())}))"
+      - python -c "from dustmaps.sfd import fetch; fetch()"
+      - curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 --output tempdata.h5
+      - test -s tempdata.h5
+      - ln -sf ../tempdata.h5 docs/tempdata.h5
 
 sphinx:
   configuration: docs/conf.py

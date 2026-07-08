@@ -40,7 +40,13 @@ AMPLITUDE_FLOOR = 1e-32
 
 
 def _materialize_prior_mapping(prior_config):
-    """Return a flat prior mapping for low-level model helpers."""
+    """Return a flat prior mapping for low-level model helpers.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    """
     if prior_config is None:
         return {}
     if isinstance(prior_config, Mapping):
@@ -51,7 +57,19 @@ def _materialize_prior_mapping(prior_config):
 
 
 def unred(wave, flux, ebv, R_V=3.1):
-    """Apply Fitzpatrick (1999) Galactic dereddening to a flux array."""
+    """Apply Fitzpatrick (1999) Galactic dereddening to a flux array.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    flux : object
+        flux value.
+    ebv : object
+        ebv value.
+    R_V : object
+        R_V value.
+    """
     # Preserve legacy function signature; use extinction package implementation.
     wave = np.asarray(wave, dtype=float)
     flux = np.asarray(flux, dtype=float)
@@ -60,12 +78,26 @@ def unred(wave, flux, ebv, R_V=3.1):
 
 
 def _np_to_jnp(x):
-    """Convert an array-like object to float64 JAX array."""
+    """Convert an array-like object to float64 JAX array.
+
+    Parameters
+    ----------
+    x : object
+        x value.
+    """
     return jnp.asarray(np.asarray(x, dtype=np.float64))
 
 
 def spectral_likelihood_weight_from_resolving_power(wave, resolving_power):
-    """Return the resolution-element spectral likelihood weight."""
+    """Return the resolution-element spectral likelihood weight.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    resolving_power : object
+        resolving_power value.
+    """
     if resolving_power is None:
         return jnp.asarray(1.0, dtype=jnp.float64)
     try:
@@ -90,7 +122,15 @@ def spectral_likelihood_weight_from_resolving_power(wave, resolving_power):
 
 
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
-    """Rescale a template so its robust peak amplitude is O(target_amp)."""
+    """Rescale a template so its robust peak amplitude is O(target_amp).
+
+    Parameters
+    ----------
+    flux : object
+        flux value.
+    target_amp : object
+        target_amp value.
+    """
     f = np.asarray(flux, dtype=float)
     robust = np.nanpercentile(np.abs(f), 99)
     if not np.isfinite(robust) or robust <= 0:
@@ -99,13 +139,28 @@ def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.nd
 
 
 def _spectrum_center_pivot(wave):
-    """Use the midpoint of the fitted wavelength range as the power-law pivot."""
+    """Use the midpoint of the fitted wavelength range as the power-law pivot.
+
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    """
     wave = jnp.asarray(wave)
     return jnp.maximum(0.5 * (wave[0] + wave[-1]), 1e-8)
 
 
 def _resolve_pl_pivot(wave, prior_config):
-    """Return the configured power-law pivot or fall back to the spectrum center."""
+    """Return the configured power-law pivot or fall back to the spectrum center.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    prior_config : object
+        prior_config value.
+    """
     prior_config = _materialize_prior_mapping(prior_config)
     pivot = prior_config.get("PL_pivot", None)
     if pivot is not None:
@@ -114,7 +169,17 @@ def _resolve_pl_pivot(wave, prior_config):
 
 
 def _resolve_poly_pivot(wave, prior_config, *, require_configured=False):
-    """Return the polynomial pivot wavelength used by the fitted model."""
+    """Return the polynomial pivot wavelength used by the fitted model.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    prior_config : object
+        prior_config value.
+    require_configured : object
+        require_configured value.
+    """
     prior_config = _materialize_prior_mapping(prior_config)
     pivot = prior_config.get("poly_pivot", None)
     if pivot is not None:
@@ -128,7 +193,13 @@ def _resolve_poly_pivot(wave, prior_config, *, require_configured=False):
 
 
 def _format_wave_label(w0):
-    """Format a continuum wavelength for deterministic site naming."""
+    """Format a continuum wavelength for deterministic site naming.
+
+    Parameters
+    ----------
+    w0 : object
+        w0 value.
+    """
     try:
         wave = float(w0)
     except Exception:
@@ -139,7 +210,15 @@ def _format_wave_label(w0):
 
 
 def _continuum_output_waves_from_prior_config(prior_config, *, default_waves=(2500.0, 4200.0, 5100.0)):
-    """Return unique continuum output wavelengths, always preserving 2500 A."""
+    """Return unique continuum output wavelengths, always preserving 2500 A.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    default_waves : object
+        default_waves value.
+    """
     prior_config = _materialize_prior_mapping(prior_config)
     out_params = prior_config.get("out_params", {})
     waves = np.asarray(out_params.get("cont_loc", []), dtype=float)
@@ -161,7 +240,13 @@ def _continuum_output_waves_from_prior_config(prior_config, *, default_waves=(25
 
 @lru_cache(maxsize=256)
 def _luminosity_distance_cm(z: float) -> float:
-    """Return luminosity distance in cm for a fixed flat LCDM cosmology."""
+    """Return luminosity distance in cm for a fixed flat LCDM cosmology.
+
+    Parameters
+    ----------
+    z : object
+        z value.
+    """
     z = float(z)
     grid = np.linspace(0.0, max(z, 1.0e-8), 256, dtype=float)
     ez_inv = 1.0 / np.sqrt(np.maximum(_LUMINOSITY_OM0 * (1.0 + grid) ** 3 + (1.0 - _LUMINOSITY_OM0), 1.0e-18))
@@ -170,19 +255,37 @@ def _luminosity_distance_cm(z: float) -> float:
 
 
 def _ez_inv_flat_lcdm_jax(z):
-    """Inverse expansion rate for the fixed flat LCDM helper cosmology."""
+    """Inverse expansion rate for the fixed flat LCDM helper cosmology.
+
+    Parameters
+    ----------
+    z : object
+        z value.
+    """
     z = jnp.asarray(z, dtype=jnp.float64)
     ez2 = _LUMINOSITY_OM0 * (1.0 + z) ** 3 + (1.0 - _LUMINOSITY_OM0)
     return jax.lax.rsqrt(jnp.maximum(ez2, 1.0e-18))
 
 
 def _luminosity_distance_cm_jax(z):
-    """Return luminosity distance in cm using a pure-JAX flat LCDM integral."""
+    """Return luminosity distance in cm using a pure-JAX flat LCDM integral.
+
+    Parameters
+    ----------
+    z : object
+        z value.
+    """
     z = jnp.asarray(z, dtype=jnp.float64)
     scalar_input = z.ndim == 0
 
     def _one_distance(zi):
-        """Integrate the fixed flat-LCDM luminosity distance for one redshift."""
+        """Integrate the fixed flat-LCDM luminosity distance for one redshift.
+
+        Parameters
+        ----------
+        zi : object
+            zi value.
+        """
         grid = jnp.linspace(0.0, jnp.maximum(zi, 1.0e-8), 256)
         dc_mpc = (C_KMS / _LUMINOSITY_H0) * jnp.trapezoid(_ez_inv_flat_lcdm_jax(grid), x=grid)
         return dc_mpc * (1.0 + zi) * MPC_TO_CM
@@ -192,7 +295,13 @@ def _luminosity_distance_cm_jax(z):
 
 
 def _cosmic_age_gyr(z: float) -> float:
-    """Return cosmic age in Gyr for the fixed flat LCDM helper cosmology."""
+    """Return cosmic age in Gyr for the fixed flat LCDM helper cosmology.
+
+    Parameters
+    ----------
+    z : object
+        z value.
+    """
     z = max(float(z), 0.0)
     grid = np.geomspace(1.0 + z, 1.0e4, 2048, dtype=float)
     ez = np.sqrt(np.maximum(_LUMINOSITY_OM0 * grid**3 + (1.0 - _LUMINOSITY_OM0), 1.0e-18))
@@ -202,7 +311,15 @@ def _cosmic_age_gyr(z: float) -> float:
 
 
 def _host_luminosity_w_a_to_rest_flux_units(host_rest_lum_w_a, z_qso):
-    """Convert rest L_lambda in W/A to JAXQSOFit rest-frame flux units."""
+    """Convert rest L_lambda in W/A to JAXQSOFit rest-frame flux units.
+
+    Parameters
+    ----------
+    host_rest_lum_w_a : object
+        host_rest_lum_w_a value.
+    z_qso : object
+        z_qso value.
+    """
     d_l_cm = _luminosity_distance_cm_jax(z_qso)
     flux_cgs_rest = (
         jnp.asarray(host_rest_lum_w_a, dtype=jnp.float64)
@@ -213,7 +330,17 @@ def _host_luminosity_w_a_to_rest_flux_units(host_rest_lum_w_a, z_qso):
 
 
 def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
-    """Return log10(lambda Llambda) using rest-frame f_lambda in 1e-17 cgs units."""
+    """Return log10(lambda Llambda) using rest-frame f_lambda in 1e-17 cgs units.
+
+    Parameters
+    ----------
+    wave_rest : object
+        wave_rest value.
+    flam_rest : object
+        flam_rest value.
+    z : object
+        z value.
+    """
     wave_rest = jnp.maximum(jnp.asarray(wave_rest), 1e-8)
     flam_rest_cgs = 1e-17 * jnp.asarray(flam_rest)
     d_l_cm = _luminosity_distance_cm_jax(z)
@@ -222,13 +349,33 @@ def _rest_log_lambda_llambda_from_flam(wave_rest, flam_rest, z):
 
 
 def _powerlaw_jax(wave, pl_norm, pl_slope, pivot):
-    """Evaluate a power-law continuum at input wavelengths."""
+    """Evaluate a power-law continuum at input wavelengths.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    pl_norm : object
+        pl_norm value.
+    pl_slope : object
+        pl_slope value.
+    pivot : object
+        pivot value.
+    """
     x = jnp.clip(wave / pivot, 1e-8, None)
     return pl_norm * x ** pl_slope
 
 
 def _host_redshift_prior_params(prior_config, z_qso):
-    """Return smooth redshift-dependent host prior weight, loc shift, scale multiplier, and df."""
+    """Return smooth redshift-dependent host prior weight, loc shift, scale multiplier, and df.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    z_qso : object
+        z_qso value.
+    """
     cfg = prior_config.get("host_redshift_prior", {}) if isinstance(prior_config, Mapping) else {}
     if not bool(cfg.get("enabled", True)):
         return jnp.asarray(0.0), jnp.asarray(0.0), jnp.asarray(1.0), None
@@ -252,7 +399,17 @@ def _host_redshift_prior_params(prior_config, z_qso):
 
 
 def negative_gaussian_bal_component(wave, params, metadata):
-    """Additive negative BAL trough with optional super-Gaussian boxiness."""
+    """Additive negative BAL trough with optional super-Gaussian boxiness.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    params : object
+        params value.
+    metadata : object
+        metadata value.
+    """
     center = params["center"]
     sigma = jnp.maximum(params["sigma"], 1e-3)
     depth = jnp.maximum(params["depth"], 0.0)
@@ -263,7 +420,17 @@ def negative_gaussian_bal_component(wave, params, metadata):
 
 
 def gaussian_bal_optical_depth_component(wave, params, metadata):
-    """BAL optical-depth profile parameterized by outflow velocity."""
+    """BAL optical-depth profile parameterized by outflow velocity.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    params : object
+        params value.
+    metadata : object
+        metadata value.
+    """
     line_lambda = jnp.asarray(metadata["line_lambda"], dtype=jnp.float64)
     v_out = jnp.maximum(params["v_out"], 0.0)
     center = line_lambda * (1.0 - v_out / C_KMS)
@@ -276,12 +443,25 @@ def gaussian_bal_optical_depth_component(wave, params, metadata):
 
 
 def _is_multiplicative_bal_component(comp):
-    """Return True for built-in BAL components modeled as transmission."""
+    """Return True for built-in BAL components modeled as transmission.
+
+
+    Parameters
+    ----------
+    comp : object
+        comp value.
+    """
     return str(getattr(comp, "metadata", {}).get("component_type", "")) == "bal_absorption"
 
 
 def _bal_covering_fraction(params):
-    """Return a bounded BAL covering fraction."""
+    """Return a bounded BAL covering fraction.
+
+    Parameters
+    ----------
+    params : object
+        params value.
+    """
     return jnp.clip(jnp.asarray(params.get("covering", 1.0)), 0.0, 0.999)
 
 
@@ -291,6 +471,17 @@ def _smc_like_reddening_jax(wave, a_uv, uv_ref=2500.0, alpha=1.2):
     The amplitude is normalized at ``uv_ref``: ``a_uv`` is
     :math:`A(\\mathrm{uv\\_ref})` in magnitudes, not a literal
     color excess.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    a_uv : object
+        a_uv value.
+    uv_ref : object
+        uv_ref value.
+    alpha : object
+        alpha value.
     """
     a_uv = jnp.maximum(jnp.asarray(a_uv), 0.0)
     uv_ref = jnp.maximum(jnp.asarray(uv_ref), 1e-8)
@@ -300,13 +491,41 @@ def _smc_like_reddening_jax(wave, a_uv, uv_ref=2500.0, alpha=1.2):
 
 
 def _many_gauss_lnlam(lnlam, amps, mus, sigs):
-    """Sum Gaussian components defined in log-wavelength space."""
+    """Sum Gaussian components defined in log-wavelength space.
+
+    Parameters
+    ----------
+    lnlam : object
+        lnlam value.
+    amps : object
+        amps value.
+    mus : object
+        mus value.
+    sigs : object
+        sigs value.
+    """
     z = (lnlam[:, None] - mus[None, :]) / sigs[None, :]
     return jnp.sum(amps[None, :] * jnp.exp(-0.5 * z * z), axis=1)
 
 
 def _split_many_gauss_lnlam(lnlam, amps, mus, sigs, broad_mask, *, return_profiles=False):
-    """Evaluate tied Gaussian lines once and split them into broad/narrow sums."""
+    """Evaluate tied Gaussian lines once and split them into broad/narrow sums.
+
+    Parameters
+    ----------
+    lnlam : object
+        lnlam value.
+    amps : object
+        amps value.
+    mus : object
+        mus value.
+    sigs : object
+        sigs value.
+    broad_mask : object
+        broad_mask value.
+    return_profiles : object
+        return_profiles value.
+    """
     profiles_pixel_major = amps[None, :] * jnp.exp(
         -0.5 * ((lnlam[:, None] - mus[None, :]) / sigs[None, :]) ** 2
     )
@@ -319,14 +538,32 @@ def _split_many_gauss_lnlam(lnlam, amps, mus, sigs, broad_mask, *, return_profil
 
 
 def _line_meta_array(meta, key, *, jax_key=None, dtype=jnp.float64):
-    """Return JAX-ready line metadata, preferring precomputed static arrays."""
+    """Return JAX-ready line metadata, preferring precomputed static arrays.
+
+    Parameters
+    ----------
+    meta : object
+        meta value.
+    key : object
+        key value.
+    jax_key : object
+        jax_key value.
+    dtype : object
+        dtype value.
+    """
     if jax_key is not None and jax_key in meta:
         return meta[jax_key]
     return jnp.asarray(meta[key], dtype=dtype)
 
 
 def _broad_line_mask(names):
-    """Return a float mask identifying broad-line components by name."""
+    """Return a float mask identifying broad-line components by name.
+
+    Parameters
+    ----------
+    names : object
+        names value.
+    """
     return np.asarray(
         [str(name).lower().endswith('_br') or ('_br' in str(name).lower()) for name in names],
         dtype=np.float64,
@@ -334,12 +571,35 @@ def _broad_line_mask(names):
 
 
 def _prefixed_site(prefix: str, name: str) -> str:
-    """Return a site name with an optional component prefix."""
+    """Return a site name with an optional component prefix.
+
+
+    Parameters
+    ----------
+    prefix : object
+        prefix value.
+    name : object
+        name value.
+    """
     return f"{prefix}_{name}" if prefix else name
 
 
 def _smooth_bounded_affine(eps, loc, scale, low, high):
-    """Map standardized coordinates into bounded space without flat clipping."""
+    """Map standardized coordinates into bounded space without flat clipping.
+
+    Parameters
+    ----------
+    eps : object
+        eps value.
+    loc : object
+        loc value.
+    scale : object
+        scale value.
+    low : object
+        low value.
+    high : object
+        high value.
+    """
     loc = jnp.asarray(loc, dtype=jnp.float64)
     scale = jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-12)
     low = jnp.asarray(low, dtype=jnp.float64)
@@ -361,7 +621,21 @@ def _smooth_bounded_affine(eps, loc, scale, low, high):
 
 
 def _sample_bounded_affine_std(site_name, loc, scale, low, high):
-    """Sample standardized coordinates and transform smoothly into bounds."""
+    """Sample standardized coordinates and transform smoothly into bounds.
+
+    Parameters
+    ----------
+    site_name : object
+        site_name value.
+    loc : object
+        loc value.
+    scale : object
+        scale value.
+    low : object
+        low value.
+    high : object
+        high value.
+    """
     loc = jnp.asarray(loc, dtype=jnp.float64)
     scale = jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-12)
     low = jnp.asarray(low, dtype=jnp.float64)
@@ -381,6 +655,15 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
     broad/narrow log-FWHM family scales plus per-width-group log offsets. Line
     amplitudes use the direct bounded peak-amplitude prior. The returned arrays
     preserve the historical physical group names.
+
+    Parameters
+    ----------
+    tied_line_meta : object
+        tied_line_meta value.
+    prior_config : object
+        prior_config value.
+    site_prefix : object
+        site_prefix value.
     """
     n_v = int(tied_line_meta["n_vgroups"])
     n_w = int(tied_line_meta["n_wgroups"])
@@ -495,7 +778,17 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
 
 
 def _synth_ab_mag_from_grid(wave_obs, flam_obs, filt_trans):
-    """Compute an AB magnitude from flux density and filter transmission on one grid."""
+    """Compute an AB magnitude from flux density and filter transmission on one grid.
+
+    Parameters
+    ----------
+    wave_obs : object
+        wave_obs value.
+    flam_obs : object
+        flam_obs value.
+    filt_trans : object
+        filt_trans value.
+    """
     c_ang_s = 2.99792458e18
     trans = jnp.clip(filt_trans, 0.0, None)
     # Model spectra are stored in SDSS-style 1e-17 flux-density units.
@@ -507,7 +800,21 @@ def _synth_ab_mag_from_grid(wave_obs, flam_obs, filt_trans):
 
 
 def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms, *, convolution_method="fft"):
-    """Apply LOS velocity shift and Gaussian broadening to one spectrum."""
+    """Apply LOS velocity shift and Gaussian broadening to one spectrum.
+
+    Parameters
+    ----------
+    lnwave : object
+        lnwave value.
+    spectrum : object
+        spectrum value.
+    v_kms : object
+        v_kms value.
+    sigma_kms : object
+        sigma_kms value.
+    convolution_method : object
+        convolution_method value.
+    """
     sigma_ln = jnp.maximum(sigma_kms / C_KMS, 1e-5)
 
     wave = jnp.exp(lnwave)
@@ -525,7 +832,17 @@ def _shift_and_broaden_single_spectrum_lnlam(lnwave, spectrum, v_kms, sigma_kms,
 
 
 def _gaussian_kernel1d(sigma_pix, radius_mult=5.0, max_half=512):
-    """Build a normalized 1D Gaussian convolution kernel with fixed max size."""
+    """Build a normalized 1D Gaussian convolution kernel with fixed max size.
+
+    Parameters
+    ----------
+    sigma_pix : object
+        sigma_pix value.
+    radius_mult : object
+        radius_mult value.
+    max_half : object
+        max_half value.
+    """
     sigma_pix = jnp.maximum(sigma_pix, 1e-3)
     x = jnp.arange(-max_half, max_half + 1, dtype=jnp.float64)
     half_dyn = jnp.maximum(3.0, jnp.ceil(radius_mult * sigma_pix))
@@ -536,7 +853,15 @@ def _gaussian_kernel1d(sigma_pix, radius_mult=5.0, max_half=512):
 
 
 def _convolve_same_length_direct(signal, kernel):
-    """Convolve and center-crop so the output matches the signal length."""
+    """Convolve and center-crop so the output matches the signal length.
+
+    Parameters
+    ----------
+    signal : object
+        signal value.
+    kernel : object
+        kernel value.
+    """
     signal = jnp.asarray(signal)
     kernel = jnp.asarray(kernel)
     full = jnp.convolve(signal, kernel, mode='same')
@@ -547,7 +872,15 @@ def _convolve_same_length_direct(signal, kernel):
 
 
 def _convolve_same_length_fft(signal, kernel):
-    """Linear FFT convolution with the same centered crop as the direct path."""
+    """Linear FFT convolution with the same centered crop as the direct path.
+
+    Parameters
+    ----------
+    signal : object
+        signal value.
+    kernel : object
+        kernel value.
+    """
     signal = jnp.asarray(signal)
     kernel = jnp.asarray(kernel)
     n = signal.shape[0]
@@ -561,7 +894,17 @@ def _convolve_same_length_fft(signal, kernel):
 
 
 def _convolve_same_length(signal, kernel, *, method="fft"):
-    """Convolve with a selectable JAX backend and direct fallback for short arrays."""
+    """Convolve with a selectable JAX backend and direct fallback for short arrays.
+
+    Parameters
+    ----------
+    signal : object
+        signal value.
+    kernel : object
+        kernel value.
+    method : object
+        method value.
+    """
     signal = jnp.asarray(signal)
     kernel = jnp.asarray(kernel)
     method = str(method).lower()
@@ -580,6 +923,21 @@ def _convolve_velocity_space(lnwave, signal, sigma_ln, radius_mult=5.0, max_half
     The input grid may be linear, logarithmic, or otherwise monotonic. The
     convolution is performed on an internal uniform log-wavelength grid and then
     interpolated back to the requested grid.
+
+    Parameters
+    ----------
+    lnwave : object
+        lnwave value.
+    signal : object
+        signal value.
+    sigma_ln : object
+        sigma_ln value.
+    radius_mult : object
+        radius_mult value.
+    max_half : object
+        max_half value.
+    method : object
+        method value.
     """
     lnwave = jnp.asarray(lnwave, dtype=jnp.float64)
     signal = jnp.asarray(signal, dtype=jnp.float64)
@@ -605,7 +963,29 @@ def _fe_template_component(
     template_on_wave=None,
     convolution_method="fft",
 ):
-    """Generate a broadened and shifted Fe template contribution."""
+    """Generate a broadened and shifted Fe template contribution.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    wave_template : object
+        wave_template value.
+    flux_template : object
+        flux_template value.
+    norm : object
+        norm value.
+    fwhm_kms : object
+        fwhm_kms value.
+    shift_frac : object
+        shift_frac value.
+    base_fwhm_kms : object
+        base_fwhm_kms value.
+    template_on_wave : object
+        template_on_wave value.
+    convolution_method : object
+        convolution_method value.
+    """
     # Enforce physically non-negative Fe pseudo-continuum and model broadening in velocity space.
     if template_on_wave is None:
         flux_template = jnp.maximum(flux_template, 0.0)
@@ -631,7 +1011,15 @@ def _fe_template_component(
 
 
 def _balmer_static_terms_jax(wave, balmer_te=15000.0):
-    """Return wavelength-only Balmer continuum terms for a fixed electron temperature."""
+    """Return wavelength-only Balmer continuum terms for a fixed electron temperature.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    balmer_te : object
+        balmer_te value.
+    """
     lam_be = 3646.0
     h = 6.62607015e-27
     c = 2.99792458e10
@@ -666,7 +1054,25 @@ def _balmer_continuum_jax(
     balmer_static_terms=None,
     convolution_method="fft",
 ):
-    """Compute Balmer continuum template with edge-normalized blackbody shape."""
+    """Compute Balmer continuum template with edge-normalized blackbody shape.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    balmer_norm : object
+        balmer_norm value.
+    balmer_te : object
+        balmer_te value.
+    balmer_tau : object
+        balmer_tau value.
+    balmer_vel : object
+        balmer_vel value.
+    balmer_static_terms : object
+        balmer_static_terms value.
+    convolution_method : object
+        convolution_method value.
+    """
     if balmer_static_terms is None:
         bb, tau_shape, below_edge = _balmer_static_terms_jax(wave, balmer_te=balmer_te)
     else:
@@ -686,7 +1092,17 @@ def _balmer_continuum_jax(
 
 
 def _prior_distribution(prior_config, key, default_distribution):
-    """Read a NumPyro distribution-like prior from a flat prior mapping."""
+    """Read a NumPyro distribution-like prior from a flat prior mapping.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_distribution : object
+        default_distribution value.
+    """
     cfg = prior_config.get(key, None)
     if cfg is None:
         return default_distribution
@@ -739,6 +1155,17 @@ def _prior_distribution(prior_config, key, default_distribution):
 
 
 def _fixed_prior_value(prior_config, key, default_value):
+    """_fixed_prior_value helper.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_value : object
+        default_value value.
+    """
     cfg = prior_config.get(key, None)
     if isinstance(cfg, Mapping):
         dist_name = str(cfg.get("dist", cfg.get("family", ""))).lower()
@@ -748,6 +1175,17 @@ def _fixed_prior_value(prior_config, key, default_value):
 
 
 def _prior_family(prior_config, key, default_family=""):
+    """_prior_family helper.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_family : object
+        default_family value.
+    """
     cfg = prior_config.get(key, None)
     if isinstance(cfg, Mapping):
         return str(cfg.get("dist", cfg.get("family", default_family))).lower()
@@ -755,6 +1193,19 @@ def _prior_family(prior_config, key, default_family=""):
 
 
 def _prior_loc_scale(prior_config, key, default_loc=0.0, default_scale=1.0):
+    """_prior_loc_scale helper.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_loc : object
+        default_loc value.
+    default_scale : object
+        default_scale value.
+    """
     cfg = prior_config.get(key, None)
     if isinstance(cfg, Mapping):
         return (
@@ -770,6 +1221,19 @@ def _prior_loc_scale(prior_config, key, default_loc=0.0, default_scale=1.0):
 
 
 def _halfnormal_prior(prior_config, key, default_scale, *, ref_scale=None):
+    """_halfnormal_prior helper.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_scale : object
+        default_scale value.
+    ref_scale : object
+        ref_scale value.
+    """
     cfg = prior_config.get(key, None)
     if isinstance(cfg, Mapping) and "scale_mult_err" in cfg and ref_scale is not None:
         return dist.HalfNormal(jnp.maximum(jnp.asarray(cfg["scale_mult_err"] * ref_scale, dtype=jnp.float64), 1.0e-6))
@@ -777,7 +1241,17 @@ def _halfnormal_prior(prior_config, key, default_scale, *, ref_scale=None):
 
 
 def _sample_prior(prior_config, key, default_distribution):
-    """Sample a scalar site from a configured distribution or a default."""
+    """Sample a scalar site from a configured distribution or a default.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    key : object
+        key value.
+    default_distribution : object
+        default_distribution value.
+    """
     fixed = _fixed_prior_value(prior_config, key, None)
     if fixed is not None:
         return numpyro.deterministic(key, fixed)
@@ -785,7 +1259,19 @@ def _sample_prior(prior_config, key, default_distribution):
 
 
 def _sample_log_positive_from_distribution(prior_config, *, value_key, log_key, default_distribution):
-    """Sample a log-parameter from a distribution and expose its physical value."""
+    """Sample a log-parameter from a distribution and expose its physical value.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    value_key : object
+        value_key value.
+    log_key : object
+        log_key value.
+    default_distribution : object
+        default_distribution value.
+    """
     fixed = _fixed_prior_value(prior_config, log_key, None)
     if fixed is not None:
         log_value = numpyro.deterministic(log_key, fixed)
@@ -803,7 +1289,23 @@ def _sample_positive_distribution(
     default_log_distribution,
     default_to_log=False,
 ):
-    """Sample a positive parameter, honoring either physical or log prior keys."""
+    """Sample a positive parameter, honoring either physical or log prior keys.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    value_key : object
+        value_key value.
+    log_key : object
+        log_key value.
+    default_value_distribution : object
+        default_value_distribution value.
+    default_log_distribution : object
+        default_log_distribution value.
+    default_to_log : object
+        default_to_log value.
+    """
     if log_key in prior_config:
         family = _prior_family(prior_config, log_key, default_log_distribution.__class__.__name__)
         if family in {"lognormal", "log-normal", "log_normal", "exponential", "exp", "halfnormal", "half_normal"}:
@@ -831,7 +1333,13 @@ def _sample_positive_distribution(
 
 
 def _template_grid_age_met_arrays(fsps_grid):
-    """Return flattened age and metallicity arrays matching template order."""
+    """Return flattened age and metallicity arrays matching template order.
+
+    Parameters
+    ----------
+    fsps_grid : object
+        fsps_grid value.
+    """
     ages = np.asarray([m.get("tage_gyr", np.nan) for m in fsps_grid.template_meta], dtype=float)
     mets = np.asarray([m.get("logzsol", np.nan) for m in fsps_grid.template_meta], dtype=float)
     if ages.size != fsps_grid.templates.shape[1] or not np.all(np.isfinite(ages)):
@@ -842,7 +1350,17 @@ def _template_grid_age_met_arrays(fsps_grid):
 
 
 def _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp):
-    """Return template-wise prior logits for flexible host SSP weights."""
+    """Return template-wise prior logits for flexible host SSP weights.
+
+    Parameters
+    ----------
+    fsps_grid : object
+        fsps_grid value.
+    prior_config : object
+        prior_config value.
+    ntemp : object
+        ntemp value.
+    """
     raw_w_loc, _ = _prior_loc_scale(prior_config, "raw_w", -0.5, 1.0)
     loc = jnp.full((ntemp,), raw_w_loc, dtype=jnp.float64)
     cfg = prior_config.get("host_template_age_prior", None)
@@ -879,7 +1397,15 @@ def _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp):
 
 
 def _proxy_template_weights_from_host_state(fsps_grid, host_state):
-    """Map full JAXSEDFit SSP weights onto the legacy template grid for summaries."""
+    """Map full JAXSEDFit SSP weights onto the legacy template grid for summaries.
+
+    Parameters
+    ----------
+    fsps_grid : object
+        fsps_grid value.
+    host_state : object
+        host_state value.
+    """
     template_age_gyr, template_lgmet = _template_grid_age_met_arrays(fsps_grid)
     meta_lg_age = np.asarray(
         [
@@ -913,6 +1439,11 @@ def _sample_log_host_aperture_scale(prior_config):
     aperture scale 1, which assumes the fitted spectrum captures the whole
     galaxy light. Override this prior for fiber/slit spectra or known aperture
     losses.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
     """
     if "log_host_aperture_scale" not in prior_config:
         return numpyro.deterministic("log_host_aperture_scale", jnp.asarray(0.0, dtype=jnp.float64))
@@ -920,7 +1451,17 @@ def _sample_log_host_aperture_scale(prior_config):
 
 
 def _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp):
-    """Compatibility delayed-tau path for tests and legacy grids without host_basis_jax."""
+    """Compatibility delayed-tau path for tests and legacy grids without host_basis_jax.
+
+    Parameters
+    ----------
+    fsps_grid : object
+        fsps_grid value.
+    prior_config : object
+        prior_config value.
+    host_amp : object
+        host_amp value.
+    """
     template_age_gyr, template_lgmet = _template_grid_age_met_arrays(fsps_grid)
     templates = jnp.asarray(fsps_grid.templates.T, dtype=jnp.float64)
 
@@ -972,7 +1513,19 @@ def _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp):
 
 
 def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
-    """Return total delayed-SFH host spectrum, weights, and proxy weights."""
+    """Return total delayed-SFH host spectrum, weights, and proxy weights.
+
+    Parameters
+    ----------
+    fsps_grid : object
+        fsps_grid value.
+    prior_config : object
+        prior_config value.
+    host_amp : object
+        host_amp value.
+    z_qso : object
+        z_qso value.
+    """
     host_basis = getattr(fsps_grid, "host_basis_jax", None)
     if host_basis is None:
         fsps_weights, fsps_weights_frac = _delayed_sfh_template_weights_compat(fsps_grid, prior_config, host_amp)
@@ -1003,7 +1556,15 @@ def _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso):
 
 
 def _sample_from_prior_config(key, cfg):
-    """Sample one parameter from a lightweight prior config dictionary."""
+    """Sample one parameter from a lightweight prior config dictionary.
+
+    Parameters
+    ----------
+    key : object
+        key value.
+    cfg : object
+        cfg value.
+    """
     if isinstance(cfg, Mapping):
         return _sample_prior({key: cfg}, key, dist.Normal(0.0, 1.0))
     if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
@@ -1012,7 +1573,19 @@ def _sample_from_prior_config(key, cfg):
 
 
 def _evaluate_custom_component_jax(wave, samples_or_values, comp, sample_value):
-    """Evaluate one custom component from a sample/value mapping."""
+    """Evaluate one custom component from a sample/value mapping.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    samples_or_values : object
+        samples_or_values value.
+    comp : object
+        comp value.
+    sample_value : object
+        sample_value value.
+    """
     params = {
         param_name: sample_value(samples_or_values, custom_component_param_site(comp, param_name), default=0.0)
         for param_name in comp.parameter_priors
@@ -1021,7 +1594,19 @@ def _evaluate_custom_component_jax(wave, samples_or_values, comp, sample_value):
 
 
 def _evaluate_custom_line_component_jax(wave, samples_or_values, comp, sample_value):
-    """Evaluate one custom line component from a sample/value mapping."""
+    """Evaluate one custom line component from a sample/value mapping.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    samples_or_values : object
+        samples_or_values value.
+    comp : object
+        comp value.
+    sample_value : object
+        sample_value value.
+    """
     params = {
         param_name: sample_value(samples_or_values, comp.site_name(param_name), default=0.0)
         for param_name in comp.parameter_priors
@@ -1042,7 +1627,15 @@ class FSPSTemplateGrid:
 
 
 def _map_logzsol_to_dsps_lgmet(logzsol_grid: Sequence[float], ssp_lgmet: np.ndarray) -> np.ndarray:
-    """Map fitting metallicity grid to DSPS metallicity convention."""
+    """Map fitting metallicity grid to DSPS metallicity convention.
+
+    Parameters
+    ----------
+    logzsol_grid : object
+        logzsol_grid value.
+    ssp_lgmet : object
+        ssp_lgmet value.
+    """
     logzsol_grid = np.asarray(logzsol_grid, dtype=float)
     ssp_lgmet = np.asarray(ssp_lgmet, dtype=float)
 
@@ -1052,7 +1645,13 @@ def _map_logzsol_to_dsps_lgmet(logzsol_grid: Sequence[float], ssp_lgmet: np.ndar
     cand_shifted = logzsol_grid + np.log10(0.019)
 
     def mismatch(cand):
-        """Return mean nearest-neighbor mismatch to DSPS metallicity grid."""
+        """Return mean nearest-neighbor mismatch to DSPS metallicity grid.
+
+        Parameters
+        ----------
+        cand : object
+            cand value.
+        """
         return np.mean([np.min(np.abs(ssp_lgmet - val)) for val in cand])
 
     return cand_direct if mismatch(cand_direct) <= mismatch(cand_shifted) else cand_shifted
@@ -1081,7 +1680,31 @@ def build_fsps_template_grid(
     build_physical_host_basis: bool = True,
     template_norms: Sequence[float] | None = None,
 ) -> FSPSTemplateGrid:
-    """Build a host-galaxy SSP template matrix on the observed wavelength grid."""
+    """Build a host-galaxy SSP template matrix on the observed wavelength grid.
+
+    Parameters
+    ----------
+    wave_out : object
+        wave_out value.
+    age_grid_gyr : object
+        age_grid_gyr value.
+    logzsol_grid : object
+        logzsol_grid value.
+    imf_type : object
+        imf_type value.
+    zcontinuous : object
+        zcontinuous value.
+    sfh : object
+        sfh value.
+    dsps_ssp_fn : object
+        dsps_ssp_fn value.
+    z_qso : object
+        z_qso value.
+    build_physical_host_basis : object
+        build_physical_host_basis value.
+    template_norms : object
+        template_norms value.
+    """
     # Parameters kept for API compatibility.
     _ = (imf_type, zcontinuous, sfh)
 
@@ -1179,7 +1802,49 @@ def reconstruct_posterior_components(
     return_components: bool = True,
     decompose_host: bool = True,
 ) -> Dict[str, Any]:
-    """Rebuild posterior continuum components on an arbitrary rest-frame grid."""
+    """Rebuild posterior continuum components on an arbitrary rest-frame grid.
+
+    Parameters
+    ----------
+    wave_out : object
+        wave_out value.
+    samples : object
+        samples value.
+    pred_out : object
+        pred_out value.
+    age_grid_gyr : object
+        age_grid_gyr value.
+    logzsol_grid : object
+        logzsol_grid value.
+    dsps_ssp_fn : object
+        dsps_ssp_fn value.
+    prior_config : object
+        prior_config value.
+    fit_poly : object
+        fit_poly value.
+    fit_poly_order : object
+        fit_poly_order value.
+    fit_reddening : object
+        fit_reddening value.
+    fe_uv_wave : object
+        fe_uv_wave value.
+    fe_uv_flux : object
+        fe_uv_flux value.
+    fe_op_wave : object
+        fe_op_wave value.
+    fe_op_flux : object
+        fe_op_flux value.
+    custom_components : object
+        custom_components value.
+    template_norms : object
+        template_norms value.
+    n_draws : object
+        n_draws value.
+    return_components : object
+        return_components value.
+    decompose_host : object
+        decompose_host value.
+    """
     wave_out = np.asarray(wave_out, dtype=float)
     if wave_out.ndim != 1 or wave_out.size < 2 or not np.all(np.isfinite(wave_out)):
         raise ValueError("wave_out must be a finite 1D wavelength grid.")
@@ -1284,7 +1949,43 @@ def reconstruct_posterior_components(
         reddening_a2500_i,
         poly_coeffs_i,
     ):
-        """Evaluate built-in host, continuum, Fe II, Balmer, and polynomial terms for one draw."""
+        """Evaluate built-in host, continuum, Fe II, Balmer, and polynomial terms for one draw.
+
+        Parameters
+        ----------
+        weights_i : object
+            weights_i value.
+        pl_norm_i : object
+            pl_norm_i value.
+        pl_slope_i : object
+            pl_slope_i value.
+        gal_v_i : object
+            gal_v_i value.
+        gal_sigma_i : object
+            gal_sigma_i value.
+        fe_uv_norm_i : object
+            fe_uv_norm_i value.
+        fe_op_norm_i : object
+            fe_op_norm_i value.
+        fe_uv_fwhm_i : object
+            fe_uv_fwhm_i value.
+        fe_op_fwhm_i : object
+            fe_op_fwhm_i value.
+        fe_uv_shift_i : object
+            fe_uv_shift_i value.
+        fe_op_shift_i : object
+            fe_op_shift_i value.
+        balmer_norm_i : object
+            balmer_norm_i value.
+        balmer_tau_i : object
+            balmer_tau_i value.
+        balmer_vel_i : object
+            balmer_vel_i value.
+        reddening_a2500_i : object
+            reddening_a2500_i value.
+        poly_coeffs_i : object
+            poly_coeffs_i value.
+        """
         host_intrinsic = templates_j @ weights_i
         host_model = _shift_and_broaden_single_spectrum_lnlam(
             lnwave_j,
@@ -1398,7 +2099,17 @@ def reconstruct_posterior_components(
         comp_draws = np.zeros((n_use, wave_out.size), dtype=float)
         for i in range(n_use):
             def _sample_value(samples_dict, key, default=0.0):
-                """Read one custom-component parameter draw with a fallback value."""
+                """Read one custom-component parameter draw with a fallback value.
+
+                Parameters
+                ----------
+                samples_dict : object
+                    samples_dict value.
+                key : object
+                    key value.
+                default : object
+                    default value.
+                """
                 val = float(np.asarray(samples_dict.get(key, np.full(n_total, default)), dtype=float)[sl][i])
                 return val
 
@@ -1422,7 +2133,13 @@ def reconstruct_posterior_components(
 
 
 def _extract_line_table_from_prior_config(prior_config: Dict[str, Any] | None):
-    """Extract line-table priors from the canonical ``line.table`` layout."""
+    """Extract line-table priors from the canonical ``line.table`` layout.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    """
     prior_config = _materialize_prior_mapping(prior_config)
     line_cfg = prior_config.get('line', None)
     if isinstance(line_cfg, dict):
@@ -1432,7 +2149,15 @@ def _extract_line_table_from_prior_config(prior_config: Dict[str, Any] | None):
 
 
 def _compress_group_ids(ids: np.ndarray, labels: Sequence[str] | None = None) -> Tuple[np.ndarray, Dict[Any, int]]:
-    """Compress sparse positive tie ids into contiguous group indices."""
+    """Compress sparse positive tie ids into contiguous group indices.
+
+    Parameters
+    ----------
+    ids : object
+        ids value.
+    labels : object
+        labels value.
+    """
     out = np.full(len(ids), -1, dtype=int)
     mapping: Dict[Any, int] = {}
     next_gid = 0
@@ -1449,9 +2174,23 @@ def _compress_group_ids(ids: np.ndarray, labels: Sequence[str] | None = None) ->
 
 
 def build_tied_line_meta_from_linelist(linelist, wave):
-    """Build tied-line metadata arrays used by the NumPyro line model."""
+    """Build tied-line metadata arrays used by the NumPyro line model.
+
+    Parameters
+    ----------
+    linelist : object
+        linelist value.
+    wave : object
+        wave value.
+    """
     def _to_records(obj):
-        """Normalize line table inputs to `list[dict]` records."""
+        """Normalize line table inputs to `list[dict]` records.
+
+        Parameters
+        ----------
+        obj : object
+            obj value.
+        """
         # pandas.DataFrame
         if hasattr(obj, 'to_dict'):
             return obj.to_dict('records')
@@ -1665,7 +2404,77 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          emit_deterministics=True,
                          custom_components: Sequence[CustomComponentSpec] | None = None,
                          custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
-    """Joint AGN+host spectral forward model for NumPyro inference."""
+    """Joint AGN+host spectral forward model for NumPyro inference.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    flux : object
+        flux value.
+    err : object
+        err value.
+    conti_priors : object
+        conti_priors value.
+    tied_line_meta : object
+        tied_line_meta value.
+    fsps_grid : object
+        fsps_grid value.
+    fe_uv_wave : object
+        fe_uv_wave value.
+    fe_uv_flux : object
+        fe_uv_flux value.
+    fe_op_wave : object
+        fe_op_wave value.
+    fe_op_flux : object
+        fe_op_flux value.
+    use_lines : object
+        use_lines value.
+    prior_config : object
+        prior_config value.
+    decompose_host : object
+        decompose_host value.
+    fit_pl : object
+        fit_pl value.
+    fit_fe : object
+        fit_fe value.
+    fit_bc : object
+        fit_bc value.
+    fit_poly : object
+        fit_poly value.
+    fit_poly_order : object
+        fit_poly_order value.
+    fit_reddening : object
+        fit_reddening value.
+    z_qso : object
+        z_qso value.
+    psf_mags : object
+        psf_mags value.
+    psf_mag_errs : object
+        psf_mag_errs value.
+    psf_filter_curves : object
+        psf_filter_curves value.
+    use_psf_phot : object
+        use_psf_phot value.
+    fe_uv_flux_on_wave : object
+        fe_uv_flux_on_wave value.
+    fe_op_flux_on_wave : object
+        fe_op_flux_on_wave value.
+    balmer_bb_shape : object
+        balmer_bb_shape value.
+    balmer_tau_shape : object
+        balmer_tau_shape value.
+    balmer_below_edge : object
+        balmer_below_edge value.
+    return_line_components : object
+        return_line_components value.
+    emit_deterministics : object
+        emit_deterministics value.
+    custom_components : object
+        custom_components value.
+    custom_line_components : object
+        custom_line_components value.
+    """
     has_observed_flux = flux is not None
     wave = _np_to_jnp(wave)
     flux = _np_to_jnp(flux)
@@ -1901,7 +2710,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     custom_total_model = jnp.zeros_like(wave)
     for comp in additive_custom_components:
         def _sample_value(sample_dict, key, default=0.0):
-            """Sample one custom continuum-component parameter from prior config."""
+            """Sample one custom continuum-component parameter from prior config.
+
+            Parameters
+            ----------
+            sample_dict : object
+                sample_dict value.
+            key : object
+                key value.
+            default : object
+                default value.
+            """
             cfg = prior_config.get(key, None)
             if cfg is None:
                 return default
@@ -2007,7 +2826,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     line_component_broad_mask = jnp.zeros((0,), dtype=wave.dtype)
     for comp in custom_line_components:
         def _sample_line_value(sample_dict, key, default=0.0):
-            """Sample one custom line-component parameter from prior config."""
+            """Sample one custom line-component parameter from prior config.
+
+            Parameters
+            ----------
+            sample_dict : object
+                sample_dict value.
+            key : object
+                key value.
+            default : object
+                default value.
+            """
             cfg = prior_config.get(key, None)
             if cfg is None:
                 return default
@@ -2106,7 +2935,17 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         bal_param_cache = {}
         for comp in bal_absorption_components:
             def _sample_bal_value(sample_dict, key, default=0.0):
-                """Sample one BAL absorption parameter from prior config."""
+                """Sample one BAL absorption parameter from prior config.
+
+                Parameters
+                ----------
+                sample_dict : object
+                    sample_dict value.
+                key : object
+                    key value.
+                default : object
+                    default value.
+                """
                 if key in bal_param_cache:
                     return bal_param_cache[key]
                 cfg = prior_config.get(key, None)
@@ -2276,25 +3115,64 @@ def quasar_spectral_model(*args, **kwargs):
     This is the preferred public name for the low-level AGN+host spectral
     model. The historical name :func:`qso_fsps_joint_model` remains available
     for compatibility.
+
+    Parameters
+    ----------
+    *args : tuple
+        Additional positional arguments.
+    **kwargs : dict
+        Additional keyword arguments.
     """
     return qso_fsps_joint_model(*args, **kwargs)
 
 
 def reconstruct_spectral_components(*args, **kwargs):
-    """Reconstruct posterior spectral components on a requested wavelength grid."""
+    """Reconstruct posterior spectral components on a requested wavelength grid.
+
+    Parameters
+    ----------
+    *args : tuple
+        Additional positional arguments.
+    **kwargs : dict
+        Additional keyword arguments.
+    """
     return reconstruct_posterior_components(*args, **kwargs)
 
 
 def build_host_template_grid(*args, **kwargs):
-    """Build the host-galaxy template grid used by the spectral model."""
+    """Build the host-galaxy template grid used by the spectral model.
+
+    Parameters
+    ----------
+    *args : tuple
+        Additional positional arguments.
+    **kwargs : dict
+        Additional keyword arguments.
+    """
     return build_fsps_template_grid(*args, **kwargs)
 
 
 def build_tied_line_metadata(*args, **kwargs):
-    """Build tied emission-line metadata from a line-list table."""
+    """Build tied emission-line metadata from a line-list table.
+
+    Parameters
+    ----------
+    *args : tuple
+        Additional positional arguments.
+    **kwargs : dict
+        Additional keyword arguments.
+    """
     return build_tied_line_meta_from_linelist(*args, **kwargs)
 
 
 def negative_bal_component(*args, **kwargs):
-    """Evaluate a negative Gaussian broad-absorption-line component."""
+    """Evaluate a negative Gaussian broad-absorption-line component.
+
+    Parameters
+    ----------
+    *args : tuple
+        Additional positional arguments.
+    **kwargs : dict
+        Additional keyword arguments.
+    """
     return negative_gaussian_bal_component(*args, **kwargs)

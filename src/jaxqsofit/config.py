@@ -121,8 +121,28 @@ class LineConfig:
     """Emission-line model configuration."""
 
     enabled: bool = True
+    use_broad_lines: bool = True
+    use_narrow_lines: bool = True
     custom_components: Sequence[Any] | None = None
     custom_line_components: Sequence[Any] | None = None
+
+
+@dataclass
+class AGNConfig:
+    """High-level AGN spectral-type presets.
+
+    The ``agn_type`` flag is intentionally a preset layer over explicit continuum,
+    host, and line switches. Call :meth:`FitConfig.apply_agn_type_defaults`
+    or :meth:`FitConfig.set_agn_type` to apply it, then override individual
+    component switches as needed.
+    """
+
+    agn_type: int = 1
+
+    def __post_init__(self) -> None:
+        self.agn_type = int(self.agn_type)
+        if self.agn_type not in {1, 2}:
+            raise ValueError("AGNConfig.agn_type must be 1 or 2.")
 
 
 @dataclass
@@ -136,11 +156,20 @@ class InferenceConfig:
     num_samples: int = 50
     num_chains: int = 1
     target_accept_prob: float = 0.9
+    dense_mass: bool = True
+    max_tree_depth: int = 8
     plot_init: bool = False
 
 
 def _scalar_or_list(value: Any) -> Any:
-    """Convert scalar array-like distribution parameters into plain Python values."""
+    """Convert scalar array-like distribution parameters into plain Python values.
+
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     arr = np.asarray(value)
     if arr.shape == ():
         return float(arr)
@@ -148,7 +177,13 @@ def _scalar_or_list(value: Any) -> Any:
 
 
 def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
-    """Convert supported NumPyro distributions into the model prior schema."""
+    """Convert supported NumPyro distributions into the model prior schema.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     module = getattr(value.__class__, "__module__", "")
     if not module.startswith("numpyro.distributions"):
         return None
@@ -200,7 +235,13 @@ def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
 
 
 def _prior_to_mapping(value: Any) -> Any:
-    """Convert public prior specs to low-level mappings."""
+    """Convert public prior specs to low-level mappings.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:
         return prior
@@ -363,7 +404,26 @@ class PSFPriorConfig:
 
 @dataclass
 class PriorConfig:
-    """Object-oriented prior configuration."""
+    """Object-oriented prior configuration for a quasar spectral fit.
+
+    Parameters
+    ----------
+    continuum : ContinuumPriorConfig or mapping, optional
+        Priors and fixed settings for the power-law continuum, polynomial
+        pivot, and requested continuum-luminosity outputs.
+    host : HostPriorConfig or mapping, optional
+        Priors controlling the host-galaxy fraction, stellar population,
+        aperture scale, metallicity, and host SFH behavior.
+    lines : LinePriorConfig or mapping, optional
+        Emission-line table and scale multipliers for tied line positions,
+        widths, and amplitudes.
+    feii : FeIIPriorConfig or mapping, optional
+        Fe II normalization, optical/UV ratio, and broadening priors.
+    psf : PSFPriorConfig or mapping, optional
+        Priors for PSF-photometry recalibration terms.
+    student_t_df : float, optional
+        Degrees of freedom for the spectral Student-t likelihood.
+    """
 
     continuum: ContinuumPriorConfig = field(default_factory=ContinuumPriorConfig)
     host: HostPriorConfig = field(default_factory=HostPriorConfig)
@@ -384,7 +444,15 @@ class PriorConfig:
 
     @classmethod
     def _from_model_priors(cls, model_priors: Mapping[str, Any]) -> "PriorConfig":
-        """Build a PriorConfig from the low-level default-prior payload."""
+        """Build a PriorConfig from the low-level default-prior payload.
+
+        Parameters
+        ----------
+        model_priors : mapping
+            Low-level prior dictionary produced by the internal default-prior
+            builder. This preserves defaults while still allowing semantic
+            section overrides through the public ``PriorConfig`` API.
+        """
         out = cls()
         out._model_priors = dict(model_priors)
         return out
@@ -406,6 +474,26 @@ class PriorConfig:
         constructor accepts observed-frame flux and redshift, applying the
         standard ``flux_rest = flux * (1 + redshift)`` conversion when a
         redshift is provided.
+
+        Parameters
+        ----------
+        flux : sequence of float
+            Observed-frame spectral flux density used to set scale-aware
+            default priors.
+        redshift : float, optional
+            Source redshift. When supplied, the flux scale is converted to the
+            rest-frame convention expected by the low-level prior builder.
+        line_config : mapping, optional
+            Optional line-table or line-prior settings passed to the default
+            prior builder.
+        include_elg_narrow_lines : bool, optional
+            If True, include additional narrow emission-line galaxy lines in
+            the default line table.
+        include_high_ionization_lines : bool, optional
+            If True, include high-ionization quasar lines in the default line
+            table.
+        pl_pivot : float, optional
+            Rest-frame wavelength pivot for the power-law continuum prior.
         """
         from .defaults import _build_default_prior_config
 
@@ -426,7 +514,13 @@ class PriorConfig:
 
     @powerlaw.setter
     def powerlaw(self, value: PowerLawPriorConfig | Mapping[str, Any]) -> None:
-        """Set the semantic power-law prior section."""
+        """Set the semantic power-law prior section.
+
+        Parameters
+        ----------
+        value : PowerLawPriorConfig or mapping
+            Replacement power-law prior section.
+        """
         self.continuum.powerlaw = _coerce_dataclass(PowerLawPriorConfig, value)
 
     @property
@@ -436,7 +530,13 @@ class PriorConfig:
 
     @fe.setter
     def fe(self, value: FeIIPriorConfig | Mapping[str, Any]) -> None:
-        """Set the Fe II prior section through the shorter alias."""
+        """Set the Fe II prior section through the shorter alias.
+
+        Parameters
+        ----------
+        value : FeIIPriorConfig or mapping
+            Replacement Fe II prior section.
+        """
         self.feii = _coerce_dataclass(FeIIPriorConfig, value)
 
     def to_mapping(self) -> dict[str, Any]:
@@ -454,13 +554,47 @@ class PriorConfig:
 
 @dataclass
 class FitConfig:
-    """Top-level configuration bundle for one JAXQSOFit spectral fit."""
+    """Top-level configuration bundle for one JAXQSOFit spectral fit.
+
+    Parameters
+    ----------
+    observation : Observation or mapping
+        Source metadata such as redshift, object identifier, sky coordinates,
+        and Milky Way dereddening behavior.
+    spectroscopy : SpectroscopyData or mapping
+        Observed spectrum, uncertainties, masks, and optional resolution
+        metadata.
+    psf_photometry : PSFPhotometryData or mapping, optional
+        Optional PSF-aperture magnitudes used as an extra spectral
+        recalibration constraint.
+    preprocessing : PreprocessingConfig or mapping, optional
+        Wavelength trimming, manual masks, and Ly-alpha forest masking options.
+    continuum : ContinuumConfig or mapping, optional
+        Switches for the power law, Fe II, Balmer continuum, reddening,
+        polynomial tilt, and convolution method.
+    agn : AGNConfig or mapping, optional
+        High-level AGN type preset.
+    bal : BALConfig or mapping, optional
+        Built-in broad absorption line component settings.
+    host : HostConfig or mapping, optional
+        Host-galaxy decomposition settings and SSP grid choices.
+    lines : LineConfig or mapping, optional
+        Emission-line switches and optional custom components.
+    inference : InferenceConfig or mapping, optional
+        Optax and NUTS controls, including warmup, samples, dense mass, and
+        maximum tree depth.
+    output : OutputConfig or mapping, optional
+        Plotting and persistence behavior.
+    prior_config : PriorConfig or mapping, optional
+        Semantic or low-level priors consumed by the NumPyro model.
+    """
 
     observation: Observation
     spectroscopy: SpectroscopyData
     psf_photometry: PSFPhotometryData | None = None
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     continuum: ContinuumConfig = field(default_factory=ContinuumConfig)
+    agn: AGNConfig = field(default_factory=AGNConfig)
     bal: BALConfig = field(default_factory=BALConfig)
     host: HostConfig = field(default_factory=HostConfig)
     lines: LineConfig = field(default_factory=LineConfig)
@@ -470,10 +604,69 @@ class FitConfig:
 
     def __post_init__(self) -> None:
         """Coerce mapping-style nested configs into dataclass objects."""
+        if not isinstance(self.observation, Observation):
+            self.observation = _coerce_dataclass(Observation, self.observation)
+        if not isinstance(self.spectroscopy, SpectroscopyData):
+            self.spectroscopy = _coerce_dataclass(SpectroscopyData, self.spectroscopy)
+        if self.psf_photometry is not None and not isinstance(self.psf_photometry, PSFPhotometryData):
+            self.psf_photometry = _coerce_dataclass(PSFPhotometryData, self.psf_photometry)
+        if not isinstance(self.preprocessing, PreprocessingConfig):
+            self.preprocessing = _coerce_dataclass(PreprocessingConfig, self.preprocessing)
+        if not isinstance(self.continuum, ContinuumConfig):
+            self.continuum = _coerce_dataclass(ContinuumConfig, self.continuum)
+        if not isinstance(self.agn, AGNConfig):
+            self.agn = _coerce_dataclass(AGNConfig, self.agn)
         if not isinstance(self.bal, BALConfig):
             self.bal = _coerce_dataclass(BALConfig, self.bal)
+        if not isinstance(self.host, HostConfig):
+            self.host = _coerce_dataclass(HostConfig, self.host)
+        if not isinstance(self.lines, LineConfig):
+            self.lines = _coerce_dataclass(LineConfig, self.lines)
+        if not isinstance(self.inference, InferenceConfig):
+            self.inference = _coerce_dataclass(InferenceConfig, self.inference)
+        if not isinstance(self.output, OutputConfig):
+            self.output = _coerce_dataclass(OutputConfig, self.output)
         if self.prior_config is not None:
             self.prior_config = _coerce_prior_config(self.prior_config)
+
+    def apply_agn_type_defaults(self) -> None:
+        """Apply coherent component defaults for ``agn.agn_type``.
+
+        Type 1 is the broad-line AGN preset. Type 2 is the narrow-line,
+        host-dominated preset. This mutates explicit component switches, so call
+        it before any manual overrides that should win over the preset.
+        """
+
+        agn_type = int(self.agn.agn_type)
+        if agn_type == 1:
+            self.lines.enabled = True
+            self.lines.use_broad_lines = True
+            self.lines.use_narrow_lines = True
+            self.continuum.fit_feii = True
+            self.continuum.fit_balmer_continuum = True
+            self.host.enabled = True
+        elif agn_type == 2:
+            self.lines.enabled = True
+            self.lines.use_broad_lines = False
+            self.lines.use_narrow_lines = True
+            self.continuum.fit_feii = False
+            self.continuum.fit_balmer_continuum = False
+            self.host.enabled = True
+        else:
+            raise ValueError("agn.agn_type must be 1 or 2.")
+
+    def set_agn_type(self, agn_type: int) -> None:
+        """Set ``agn.agn_type`` and apply the corresponding component defaults.
+
+        Parameters
+        ----------
+        agn_type : {1, 2}
+            AGN spectral-type preset. Type 1 enables broad-line AGN defaults;
+            type 2 enables narrow-line, host-dominated defaults.
+        """
+
+        self.agn = AGNConfig(agn_type=int(agn_type))
+        self.apply_agn_type_defaults()
 
     def validate(self) -> None:
         """Validate required nested data payloads."""
@@ -487,7 +680,13 @@ class FitConfig:
 
 
 def _coerce_dataclass(cls, value: Any):
-    """Convert an existing instance or mapping into the requested dataclass."""
+    """Convert an existing instance or mapping into the requested dataclass.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if isinstance(value, cls):
         return value
     if isinstance(value, Mapping):
@@ -500,7 +699,13 @@ def _coerce_dataclass(cls, value: Any):
 
 
 def _coerce_prior_config(value: Any) -> PriorConfig:
-    """Coerce structured prior mappings into :class:`PriorConfig`."""
+    """Coerce structured prior mappings into :class:`PriorConfig`.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     if isinstance(value, PriorConfig):
         return value
     if value is None:
@@ -524,7 +729,14 @@ def _coerce_prior_config(value: Any) -> PriorConfig:
 
 
 def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
-    """Build a validated FitConfig from a nested mapping."""
+    """Build a validated FitConfig from a nested mapping.
+
+    Parameters
+    ----------
+    data : mapping
+        Nested configuration dictionary, typically loaded from JSON/YAML or a
+        serialized ``FitConfig``.
+    """
 
     psf_raw = data.get("psf_photometry")
     psf_obj = None if psf_raw is None else _coerce_dataclass(PSFPhotometryData, psf_raw)
@@ -534,6 +746,7 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
         psf_photometry=psf_obj,
         preprocessing=_coerce_dataclass(PreprocessingConfig, data.get("preprocessing", {})),
         continuum=_coerce_dataclass(ContinuumConfig, data.get("continuum", {})),
+        agn=_coerce_dataclass(AGNConfig, data.get("agn", {})),
         bal=_coerce_dataclass(BALConfig, data.get("bal", {})),
         host=_coerce_dataclass(HostConfig, data.get("host", {})),
         lines=_coerce_dataclass(LineConfig, data.get("lines", {})),
@@ -546,7 +759,15 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
 
 
 def serialize_config(value: Any) -> Any:
-    """Convert config-like objects into JSON-serializable Python values."""
+    """Convert config-like objects into JSON-serializable Python values.
+
+
+    Parameters
+    ----------
+    value : object
+        Dataclass, mapping, sequence, NumPy array, NumPyro distribution, or
+        scalar value to convert into JSON-compatible containers.
+    """
 
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:

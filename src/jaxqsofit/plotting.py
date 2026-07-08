@@ -40,6 +40,8 @@ def posterior_series(fitter, param_names=None, max_vector_elems=2):
 
     Parameters
     ----------
+    fitter : JAXQSOFit
+        Fitted object containing ``numpyro_samples``.
     param_names : list[str] | str | None, optional
         Parameter selector. Use ``'all'`` for all posterior keys.
     max_vector_elems : int or None, optional
@@ -81,7 +83,13 @@ def posterior_series(fitter, param_names=None, max_vector_elems=2):
 
 
 def filter_half_width_angstrom(filt):
-    """Return an approximate half-width for a photometric filter."""
+    """Return an approximate half-width for a photometric filter.
+
+    Parameters
+    ----------
+    filt : object
+        Filter-like object with ``wave`` and ``transmission`` arrays.
+    """
     filt_wave = _filter_wave_to_angstrom_array(filt.wave)
     filt_trans = np.asarray(filt.transmission, dtype=float)
     support = filt_wave[filt_trans > 0.01 * np.nanmax(filt_trans)]
@@ -90,7 +98,15 @@ def filter_half_width_angstrom(filt):
     return 0.0
 
 def plot_filter_metadata(fitter, bands):
-    """Return plotting metadata arrays for the requested photometric bands."""
+    """Return plotting metadata arrays for the requested photometric bands.
+
+    Parameters
+    ----------
+    fitter : JAXQSOFit
+        Fitted object used for filter width helper methods.
+    bands : sequence[str]
+        Photometric band names.
+    """
     filters = _get_sdss_filters()
     filt_list = [filters.get(str(band)) for band in bands]
     valid = np.asarray([filt is not None for filt in filt_list], dtype=bool)
@@ -143,7 +159,32 @@ def plot_initialization(
     model_label,
     show_plot=True,
 ):
-    """Plot an Optax initialization model using the final spectrum-plot style."""
+    """Plot an Optax initialization model using the final spectrum-plot style.
+
+    Parameters
+    ----------
+    wave : array-like
+        Rest-frame wavelength grid.
+    flux : array-like
+        Observed flux density on ``wave``.
+    model : array-like
+        Initialization model flux density on ``wave``.
+    host : array-like
+        Host-galaxy component on ``wave``.
+    powerlaw : array-like
+        Power-law continuum component on ``wave``.
+    line : array-like
+        Emission-line component on ``wave``.
+    redchi2 : float
+        Reduced chi-square value for the initialization model. Kept for
+        bookkeeping; it is not shown in the plot title.
+    stage_name : str
+        Title text for the initialization stage.
+    model_label : str
+        Legend label for the total initialization model.
+    show_plot : bool, optional
+        If True, call ``plt.show()`` before returning the figure.
+    """
     from .mplstyle import use_style
 
     wave = np.asarray(wave, dtype=float)
@@ -168,6 +209,13 @@ def plot_initialization(
         comp_floor = max(1e-8, 0.005 * flux_ref)
 
         def _show_component(arr):
+            """_show_component helper.
+
+            Parameters
+            ----------
+            arr : object
+                arr value.
+            """
             arr = np.asarray(arr, dtype=float)
             arr = arr[np.isfinite(arr)]
             return arr.size > 0 and float(np.nanmax(np.abs(arr))) >= comp_floor
@@ -245,7 +293,15 @@ def plot_initialization(
 
 
 def synthetic_photometry_for_plot(fitter, model_attr='model_total'):
-    """Return rest-frame synthetic photometry points for plotting, if available."""
+    """Return rest-frame synthetic photometry points for plotting, if available.
+
+    Parameters
+    ----------
+    fitter : JAXQSOFit
+        Fitted object containing PSF photometry metadata and model arrays.
+    model_attr : str, optional
+        Name of the model array attribute to project through the filters.
+    """
     if not bool(getattr(fitter, 'use_psf_phot', False)):
         return None
     bands = list(getattr(fitter, 'psf_bands', []) or [])
@@ -314,7 +370,13 @@ def synthetic_photometry_for_plot(fitter, model_attr='model_total'):
     )
 
 def observed_photometry_for_plot(fitter):
-    """Return rest-frame observed PSF photometry points for plotting, if available."""
+    """Return rest-frame observed PSF photometry points for plotting, if available.
+
+    Parameters
+    ----------
+    fitter : JAXQSOFit
+        Fitted object containing PSF photometry metadata.
+    """
     if not bool(getattr(fitter, 'use_psf_phot', False)):
         return None
     bands = list(getattr(fitter, 'psf_bands', []) or [])
@@ -362,6 +424,8 @@ def plot_trace(
 
     Parameters
     ----------
+    fitter : JAXQSOFit
+        Fitted object containing posterior samples.
     param_names : list[str] | str | None, optional
         Parameter selector. Use ``'all'`` to include all posterior keys.
     max_vector_elems : int or None, optional
@@ -380,11 +444,11 @@ def plot_trace(
         return None
 
     n = len(series)
-    fig, axes = plt.subplots(n, 1, figsize=(10, max(2.2 * n, 4)), sharex=True)
+    fig, axes = plt.subplots(n, 1, figsize=(8, max(1.2 * n, 3)), sharex=True)
     if n == 1:
         axes = [axes]
     for ax, (label, vals) in zip(axes, series):
-        ax.plot(np.arange(len(vals)), vals, color='tab:blue', lw=0.8)
+        ax.plot(np.arange(len(vals)), vals, color='black', lw=0.7)
         ax.set_ylabel(label, fontsize=9)
         fitter._style_axis(ax)
     axes[-1].set_xlabel('Sample', fontsize=10)
@@ -418,6 +482,8 @@ def plot_corner(
 
     Parameters
     ----------
+    fitter : JAXQSOFit
+        Fitted object containing posterior samples.
     param_names : list[str] | str | None, optional
         Parameter selector. Use ``'all'`` to include all posterior keys.
     max_vector_elems : int or None, optional
@@ -500,6 +566,8 @@ def plot_mcmc_diagnostics(fitter, do_trace=True, do_corner=True,
 
     Parameters
     ----------
+    fitter : JAXQSOFit
+        Fitted object containing posterior samples.
     do_trace : bool, optional
         If True, render trace plot.
     do_corner : bool, optional
@@ -544,6 +612,13 @@ def plot_spectrum(fitter, **kwargs):
     This is the preferred public plotting method. It delegates to
     :meth:`plot_fig`, which remains available for compatibility with older
     notebooks.
+
+    Parameters
+    ----------
+    fitter : JAXQSOFit
+        Fitted object containing model and component arrays.
+    **kwargs
+        Keyword arguments forwarded to :func:`plot_fig`.
     """
     return fitter.plot_fig(**kwargs)
 
@@ -553,6 +628,8 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
 
     Parameters
     ----------
+    fitter : JAXQSOFit
+        Fitted object containing model and component arrays.
     save_fig_path : str or None, optional
         Output directory when saving figures. If ``None``, uses ``fitter.output_path``
         (or ``'.'`` when unset).
@@ -632,17 +709,37 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
     custom_line_components = list(getattr(fitter, 'custom_line_components', {}).items())
 
     def _is_bal_component_name(name):
-        """Return True for fitted BAL custom components."""
+        """Return True for fitted BAL custom components.
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        """
         return str(name).startswith('bal_')
 
     def _custom_component_color(name, idx):
-        """Return the plotting color for one custom component."""
+        """Return the plotting color for one custom component.
+
+        Parameters
+        ----------
+        name : object
+            name value.
+        idx : object
+            idx value.
+        """
         if _is_bal_component_name(name):
             return 'red'
         return custom_component_colors[idx % len(custom_component_colors)]
 
     def _show_component(arr):
-        """Return True when a component has finite amplitude worth plotting."""
+        """Return True when a component has finite amplitude worth plotting.
+
+        Parameters
+        ----------
+        arr : object
+            arr value.
+        """
         arr = np.asarray(arr, dtype=float)
         arr = arr[np.isfinite(arr)]
         if arr.size == 0:
@@ -650,7 +747,14 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
         return float(np.nanmax(np.abs(arr))) >= comp_floor
 
     def _finite_component_values(*arrays):
-        """Collect finite values from one or more component arrays."""
+        """Collect finite values from one or more component arrays.
+
+
+        Parameters
+        ----------
+        *arrays : tuple
+            Additional positional arguments.
+        """
         vals = []
         for arr in arrays:
             if arr is None:

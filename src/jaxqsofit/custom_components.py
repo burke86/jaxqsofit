@@ -13,7 +13,15 @@ from .config import _numpyro_distribution_to_mapping
 
 
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
-    """Rescale a template so its robust peak amplitude is O(target_amp)."""
+    """Rescale a template so its robust peak amplitude is O(target_amp).
+
+    Parameters
+    ----------
+    flux : object
+        flux value.
+    target_amp : object
+        target_amp value.
+    """
     f = np.asarray(flux, dtype=float)
     robust = np.nanpercentile(np.abs(f), 99)
     if not np.isfinite(robust) or robust <= 0:
@@ -22,7 +30,13 @@ def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.nd
 
 
 def _sanitize_component_name(name: str) -> str:
-    """Return a stable ASCII-safe identifier for a custom component."""
+    """Return a stable ASCII-safe identifier for a custom component.
+
+    Parameters
+    ----------
+    name : object
+        name value.
+    """
     text = re.sub(r"[^0-9a-zA-Z_]+", "_", str(name).strip())
     text = re.sub(r"_+", "_", text).strip("_").lower()
     if not text:
@@ -33,7 +47,14 @@ def _sanitize_component_name(name: str) -> str:
 
 
 def _callable_to_ref(func: Callable[..., Any]) -> str:
-    """Serialize an importable top-level function to module:qualname."""
+    """Serialize an importable top-level function to module:qualname.
+
+
+    Parameters
+    ----------
+    func : object
+        func value.
+    """
     module = getattr(func, "__module__", None)
     qualname = getattr(func, "__qualname__", None)
     if not module or not qualname or "<locals>" in qualname or "<lambda>" in qualname:
@@ -45,7 +66,14 @@ def _callable_to_ref(func: Callable[..., Any]) -> str:
 
 
 def _callable_from_ref(ref: str) -> Callable[..., Any]:
-    """Deserialize a module:qualname function reference."""
+    """Deserialize a module:qualname function reference.
+
+
+    Parameters
+    ----------
+    ref : object
+        ref value.
+    """
     module_name, qualname = str(ref).split(":", 1)
     obj: Any = importlib.import_module(module_name)
     for part in qualname.split("."):
@@ -64,6 +92,13 @@ def custom_component_param_site(comp: Any, param_name: str) -> str:
 
     This leaves the public component name and output model unchanged while
     allowing related custom components to share a single sampled parameter.
+
+    Parameters
+    ----------
+    comp : object
+        comp value.
+    param_name : object
+        param_name value.
     """
     shared = getattr(comp, "metadata", {}).get("shared_parameter_sites", {})
     if isinstance(shared, Mapping) and str(param_name) in shared:
@@ -72,7 +107,13 @@ def custom_component_param_site(comp: Any, param_name: str) -> str:
 
 
 def _normalize_parameter_prior(value: Any) -> dict[str, Any]:
-    """Normalize a public custom-component prior to the low-level prior schema."""
+    """Normalize a public custom-component prior to the low-level prior schema.
+
+    Parameters
+    ----------
+    value : object
+        value value.
+    """
     prior = _numpyro_distribution_to_mapping(value)
     if prior is not None:
         return prior
@@ -127,7 +168,13 @@ class CustomComponentSpec:
         return f"{self.prefix}_model"
 
     def site_name(self, param_name: str) -> str:
-        """Return the full NumPyro sample-site name for one local parameter."""
+        """Return the full NumPyro sample-site name for one local parameter.
+
+        Parameters
+        ----------
+        param_name : object
+            param_name value.
+        """
         return f"{self.prefix}_{param_name}"
 
     def to_state(self) -> dict[str, Any]:
@@ -142,7 +189,14 @@ class CustomComponentSpec:
 
     @classmethod
     def from_state(cls, state: Mapping[str, Any]) -> "CustomComponentSpec":
-        """Rebuild a spec from :meth:`to_state`."""
+        """Rebuild a spec from :meth:`to_state`.
+
+
+        Parameters
+        ----------
+        state : object
+            state value.
+        """
         return cls(
             name=str(state["name"]),
             parameter_priors=dict(state["parameter_priors"]),
@@ -191,7 +245,13 @@ class CustomLineComponentSpec:
         return f"{self.prefix}_model"
 
     def site_name(self, param_name: str) -> str:
-        """Return the full NumPyro sample-site name for one local parameter."""
+        """Return the full NumPyro sample-site name for one local parameter.
+
+        Parameters
+        ----------
+        param_name : object
+            param_name value.
+        """
         return f"{self.prefix}_{param_name}"
 
     def to_state(self) -> dict[str, Any]:
@@ -207,7 +267,14 @@ class CustomLineComponentSpec:
 
     @classmethod
     def from_state(cls, state: Mapping[str, Any]) -> "CustomLineComponentSpec":
-        """Rebuild a line component spec from :meth:`to_state`."""
+        """Rebuild a line component spec from :meth:`to_state`.
+
+
+        Parameters
+        ----------
+        state : object
+            state value.
+        """
         return cls(
             name=str(state["name"]),
             parameter_priors=dict(state["parameter_priors"]),
@@ -224,7 +291,19 @@ def make_custom_component(
     *,
     metadata: Mapping[str, Any] | None = None,
 ) -> CustomComponentSpec:
-    """Build a generic additive custom component."""
+    """Build a generic additive custom component.
+
+    Parameters
+    ----------
+    name : object
+        name value.
+    parameter_priors : object
+        parameter_priors value.
+    evaluate : object
+        evaluate value.
+    metadata : object
+        metadata value.
+    """
     return CustomComponentSpec(
         name=name,
         parameter_priors=parameter_priors,
@@ -241,7 +320,21 @@ def make_custom_line_component(
     line_kind: str = "broad",
     metadata: Mapping[str, Any] | None = None,
 ) -> CustomLineComponentSpec:
-    """Build a generic additive custom line component."""
+    """Build a generic additive custom line component.
+
+    Parameters
+    ----------
+    name : object
+        name value.
+    parameter_priors : object
+        parameter_priors value.
+    evaluate : object
+        evaluate value.
+    line_kind : object
+        line_kind value.
+    metadata : object
+        metadata value.
+    """
     return CustomLineComponentSpec(
         name=name,
         parameter_priors=parameter_priors,
@@ -252,7 +345,17 @@ def make_custom_line_component(
 
 
 def template_component_evaluator(wave, params, metadata):
-    """Convenience evaluator for broadened/shifted template components."""
+    """Convenience evaluator for broadened/shifted template components.
+
+    Parameters
+    ----------
+    wave : object
+        wave value.
+    params : object
+        params value.
+    metadata : object
+        metadata value.
+    """
     from .model import _fe_template_component
 
     wave_template = jnp.asarray(metadata["wave"], dtype=jnp.float64)
@@ -283,7 +386,29 @@ def make_template_component(
     normalize_template: bool = True,
     target_amp: float = 1.0,
 ) -> CustomComponentSpec:
-    """Build a broadened/shifted additive template component."""
+    """Build a broadened/shifted additive template component.
+
+    Parameters
+    ----------
+    name : object
+        name value.
+    wave : object
+        wave value.
+    flux : object
+        flux value.
+    fit_fwhm : object
+        fit_fwhm value.
+    fit_shift : object
+        fit_shift value.
+    base_fwhm_kms : object
+        base_fwhm_kms value.
+    default_fwhm_kms : object
+        default_fwhm_kms value.
+    normalize_template : object
+        normalize_template value.
+    target_amp : object
+        target_amp value.
+    """
     wave = np.asarray(wave, dtype=float)
     flux = np.asarray(flux, dtype=float)
     if wave.ndim != 1 or flux.ndim != 1 or wave.size != flux.size or wave.size < 2:
@@ -322,7 +447,13 @@ def make_template_component(
 
 
 def normalize_custom_components(custom_components: Iterable[CustomComponentSpec] | None) -> tuple[CustomComponentSpec, ...]:
-    """Validate and normalize custom component definitions."""
+    """Validate and normalize custom component definitions.
+
+    Parameters
+    ----------
+    custom_components : object
+        custom_components value.
+    """
     if custom_components is None:
         return ()
     normalized = []
@@ -340,7 +471,13 @@ def normalize_custom_components(custom_components: Iterable[CustomComponentSpec]
 def normalize_custom_line_components(
     custom_line_components: Iterable[CustomLineComponentSpec] | None,
 ) -> tuple[CustomLineComponentSpec, ...]:
-    """Validate and normalize custom line-component definitions."""
+    """Validate and normalize custom line-component definitions.
+
+    Parameters
+    ----------
+    custom_line_components : object
+        custom_line_components value.
+    """
     if custom_line_components is None:
         return ()
     normalized = []
@@ -360,7 +497,17 @@ def inject_default_custom_component_priors(
     flux: np.ndarray,
     custom_components: Iterable[CustomComponentSpec] | None,
 ) -> dict[str, Any]:
-    """Return a prior config with default keys added for custom components."""
+    """Return a prior config with default keys added for custom components.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    flux : object
+        flux value.
+    custom_components : object
+        custom_components value.
+    """
     comps = normalize_custom_components(custom_components)
     if len(comps) == 0:
         return prior_config
@@ -392,7 +539,17 @@ def inject_default_custom_line_component_priors(
     flux: np.ndarray,
     custom_line_components: Iterable[CustomLineComponentSpec] | None,
 ) -> dict[str, Any]:
-    """Return a prior config with default keys added for custom line components."""
+    """Return a prior config with default keys added for custom line components.
+
+    Parameters
+    ----------
+    prior_config : object
+        prior_config value.
+    flux : object
+        flux value.
+    custom_line_components : object
+        custom_line_components value.
+    """
     comps = normalize_custom_line_components(custom_line_components)
     if len(comps) == 0:
         return prior_config
@@ -418,12 +575,24 @@ def inject_default_custom_line_component_priors(
 
 
 def custom_component_site_names(custom_components: Iterable[CustomComponentSpec] | None) -> list[str]:
-    """Return deterministic-site names used by Predictive for custom components."""
+    """Return deterministic-site names used by Predictive for custom components.
+
+    Parameters
+    ----------
+    custom_components : object
+        custom_components value.
+    """
     return [comp.deterministic_site_name for comp in normalize_custom_components(custom_components)]
 
 
 def custom_line_component_site_names(
     custom_line_components: Iterable[CustomLineComponentSpec] | None,
 ) -> list[str]:
-    """Return deterministic-site names used by Predictive for custom line components."""
+    """Return deterministic-site names used by Predictive for custom line components.
+
+    Parameters
+    ----------
+    custom_line_components : object
+        custom_line_components value.
+    """
     return [comp.deterministic_site_name for comp in normalize_custom_line_components(custom_line_components)]

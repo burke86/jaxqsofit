@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from .config import (
+    AGNConfig,
     BALConfig,
     ContinuumConfig,
     ContinuumPriorConfig,
@@ -30,6 +31,7 @@ __all__ = [
     "PSFPhotometryData",
     "PredictionResult",
     "PreprocessingConfig",
+    "AGNConfig",
     "BALConfig",
     "ContinuumConfig",
     "ContinuumPriorConfig",
@@ -62,7 +64,13 @@ __all__ = [
 
 
 def __getattr__(name):
-    """Lazily expose model-heavy public objects."""
+    """Lazily expose model-heavy public objects.
+
+    Parameters
+    ----------
+    name : object
+        name value.
+    """
     if name == "JAXQSOFit":
         from .core import JAXQSOFit
 

@@ -4,6 +4,10 @@ import os
 import sys
 from datetime import datetime
 
+os.environ.setdefault('MPLBACKEND', 'Agg')
+os.environ.setdefault('JAX_PLATFORM_NAME', 'cpu')
+os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
+
 ROOT = os.path.abspath('..')
 SRC = os.path.join(ROOT, 'src')
 if SRC not in sys.path:
