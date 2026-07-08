@@ -1,5 +1,6 @@
 import os
 import h5py
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -7,6 +8,7 @@ import pytest
 import jaxqsofit
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
+import jaxqsofit.plotting as plottingmod
 from jaxqsofit import JAXQSOFit
 from jaxqsofit.config import PriorConfig
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
@@ -137,6 +139,48 @@ def test_numpyro_geometry_reparam_config_disabled_for_map_warm_starts():
     assert config == {}
 
 
+def test_line_table_kind_filter_removes_broad_rows_only():
+    flux = np.array([1.0, 2.0, 3.0], dtype=float)
+    prior = build_default_prior_config(flux).to_mapping()
+
+    filtered = coremod._filter_prior_line_table_by_kind(
+        prior,
+        use_broad_lines=False,
+        use_narrow_lines=True,
+    )
+    names = [row["linename"] for row in filtered["line"]["table"]]
+
+    assert names
+    assert not any("_br" in name.lower() for name in names)
+    assert any(name.endswith("_na") or "oiii" in name.lower() for name in names)
+
+
+def test_custom_line_component_kind_filter_removes_broad_components():
+    def _dummy_eval(wave, params, metadata):
+        return np.zeros_like(wave)
+
+    broad = coremod.CustomLineComponentSpec(
+        name="broad_wing",
+        parameter_priors={"amp": {"dist": "Normal", "loc": 1.0, "scale": 0.1}},
+        evaluate=_dummy_eval,
+        line_kind="broad",
+    )
+    narrow = coremod.CustomLineComponentSpec(
+        name="narrow_core",
+        parameter_priors={"amp": {"dist": "Normal", "loc": 1.0, "scale": 0.1}},
+        evaluate=_dummy_eval,
+        line_kind="narrow",
+    )
+
+    filtered = coremod._filter_custom_line_components_by_kind(
+        (broad, narrow),
+        use_broad_lines=False,
+        use_narrow_lines=True,
+    )
+
+    assert tuple(comp.name for comp in filtered) == ("narrow_core",)
+
+
 def test_spectral_likelihood_weight_from_resolving_power():
     wave = np.arange(5000.0, 5010.0, 1.0)
 
@@ -230,6 +274,14 @@ def test_de_redden_invalid_placeholder_coordinates_raise_clear_error():
 
     with pytest.raises(ValueError, match="fit\\(deredden=False\\)|valid sky coordinates"):
         q._validate_deredden_coordinates(ra=-999, dec=-999)
+
+
+def test_fit_rejects_legacy_keywords_with_config_hint():
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+
+    with pytest.raises(TypeError, match="configuration-first.*config.lines.enabled"):
+        q.fit(fit_lines=False)
 
 
 def test_build_fsps_grid_for_fit_skips_template_load_when_host_disabled(monkeypatch):
@@ -374,6 +426,41 @@ def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
     q.fit()
 
     assert called['kwargs']['plot_init'] is True
+
+
+def test_plot_initialization_uses_packaged_matplotlib_style(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    pred_out = {
+        "model": np.asarray([flux]),
+        "gal_model": np.asarray([0.2 * flux]),
+        "f_pl_model": np.asarray([0.8 * flux]),
+        "line_model": np.zeros((1, flux.size)),
+        "continuum_model": np.asarray([flux]),
+    }
+    entered = {"style": 0}
+
+    @contextmanager
+    def _style_context():
+        entered["style"] += 1
+        yield
+
+    monkeypatch.setattr("jaxqsofit.mplstyle.use_style", _style_context)
+    monkeypatch.setattr("jaxqsofit.plotting.plt.show", lambda: None)
+
+    q._plot_initialization(
+        lam,
+        flux,
+        err,
+        pred_out,
+        {"x": 1.0},
+        stage_name="test init",
+        attr_prefix="init_test",
+        model_label="init model",
+    )
+
+    assert entered["style"] == 1
+    assert hasattr(q, "init_test_model")
 
 
 def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
@@ -828,7 +915,7 @@ def test_plot_trace_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=False)
 
@@ -866,7 +953,7 @@ def test_plot_trace_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_trace(show_plot=True)
 
@@ -888,7 +975,7 @@ def test_plot_corner_show_plot_false_skips_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=False)
 
@@ -910,7 +997,7 @@ def test_plot_corner_show_plot_true_calls_plt_show(monkeypatch):
     def _stub_show():
         called["show"] += 1
 
-    monkeypatch.setattr(coremod.plt, "show", _stub_show)
+    monkeypatch.setattr(plottingmod.plt, "show", _stub_show)
 
     fig = q.plot_corner(show_plot=True)
 
@@ -953,7 +1040,7 @@ def test_plot_corner_uses_light_curve_full_corner_rendering(monkeypatch):
 
     def _stub_corner(*args, **kwargs):
         called.update(kwargs)
-        fig, _ = coremod.plt.subplots()
+        fig, _ = plottingmod.plt.subplots()
         return fig
 
     monkeypatch.setattr("corner.corner", _stub_corner)

@@ -121,8 +121,28 @@ class LineConfig:
     """Emission-line model configuration."""
 
     enabled: bool = True
+    use_broad_lines: bool = True
+    use_narrow_lines: bool = True
     custom_components: Sequence[Any] | None = None
     custom_line_components: Sequence[Any] | None = None
+
+
+@dataclass
+class AGNConfig:
+    """High-level AGN spectral-type presets.
+
+    The ``agn_type`` flag is intentionally a preset layer over explicit continuum,
+    host, and line switches. Call :meth:`FitConfig.apply_agn_type_defaults`
+    or :meth:`FitConfig.set_agn_type` to apply it, then override individual
+    component switches as needed.
+    """
+
+    agn_type: int = 1
+
+    def __post_init__(self) -> None:
+        self.agn_type = int(self.agn_type)
+        if self.agn_type not in {1, 2}:
+            raise ValueError("AGNConfig.agn_type must be 1 or 2.")
 
 
 @dataclass
@@ -130,7 +150,7 @@ class InferenceConfig:
     """Inference defaults for Optax and NUTS."""
 
     method: str = "optax+nuts"
-    map_steps: int = 600
+    map_steps: int = 2000
     learning_rate: float = 1.0e-2
     num_warmup: int = 50
     num_samples: int = 50
@@ -461,6 +481,7 @@ class FitConfig:
     psf_photometry: PSFPhotometryData | None = None
     preprocessing: PreprocessingConfig = field(default_factory=PreprocessingConfig)
     continuum: ContinuumConfig = field(default_factory=ContinuumConfig)
+    agn: AGNConfig = field(default_factory=AGNConfig)
     bal: BALConfig = field(default_factory=BALConfig)
     host: HostConfig = field(default_factory=HostConfig)
     lines: LineConfig = field(default_factory=LineConfig)
@@ -470,10 +491,62 @@ class FitConfig:
 
     def __post_init__(self) -> None:
         """Coerce mapping-style nested configs into dataclass objects."""
+        if not isinstance(self.observation, Observation):
+            self.observation = _coerce_dataclass(Observation, self.observation)
+        if not isinstance(self.spectroscopy, SpectroscopyData):
+            self.spectroscopy = _coerce_dataclass(SpectroscopyData, self.spectroscopy)
+        if self.psf_photometry is not None and not isinstance(self.psf_photometry, PSFPhotometryData):
+            self.psf_photometry = _coerce_dataclass(PSFPhotometryData, self.psf_photometry)
+        if not isinstance(self.preprocessing, PreprocessingConfig):
+            self.preprocessing = _coerce_dataclass(PreprocessingConfig, self.preprocessing)
+        if not isinstance(self.continuum, ContinuumConfig):
+            self.continuum = _coerce_dataclass(ContinuumConfig, self.continuum)
+        if not isinstance(self.agn, AGNConfig):
+            self.agn = _coerce_dataclass(AGNConfig, self.agn)
         if not isinstance(self.bal, BALConfig):
             self.bal = _coerce_dataclass(BALConfig, self.bal)
+        if not isinstance(self.host, HostConfig):
+            self.host = _coerce_dataclass(HostConfig, self.host)
+        if not isinstance(self.lines, LineConfig):
+            self.lines = _coerce_dataclass(LineConfig, self.lines)
+        if not isinstance(self.inference, InferenceConfig):
+            self.inference = _coerce_dataclass(InferenceConfig, self.inference)
+        if not isinstance(self.output, OutputConfig):
+            self.output = _coerce_dataclass(OutputConfig, self.output)
         if self.prior_config is not None:
             self.prior_config = _coerce_prior_config(self.prior_config)
+
+    def apply_agn_type_defaults(self) -> None:
+        """Apply coherent component defaults for ``agn.agn_type``.
+
+        Type 1 is the broad-line AGN preset. Type 2 is the narrow-line,
+        host-dominated preset. This mutates explicit component switches, so call
+        it before any manual overrides that should win over the preset.
+        """
+
+        agn_type = int(self.agn.agn_type)
+        if agn_type == 1:
+            self.lines.enabled = True
+            self.lines.use_broad_lines = True
+            self.lines.use_narrow_lines = True
+            self.continuum.fit_feii = True
+            self.continuum.fit_balmer_continuum = True
+            self.host.enabled = True
+        elif agn_type == 2:
+            self.lines.enabled = True
+            self.lines.use_broad_lines = False
+            self.lines.use_narrow_lines = True
+            self.continuum.fit_feii = False
+            self.continuum.fit_balmer_continuum = False
+            self.host.enabled = True
+        else:
+            raise ValueError("agn.agn_type must be 1 or 2.")
+
+    def set_agn_type(self, agn_type: int) -> None:
+        """Set ``agn.agn_type`` and apply the corresponding component defaults."""
+
+        self.agn = AGNConfig(agn_type=int(agn_type))
+        self.apply_agn_type_defaults()
 
     def validate(self) -> None:
         """Validate required nested data payloads."""
@@ -534,6 +607,7 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
         psf_photometry=psf_obj,
         preprocessing=_coerce_dataclass(PreprocessingConfig, data.get("preprocessing", {})),
         continuum=_coerce_dataclass(ContinuumConfig, data.get("continuum", {})),
+        agn=_coerce_dataclass(AGNConfig, data.get("agn", {})),
         bal=_coerce_dataclass(BALConfig, data.get("bal", {})),
         host=_coerce_dataclass(HostConfig, data.get("host", {})),
         lines=_coerce_dataclass(LineConfig, data.get("lines", {})),

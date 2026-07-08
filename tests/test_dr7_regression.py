@@ -154,22 +154,21 @@ def test_dr7_broad_line_regression(tmp_path: Path):
         try:
             filename = f"{plate:04d}-{mjd}-{fiber:04d}"
             q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=ra, dec=dec, filename=filename)
-            q.fit(
-                deredden=True,
-                        fit_lines=True,
-                decompose_host=True,
-                fit_fe=True,
-                fit_bc=True,
-                fit_poly=False,
-                save_result=False,
-                plot_fig=True,
-                save_fig=False,
-                nuts_warmup=40,
-                nuts_samples=20,
-                nuts_chains=1,
-                optax_steps=400,
-                optax_lr=1e-2,
-            )
+            q.config.observation.apply_mw_deredden = True
+            q.config.lines.enabled = True
+            q.config.host.enabled = True
+            q.config.continuum.fit_feii = True
+            q.config.continuum.fit_balmer_continuum = True
+            q.config.continuum.fit_polynomial_tilt = False
+            q.config.output.save_result = False
+            q.config.output.plot_fig = True
+            q.config.output.save_fig = False
+            q.config.inference.num_warmup = 40
+            q.config.inference.num_samples = 20
+            q.config.inference.num_chains = 1
+            q.config.inference.map_steps = 400
+            q.config.inference.learning_rate = 1e-2
+            q.fit()
         except Exception:
             continue
 

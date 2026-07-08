@@ -9,7 +9,6 @@ from pathlib import Path
 import extinction
 import h5py
 import matplotlib
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from astropy import units as u
@@ -80,6 +79,59 @@ def _materialize_prior_config(prior_config) -> dict:
     if hasattr(prior_config, "to_mapping"):
         return dict(prior_config.to_mapping())
     return dict(prior_config)
+
+
+def _line_row_is_broad(row) -> bool:
+    """Return True when a line-table row represents a broad component."""
+    name = str(row.get("linename", "")).lower()
+    return name.endswith("_br") or ("_br" in name)
+
+
+def _filter_line_table_by_kind(line_table, *, use_broad_lines=True, use_narrow_lines=True):
+    """Filter built-in line rows by broad/narrow kind."""
+    if line_table is None:
+        return None
+    rows = []
+    for row in line_table:
+        row_is_broad = _line_row_is_broad(row)
+        if row_is_broad and not bool(use_broad_lines):
+            continue
+        if not row_is_broad and not bool(use_narrow_lines):
+            continue
+        rows.append(dict(row))
+    return rows
+
+
+def _filter_prior_line_table_by_kind(prior_config, *, use_broad_lines=True, use_narrow_lines=True):
+    """Return a prior mapping whose ``line.table`` respects line-kind switches."""
+    if prior_config is None:
+        return None
+    prior_config = dict(prior_config)
+    line_cfg = prior_config.get("line", None)
+    if not isinstance(line_cfg, dict) or "table" not in line_cfg:
+        return prior_config
+    line_cfg = dict(line_cfg)
+    line_cfg["table"] = _filter_line_table_by_kind(
+        line_cfg.get("table"),
+        use_broad_lines=use_broad_lines,
+        use_narrow_lines=use_narrow_lines,
+    )
+    prior_config["line"] = line_cfg
+    return prior_config
+
+
+def _filter_custom_line_components_by_kind(custom_line_components, *, use_broad_lines=True, use_narrow_lines=True):
+    """Filter custom line components by their broad/narrow classification."""
+    components = normalize_custom_line_components(custom_line_components)
+    out = []
+    for comp in components:
+        line_kind = str(getattr(comp, "line_kind", "narrow")).lower()
+        if line_kind == "broad" and not bool(use_broad_lines):
+            continue
+        if line_kind != "broad" and not bool(use_narrow_lines):
+            continue
+        out.append(comp)
+    return tuple(out)
 
 
 def _numpyro_geometry_reparam_config(
@@ -1241,7 +1293,7 @@ class JAXQSOFit:
             path=getattr(fitter, "_loaded_posterior_path", None),
         )
 
-    def fit(self, *, verbose=True, kwargs_plot=None):
+    def fit(self, *, verbose=True, kwargs_plot=None, **kwargs):
         """Run preprocessing, inference, persistence, and plotting.
 
         The public API is configuration-first: construct ``JAXQSOFit`` with a
@@ -1255,6 +1307,10 @@ class JAXQSOFit:
             Verbose optimizer output where applicable.
         kwargs_plot : dict or None, optional
             Extra keyword arguments passed to :meth:`plot_fig`.
+        **kwargs
+            Removed legacy fit keyword arguments. Passing any value here raises
+            a configuration-first error message with the corresponding config
+            field when one exists.
 
         Returns
         -------
@@ -1262,6 +1318,44 @@ class JAXQSOFit:
             Result object exposing samples, medians, persistence, and plotting
             helpers while the fitter keeps mirrored posterior state.
         """
+        if kwargs:
+            legacy_targets = {
+                "deredden": "config.observation.apply_mw_deredden",
+                "fit_lines": "config.lines.enabled",
+                "decompose_host": "config.host.enabled",
+                "fit_pl": "config.continuum.fit_power_law",
+                "fit_fe": "config.continuum.fit_feii",
+                "fit_bc": "config.continuum.fit_balmer_continuum",
+                "fit_poly": "config.continuum.fit_polynomial_tilt",
+                "fit_reddening": "config.continuum.fit_reddening",
+                "fit_poly_order": "config.continuum.polynomial_order",
+                "save_result": "config.output.save_result",
+                "plot_fig": "config.output.plot_fig",
+                "save_fig": "config.output.save_fig",
+                "output_path": "config.output.output_path",
+                "fig_path": "config.output.output_path",
+                "result_path": "config.output.output_path",
+                "nuts_warmup": "config.inference.num_warmup",
+                "nuts_samples": "config.inference.num_samples",
+                "nuts_chains": "config.inference.num_chains",
+                "target_accept_prob": "config.inference.target_accept_prob",
+                "optax_steps": "config.inference.map_steps",
+                "optax_lr": "config.inference.learning_rate",
+                "fit_method": "config.inference.method",
+                "method": "config.inference.method",
+            }
+            details = []
+            for key in sorted(kwargs):
+                target = legacy_targets.get(key)
+                if target is None:
+                    details.append(f"{key}: no public fit() keyword exists")
+                else:
+                    details.append(f"{key}: set q.{target} before q.fit()")
+            joined = "; ".join(details)
+            raise TypeError(
+                "JAXQSOFit.fit() is configuration-first and does not accept "
+                f"model/inference keyword arguments. {joined}."
+            )
 
         cfg = self.config
         obs_cfg = cfg.observation
@@ -1280,6 +1374,8 @@ class JAXQSOFit:
         wave_mask = prep_cfg.wave_mask
         mask_lya_forest = bool(prep_cfg.mask_lya_forest)
         fit_lines = bool(line_cfg.enabled)
+        use_broad_lines = bool(line_cfg.use_broad_lines)
+        use_narrow_lines = bool(line_cfg.use_narrow_lines)
         decompose_host = bool(host_cfg.enabled)
         fit_pl = bool(cont_cfg.fit_power_law)
         fit_fe = bool(cont_cfg.fit_feii)
@@ -1332,6 +1428,8 @@ class JAXQSOFit:
         self._fit_deredden = bool(deredden)
         self._fit_decompose_host = bool(decompose_host)
         self._fit_fit_lines = bool(fit_lines)
+        self._fit_use_broad_lines = bool(use_broad_lines)
+        self._fit_use_narrow_lines = bool(use_narrow_lines)
         self._fit_fit_pl = bool(fit_pl)
         self._fit_fit_fe = bool(fit_fe)
         self._fit_fit_bc = bool(fit_bc)
@@ -1349,7 +1447,11 @@ class JAXQSOFit:
         self._fit_use_psf_phot = bool(use_psf_phot)
         requested_custom_components = normalize_custom_components(custom_components)
         self._fit_custom_components = requested_custom_components
-        self._fit_custom_line_components = normalize_custom_line_components(custom_line_components)
+        self._fit_custom_line_components = _filter_custom_line_components_by_kind(
+            custom_line_components,
+            use_broad_lines=use_broad_lines,
+            use_narrow_lines=use_narrow_lines,
+        )
 
         self.wave_range = wave_range
         self.wave_mask = wave_mask
@@ -1466,6 +1568,11 @@ class JAXQSOFit:
             prior_config=prior_config,
             flux=self.flux,
             custom_line_components=self._fit_custom_line_components,
+        )
+        prior_config = _filter_prior_line_table_by_kind(
+            prior_config,
+            use_broad_lines=use_broad_lines,
+            use_narrow_lines=use_narrow_lines,
         )
         out_params = prior_config.get('out_params', {})
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
@@ -1865,29 +1972,20 @@ class JAXQSOFit:
         setattr(self, f"{attr_prefix}_line_model", line)
         setattr(self, f"{attr_prefix}_redchi2", redchi2)
 
-        fig, (ax, axr) = plt.subplots(
-            2,
-            1,
-            sharex=True,
-            figsize=(12, 6),
-            gridspec_kw={'height_ratios': [3, 1], 'hspace': 0.05},
-        )
-        ax.plot(wave, flux, color='black', lw=0.8, alpha=0.8, label='data')
-        ax.plot(wave, model, color='blue', lw=1.6, label=model_label)
-        ax.plot(wave, host, color='purple', lw=1.2, label='host galaxy')
-        ax.plot(wave, pl, color='orange', lw=1.2, label='power law')
-        if np.nanmax(np.abs(line)) > 0:
-            ax.plot(wave, line, color='lightskyblue', lw=1.0, label='lines')
-        ax.set_ylabel(r'$f_\lambda$')
-        ax.set_title(f'{stage_name} (reduced chi2 = {redchi2:.2f})')
-        ax.legend(loc='best')
+        from .plotting import plot_initialization
 
-        resid = flux - model
-        axr.axhline(0.0, color='black', lw=0.8, ls='--', alpha=0.6)
-        axr.plot(wave, resid, color='gray', lw=0.8, ls=':', alpha=0.9)
-        axr.set_ylabel('resid')
-        axr.set_xlabel(r'Rest Wavelength ($\AA$)')
-        plt.show()
+        plot_initialization(
+            wave=wave,
+            flux=flux,
+            model=model,
+            host=host,
+            powerlaw=pl,
+            line=line,
+            redchi2=redchi2,
+            stage_name=stage_name,
+            model_label=model_label,
+            show_plot=True,
+        )
 
     def _plot_stage1_initialization(self, wave, flux, err, pred_out, samples):
         """Plot and store the stage-1 Optax continuum/host warm-start model."""
@@ -3554,7 +3652,22 @@ class JAXQSOFit:
         save_fig_name=None,
         show_plot=False,
     ):
-        """Plot posterior trace series for selected parameters."""
+        """Plot posterior trace series for selected parameters.
+
+        Parameters
+        ----------
+        param_names : list[str] | str | None, optional
+            Parameter selector. Use ``'all'`` to include all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        save_fig_name : str or None, optional
+            Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+        """
         from .plotting import plot_trace
 
         return plot_trace(
@@ -3576,7 +3689,26 @@ class JAXQSOFit:
         save_fig_name=None,
         show_plot=False,
     ):
-        """Plot posterior projections with ``corner.corner``."""
+        """Plot posterior projections with ``corner.corner``.
+
+        Parameters
+        ----------
+        param_names : list[str] | str | None, optional
+            Parameter selector. Use ``'all'`` to include all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        bins : int, optional
+            Histogram bin count.
+        max_points : int, optional
+            Maximum posterior draws to plot.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        save_fig_name : str or None, optional
+            Output filename override.
+        show_plot : bool, optional
+            If True, display the figure interactively with ``plt.show()``.
+        """
         from .plotting import plot_corner
 
         return plot_corner(
@@ -3596,7 +3728,30 @@ class JAXQSOFit:
                               corner_bins=30, corner_max_points=2000,
                               save_fig_path=None,
                               show_plot=False):
-        """Plot trace and/or corner diagnostics in a single convenience call."""
+        """Plot trace and/or corner diagnostics in a single convenience call.
+
+        Parameters
+        ----------
+        do_trace : bool, optional
+            If True, render the trace plot.
+        do_corner : bool, optional
+            If True, render the corner plot.
+        param_names : list[str] | str | None, optional
+            Parameter selector shared by both plots. Use ``'all'`` to include
+            all posterior keys.
+        max_vector_elems : int or None, optional
+            Maximum number of vector elements to expand per key.
+        corner_bins : int, optional
+            Histogram bin count for the corner plot.
+        corner_max_points : int, optional
+            Maximum posterior draws to use in the corner plot.
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        show_plot : bool, optional
+            If True, display each enabled figure interactively with
+            ``plt.show()``.
+        """
         from .plotting import plot_mcmc_diagnostics
 
         return plot_mcmc_diagnostics(
@@ -3612,14 +3767,49 @@ class JAXQSOFit:
         )
 
     def plot_spectrum(self, **kwargs):
-        """Plot the fitted spectrum, model components, and residuals."""
+        """Plot the fitted spectrum, model components, and residuals.
+
+        Parameters
+        ----------
+        **kwargs
+            Keyword arguments forwarded to :meth:`plot_fig`.
+        """
         from .plotting import plot_spectrum
 
         return plot_spectrum(self, **kwargs)
 
     def plot_fig(self, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylims=None, plot_residual=True, show_title=True,
                  plot_1sigma=True, sigma_alpha=0.12, show_plot=True, plot_psf_space=False, plot_intrinsic_powerlaw=False):
-        """Plot data, model components, line decomposition, and residuals."""
+        """Plot data, model components, line decomposition, and residuals.
+
+        Parameters
+        ----------
+        save_fig_path : str or None, optional
+            Output directory when saving figures. If ``None``, uses
+            ``self.output_path`` or the current directory.
+        broad_fwhm : float, optional
+            Reserved broad-line threshold kept for compatibility.
+        plot_legend : bool, optional
+            If True, draw a legend.
+        ylims : tuple[float, float] or None, optional
+            Optional y-axis limits for the spectrum panel.
+        plot_residual : bool, optional
+            If True, draw the residual panel below the spectrum.
+        show_title : bool, optional
+            Reserved title toggle kept for compatibility.
+        plot_1sigma : bool, optional
+            If True, draw 16th-84th percentile posterior bands where available.
+        sigma_alpha : float, optional
+            Alpha transparency for posterior uncertainty bands.
+        show_plot : bool, optional
+            If True, call ``plt.show()``.
+        plot_psf_space : bool, optional
+            If True, plot the PSF-space model/components instead of the
+            fiber-scale model/components.
+        plot_intrinsic_powerlaw : bool, optional
+            If True, overlay the intrinsic AGN power law before tilt and edge
+            corrections.
+        """
         from .plotting import plot_fig
 
         return plot_fig(
