@@ -324,6 +324,8 @@ def test_fit_dispatch_nuts(monkeypatch):
     monkeypatch.setattr(q, 'run_fsps_numpyro_fit', _stub_nuts)
 
     q.config.inference.method = 'nuts'
+    q.config.inference.dense_mass = False
+    q.config.inference.max_tree_depth = 6
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
     q.config.output.save_result = False
@@ -339,6 +341,8 @@ def test_fit_dispatch_nuts(monkeypatch):
     assert result.method == "nuts"
     assert called['nuts'] == 1
     assert called['kwargs']['use_psf_phot'] is True
+    assert called['kwargs']['dense_mass'] is False
+    assert called['kwargs']['max_tree_depth'] == 6
     assert called['kwargs']['psf_mags'].shape == (2,)
     assert called['kwargs']['psf_filter_curves']['trans'].shape == (2, q.lam.size)
 
@@ -541,6 +545,8 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
 
     q.config.inference.method = 'optax+nuts'
     q.config.inference.plot_init = True
+    q.config.inference.dense_mass = False
+    q.config.inference.max_tree_depth = 7
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
     q.config.output.save_result = False
@@ -549,6 +555,8 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
 
     assert called['optax_nuts'] == 1
     assert called['kwargs']['plot_init'] is True
+    assert called['kwargs']['dense_mass'] is False
+    assert called['kwargs']['max_tree_depth'] == 7
 
 
 def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):

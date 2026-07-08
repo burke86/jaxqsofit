@@ -106,7 +106,9 @@ class FitResult:
         Parameters
         ----------
         **kwargs : dict
-            Additional keyword arguments.
+            Keyword arguments passed to
+            :meth:`jaxqsofit.JAXQSOFit.reconstruct_posterior_spectrum`, such as
+            wavelength-grid overrides or posterior draw selection options.
         """
         if self._state is not None:
             kwargs.setdefault("_state", self._state)
@@ -117,10 +119,12 @@ class FitResult:
 
         Parameters
         ----------
-        path : object
-            path value.
+        path : str or pathlib.Path, optional
+            Destination path for the posterior bundle. If omitted, the fitter's
+            configured output path and object name are used.
         **kwargs : dict
-            Additional keyword arguments.
+            Additional persistence options forwarded to the fitter's native
+            save method.
         """
         if self._state is not None:
             kwargs.setdefault("_state", self._state)
@@ -135,7 +139,9 @@ class FitResult:
         Parameters
         ----------
         **kwargs : dict
-            Additional keyword arguments.
+            Keyword arguments passed to :meth:`jaxqsofit.JAXQSOFit.plot_corner`,
+            such as parameter selection, labels, output path, and display
+            options.
         """
         return self.fitter.plot_corner(**kwargs)
 
@@ -145,6 +151,7 @@ class FitResult:
         Parameters
         ----------
         **kwargs : dict
-            Additional keyword arguments.
+            Keyword arguments passed to :meth:`jaxqsofit.JAXQSOFit.plot_trace`,
+            such as parameter selection, output path, and display options.
         """
         return self.fitter.plot_trace(**kwargs)

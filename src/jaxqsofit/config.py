@@ -156,6 +156,8 @@ class InferenceConfig:
     num_samples: int = 50
     num_chains: int = 1
     target_accept_prob: float = 0.9
+    dense_mass: bool = True
+    max_tree_depth: int = 8
     plot_init: bool = False
 
 
@@ -402,7 +404,26 @@ class PSFPriorConfig:
 
 @dataclass
 class PriorConfig:
-    """Object-oriented prior configuration."""
+    """Object-oriented prior configuration for a quasar spectral fit.
+
+    Parameters
+    ----------
+    continuum : ContinuumPriorConfig or mapping, optional
+        Priors and fixed settings for the power-law continuum, polynomial
+        pivot, and requested continuum-luminosity outputs.
+    host : HostPriorConfig or mapping, optional
+        Priors controlling the host-galaxy fraction, stellar population,
+        aperture scale, metallicity, and host SFH behavior.
+    lines : LinePriorConfig or mapping, optional
+        Emission-line table and scale multipliers for tied line positions,
+        widths, and amplitudes.
+    feii : FeIIPriorConfig or mapping, optional
+        Fe II normalization, optical/UV ratio, and broadening priors.
+    psf : PSFPriorConfig or mapping, optional
+        Priors for PSF-photometry recalibration terms.
+    student_t_df : float, optional
+        Degrees of freedom for the spectral Student-t likelihood.
+    """
 
     continuum: ContinuumPriorConfig = field(default_factory=ContinuumPriorConfig)
     host: HostPriorConfig = field(default_factory=HostPriorConfig)
@@ -427,8 +448,10 @@ class PriorConfig:
 
         Parameters
         ----------
-        model_priors : object
-            model_priors value.
+        model_priors : mapping
+            Low-level prior dictionary produced by the internal default-prior
+            builder. This preserves defaults while still allowing semantic
+            section overrides through the public ``PriorConfig`` API.
         """
         out = cls()
         out._model_priors = dict(model_priors)
@@ -454,18 +477,23 @@ class PriorConfig:
 
         Parameters
         ----------
-        flux : object
-            flux value.
-        redshift : object
-            redshift value.
-        line_config : object
-            line_config value.
-        include_elg_narrow_lines : object
-            include_elg_narrow_lines value.
-        include_high_ionization_lines : object
-            include_high_ionization_lines value.
-        pl_pivot : object
-            pl_pivot value.
+        flux : sequence of float
+            Observed-frame spectral flux density used to set scale-aware
+            default priors.
+        redshift : float, optional
+            Source redshift. When supplied, the flux scale is converted to the
+            rest-frame convention expected by the low-level prior builder.
+        line_config : mapping, optional
+            Optional line-table or line-prior settings passed to the default
+            prior builder.
+        include_elg_narrow_lines : bool, optional
+            If True, include additional narrow emission-line galaxy lines in
+            the default line table.
+        include_high_ionization_lines : bool, optional
+            If True, include high-ionization quasar lines in the default line
+            table.
+        pl_pivot : float, optional
+            Rest-frame wavelength pivot for the power-law continuum prior.
         """
         from .defaults import _build_default_prior_config
 
@@ -490,8 +518,8 @@ class PriorConfig:
 
         Parameters
         ----------
-        value : object
-            value value.
+        value : PowerLawPriorConfig or mapping
+            Replacement power-law prior section.
         """
         self.continuum.powerlaw = _coerce_dataclass(PowerLawPriorConfig, value)
 
@@ -506,8 +534,8 @@ class PriorConfig:
 
         Parameters
         ----------
-        value : object
-            value value.
+        value : FeIIPriorConfig or mapping
+            Replacement Fe II prior section.
         """
         self.feii = _coerce_dataclass(FeIIPriorConfig, value)
 
@@ -526,7 +554,40 @@ class PriorConfig:
 
 @dataclass
 class FitConfig:
-    """Top-level configuration bundle for one JAXQSOFit spectral fit."""
+    """Top-level configuration bundle for one JAXQSOFit spectral fit.
+
+    Parameters
+    ----------
+    observation : Observation or mapping
+        Source metadata such as redshift, object identifier, sky coordinates,
+        and Milky Way dereddening behavior.
+    spectroscopy : SpectroscopyData or mapping
+        Observed spectrum, uncertainties, masks, and optional resolution
+        metadata.
+    psf_photometry : PSFPhotometryData or mapping, optional
+        Optional PSF-aperture magnitudes used as an extra spectral
+        recalibration constraint.
+    preprocessing : PreprocessingConfig or mapping, optional
+        Wavelength trimming, manual masks, and Ly-alpha forest masking options.
+    continuum : ContinuumConfig or mapping, optional
+        Switches for the power law, Fe II, Balmer continuum, reddening,
+        polynomial tilt, and convolution method.
+    agn : AGNConfig or mapping, optional
+        High-level AGN type preset.
+    bal : BALConfig or mapping, optional
+        Built-in broad absorption line component settings.
+    host : HostConfig or mapping, optional
+        Host-galaxy decomposition settings and SSP grid choices.
+    lines : LineConfig or mapping, optional
+        Emission-line switches and optional custom components.
+    inference : InferenceConfig or mapping, optional
+        Optax and NUTS controls, including warmup, samples, dense mass, and
+        maximum tree depth.
+    output : OutputConfig or mapping, optional
+        Plotting and persistence behavior.
+    prior_config : PriorConfig or mapping, optional
+        Semantic or low-level priors consumed by the NumPyro model.
+    """
 
     observation: Observation
     spectroscopy: SpectroscopyData
@@ -597,11 +658,11 @@ class FitConfig:
     def set_agn_type(self, agn_type: int) -> None:
         """Set ``agn.agn_type`` and apply the corresponding component defaults.
 
-
         Parameters
         ----------
-        agn_type : object
-            agn_type value.
+        agn_type : {1, 2}
+            AGN spectral-type preset. Type 1 enables broad-line AGN defaults;
+            type 2 enables narrow-line, host-dominated defaults.
         """
 
         self.agn = AGNConfig(agn_type=int(agn_type))
@@ -672,8 +733,9 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
 
     Parameters
     ----------
-    data : object
-        data value.
+    data : mapping
+        Nested configuration dictionary, typically loaded from JSON/YAML or a
+        serialized ``FitConfig``.
     """
 
     psf_raw = data.get("psf_photometry")
@@ -703,7 +765,8 @@ def serialize_config(value: Any) -> Any:
     Parameters
     ----------
     value : object
-        value value.
+        Dataclass, mapping, sequence, NumPy array, NumPyro distribution, or
+        scalar value to convert into JSON-compatible containers.
     """
 
     prior = _numpyro_distribution_to_mapping(value)

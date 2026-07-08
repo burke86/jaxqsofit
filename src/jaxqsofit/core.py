@@ -558,32 +558,32 @@ class JAXQSOFit:
 
         Parameters
         ----------
-        lam : object
-            lam value.
-        flux : object
-            flux value.
-        err : object
-            err value.
-        z : object
-            z value.
-        ra : object
-            ra value.
-        dec : object
-            dec value.
-        filename : object
-            filename value.
-        output_path : object
-            output_path value.
-        wdisp : object
-            wdisp value.
-        resolving_power : object
-            resolving_power value.
-        psf_mags : object
-            psf_mags value.
-        psf_mag_errs : object
-            psf_mag_errs value.
-        psf_bands : object
-            psf_bands value.
+        lam : array-like
+            Observed-frame wavelength array in Angstrom.
+        flux : array-like
+            Observed spectral flux-density array.
+        err : array-like or float, optional
+            Flux-density uncertainty. If omitted, a small positive uncertainty
+            is supplied by the downstream data preparation.
+        z : float, optional
+            Source redshift.
+        ra, dec : float, optional
+            Sky coordinates in degrees, used for Milky Way dereddening when
+            enabled.
+        filename : str, optional
+            Object name and default output basename.
+        output_path : str or pathlib.Path, optional
+            Directory for saved figures and posterior bundles.
+        wdisp : array-like, optional
+            Per-pixel wavelength dispersion, usually from SDSS ``wdisp``.
+        resolving_power : float, optional
+            Effective resolving power used to downweight oversampled spectral
+            likelihoods.
+        psf_mags, psf_mag_errs : array-like, optional
+            PSF-aperture magnitudes and uncertainties used for spectral
+            recalibration.
+        psf_bands : sequence of str, optional
+            Filter names corresponding to ``psf_mags``.
         """
         psf = None
         if psf_mags is not None and psf_mag_errs is not None:
@@ -1727,6 +1727,8 @@ class JAXQSOFit:
                 "nuts_samples": "config.inference.num_samples",
                 "nuts_chains": "config.inference.num_chains",
                 "target_accept_prob": "config.inference.target_accept_prob",
+                "dense_mass": "config.inference.dense_mass",
+                "max_tree_depth": "config.inference.max_tree_depth",
                 "optax_steps": "config.inference.map_steps",
                 "optax_lr": "config.inference.learning_rate",
                 "fit_method": "config.inference.method",
@@ -1783,6 +1785,8 @@ class JAXQSOFit:
         nuts_samples = int(infer_cfg.num_samples)
         nuts_chains = int(infer_cfg.num_chains)
         nuts_target_accept = float(infer_cfg.target_accept_prob)
+        nuts_dense_mass = bool(infer_cfg.dense_mass)
+        nuts_max_tree_depth = int(infer_cfg.max_tree_depth)
         optax_steps = int(infer_cfg.map_steps)
         optax_lr = float(infer_cfg.learning_rate)
         plot_init = bool(infer_cfg.plot_init or out_cfg.plot_init)
@@ -1990,6 +1994,8 @@ class JAXQSOFit:
                 num_samples=nuts_samples,
                 num_chains=nuts_chains,
                 target_accept_prob=nuts_target_accept,
+                dense_mass=nuts_dense_mass,
+                max_tree_depth=nuts_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -2041,6 +2047,8 @@ class JAXQSOFit:
                 num_samples=nuts_samples,
                 num_chains=nuts_chains,
                 target_accept_prob=nuts_target_accept,
+                dense_mass=nuts_dense_mass,
+                max_tree_depth=nuts_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -2080,6 +2088,8 @@ class JAXQSOFit:
 
     def run_fsps_numpyro_fit(self, num_warmup=500, num_samples=1000, num_chains=1,
                              target_accept_prob=0.9,
+                             dense_mass=True,
+                             max_tree_depth=8,
                              age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                              logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                              prior_config=None,
@@ -2109,6 +2119,10 @@ class JAXQSOFit:
             Number of MCMC chains.
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
+        dense_mass : bool, optional
+            If True, use a dense mass matrix during NUTS adaptation.
+        max_tree_depth : int, optional
+            Maximum NUTS tree depth.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -2259,7 +2273,13 @@ class JAXQSOFit:
             if reparam_config
             else qso_fsps_joint_model
         )
-        kernel = NUTS(nuts_model, init_strategy=init_strategy, target_accept_prob=target_accept_prob, dense_mass=True, max_tree_depth=8)
+        kernel = NUTS(
+            nuts_model,
+            init_strategy=init_strategy,
+            target_accept_prob=target_accept_prob,
+            dense_mass=bool(dense_mass),
+            max_tree_depth=int(max_tree_depth),
+        )
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
         rng_key = jax.random.PRNGKey(0)
         mcmc.run(
@@ -3001,6 +3021,8 @@ class JAXQSOFit:
     def run_fsps_optax_nuts_fit(self, optax_steps=2000, optax_learning_rate=1e-2,
                                 num_warmup=500, num_samples=1000, num_chains=1,
                                 target_accept_prob=0.9,
+                                dense_mass=True,
+                                max_tree_depth=8,
                                 age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                                 logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                                 prior_config=None,
@@ -3034,6 +3056,10 @@ class JAXQSOFit:
             Number of MCMC chains.
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
+        dense_mass : bool, optional
+            If True, use a dense mass matrix during NUTS adaptation.
+        max_tree_depth : int, optional
+            Maximum NUTS tree depth.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -3092,6 +3118,8 @@ class JAXQSOFit:
             num_samples=num_samples,
             num_chains=num_chains,
             target_accept_prob=target_accept_prob,
+            dense_mass=dense_mass,
+            max_tree_depth=max_tree_depth,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             prior_config=prior_config,

@@ -408,5 +408,12 @@ Warm-start with Optax, then run NUTS:
    q.config.inference.map_steps = 800
    q.config.inference.num_warmup = 200
    q.config.inference.num_samples = 400
+   q.config.inference.dense_mass = True
+   q.config.inference.max_tree_depth = 8
    result = q.fit()
    components = result.predict(n_draws=200)
+
+``dense_mass`` and ``max_tree_depth`` are passed directly to NumPyro's NUTS
+kernel. For difficult posteriors, lowering ``max_tree_depth`` can cap runtime;
+turning ``dense_mass`` off can reduce adaptation cost, but may require more
+warmup for strongly correlated parameters.
