@@ -98,11 +98,14 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
     )
 
     class _Grid:
-        templates = np.zeros((5, 1), dtype=float)
+        def __init__(self, wave):
+            self.wave = np.asarray(wave, dtype=float)
+            self.templates = np.zeros((self.wave.size, 1), dtype=float)
+
         age_grid_gyr = np.array([1.0], dtype=float)
         logzsol_grid = np.array([0.0], dtype=float)
 
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", lambda **kwargs: _Grid())
+    monkeypatch.setattr(modelmod, "build_fsps_template_grid", lambda **kwargs: _Grid(kwargs["wave_out"]))
 
     wave_out = np.linspace(2000.0, 3000.0, 5)
     samples = {
@@ -365,6 +368,55 @@ def test_plot_fig_scales_broad_component_overlay_to_fitted_broad_model():
     broad_lines = [line for line in ax.get_lines() if line.get_label() == "broad components"]
     assert len(broad_lines) == 1
     np.testing.assert_allclose(broad_lines[0].get_ydata(), q.line_broad, rtol=1e-12, atol=1e-12)
+    plt.close(fig)
+
+
+def test_plot_fig_draws_oiii_wings_as_broad_components():
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.wave_prereduced = lam
+    q.flux = flux
+    q.flux_prereduced = flux
+    q.err = err
+    wing = np.full_like(lam, 0.7)
+    core = np.full_like(lam, 0.2)
+    q.line_broad = wing
+    q.line_narrow = core
+    q.model_total = wing + core
+    q.host = np.zeros_like(lam)
+    q.f_pl_model = np.zeros_like(lam)
+    q.f_pl_model_intrinsic = np.zeros_like(lam)
+    q.f_fe_mgii_model = np.zeros_like(lam)
+    q.f_fe_balmer_model = np.zeros_like(lam)
+    q.f_bc_model = np.zeros_like(lam)
+    q.f_line_model = wing + core
+    q.custom_components = {}
+    q.pred_bands = None
+    q.scale_psf = 1.0
+    q.save_fig = False
+    q.custom_line_components = {}
+    q.line_component_amp_median = np.array([1.0, 1.0])
+    q.line_component_mu_median = np.array([np.log(5008.24), np.log(5008.24)])
+    q.line_component_sig_median = np.array([0.001, 0.003])
+    q.line_component_profiles = np.vstack([core, wing])
+    q.line_component_profiles_psf = np.full((0, len(lam)), np.nan)
+    q.tied_line_meta = {"names": ["OIII5007c_1", "OIII5007w_1"]}
+    q.psf_model = np.full_like(lam, np.nan)
+    q.qso_psf = np.full_like(lam, np.nan)
+    q.host_psf = np.full_like(lam, np.nan)
+    q.line_psf = np.full_like(lam, np.nan)
+
+    q.plot_fig(show_plot=False, plot_legend=True, plot_1sigma=True)
+
+    fig = plt.gcf()
+    ax = fig.axes[0]
+    broad_lines = [line for line in ax.get_lines() if line.get_label() == "broad components"]
+    narrow_lines = [line for line in ax.get_lines() if line.get_label() == "narrow components"]
+    assert len(broad_lines) == 1
+    assert len(narrow_lines) == 1
+    np.testing.assert_allclose(broad_lines[0].get_ydata(), wing, rtol=1e-12, atol=1e-12)
+    np.testing.assert_allclose(narrow_lines[0].get_ydata(), core, rtol=1e-12, atol=1e-12)
     plt.close(fig)
 
 

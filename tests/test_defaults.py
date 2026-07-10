@@ -259,7 +259,13 @@ def test_build_default_prior_config_has_expected_keys():
         "max_logit": 2.0,
     }
     assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert mapping["log_gal_sigma_kms"]["dist"] == "Normal"
+    assert mapping["log_gal_sigma_kms"] == {
+        "dist": "TruncatedNormal",
+        "loc": np.log(150.0),
+        "scale": 0.4,
+        "low": np.log(30.0),
+        "high": np.log(500.0),
+    }
     assert mapping["log_reddening_a2500"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6}
 
 
