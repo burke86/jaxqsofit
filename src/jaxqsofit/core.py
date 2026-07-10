@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import glob
 import warnings
-from dataclasses import replace
 from pathlib import Path
 
 import extinction
@@ -60,6 +59,7 @@ from .model import (
     FSPSTemplateGrid,
     build_fsps_template_grid,
     build_tied_line_meta_from_linelist,
+    extend_loglam_grid,
     qso_fsps_joint_model,
     reconstruct_posterior_components,
     unred,
@@ -1446,7 +1446,7 @@ class JAXQSOFit:
         return self.save_posterior_bundle(save_name=save_name, save_path=path, _state=_state)
 
     @staticmethod
-    def _build_fsps_grid_for_fit(wave, age_grid_gyr, logzsol_grid, dsps_ssp_fn, decompose_host, z_qso=0.0):
+    def _build_fsps_grid_for_fit(wave, age_grid_gyr, logzsol_grid, dsps_ssp_fn, decompose_host, z_qso=0.0, host_pad_kms=3000.0):
         """Build the host-template grid only when host decomposition is enabled.
 
         Parameters
@@ -1463,10 +1463,13 @@ class JAXQSOFit:
             decompose_host value.
         z_qso : object
             z_qso value.
+        host_pad_kms : object
+            Velocity-space support added to each side of the host grid.
         """
         if decompose_host:
+            host_wave = extend_loglam_grid(wave, pad_kms=host_pad_kms)
             return build_fsps_template_grid(
-                wave_out=wave,
+                wave_out=host_wave,
                 age_grid_gyr=age_grid_gyr,
                 logzsol_grid=logzsol_grid,
                 dsps_ssp_fn=dsps_ssp_fn,
@@ -2596,33 +2599,6 @@ class JAXQSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _subset_fsps_grid(grid, keep_mask):
-            """Return an FSPS grid restricted to the selected wavelength pixels.
-
-            Parameters
-            ----------
-            grid : object
-                grid value.
-            keep_mask : object
-                keep_mask value.
-            """
-            keep_mask = np.asarray(keep_mask, dtype=bool)
-            host_basis = getattr(grid, "host_basis_jax", None)
-            if host_basis is not None:
-                host_basis = replace(
-                    host_basis,
-                    rest_llambda=host_basis.rest_llambda[..., keep_mask],
-                )
-            return FSPSTemplateGrid(
-                wave=np.asarray(grid.wave)[keep_mask],
-                templates=np.asarray(grid.templates)[keep_mask, :],
-                template_meta=grid.template_meta,
-                age_grid_gyr=grid.age_grid_gyr,
-                logzsol_grid=grid.logzsol_grid,
-                host_basis_jax=host_basis,
-                t_obs_gyr=grid.t_obs_gyr,
-            )
-
         def _stage1_continuum_keep_mask(wave_in):
             """Mask strong optical emission-line windows for continuum warm start.
 
@@ -2855,7 +2831,6 @@ class JAXQSOFit:
         n1 = max(100, int(num_steps // 3))
         stage1_keep = _stage1_continuum_keep_mask(wave)
         self.init_stage1_keep_mask = stage1_keep
-        fsps_grid_stage1 = _subset_fsps_grid(fsps_grid, stage1_keep)
         psf_filter_curves_stage1 = _subset_psf_filter_curves(psf_filter_curves, stage1_keep)
         stage1_init_values = _stage1_init_values()
         guide1 = AutoDelta(
@@ -2876,7 +2851,7 @@ class JAXQSOFit:
             wave_i=wave[stage1_keep],
             flux_i=flux[stage1_keep],
             err_i=err[stage1_keep],
-            fsps_grid_i=fsps_grid_stage1,
+            fsps_grid_i=fsps_grid,
             psf_filter_curves_i=psf_filter_curves_stage1,
         )
         map1 = guide1.median(res1.params)

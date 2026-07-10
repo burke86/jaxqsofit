@@ -1026,7 +1026,6 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
             total_model_plot,
             host_plot,
             pl_plot,
-            pl_intrinsic_plot,
             fe_total_model,
             bc_plot,
             line_plot,
@@ -1049,12 +1048,6 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
                 lo, hi = pred_bands[name]
                 if len(lo) == len(fitter.wave) and len(hi) == len(fitter.wave):
                     component_ylim_arrays.extend([lo, hi])
-            if bool(plot_intrinsic_powerlaw) and 'PL_intrinsic' in pred_bands:
-                lo, hi = pred_bands['PL_intrinsic']
-                if len(lo) == len(fitter.wave) and len(hi) == len(fitter.wave):
-                    mid = 0.5 * (np.asarray(lo, dtype=float) + np.asarray(hi, dtype=float))
-                    if _show_component(mid):
-                        component_ylim_arrays.extend([lo, hi])
         yvals = _finite_component_values(
             *robust_data_ylim,
             *component_ylim_arrays,
