@@ -250,8 +250,9 @@ components as explicit rows with shared positive tie indices.
 Line naming and plotting
 ------------------------
 ``linename`` is the output component name used in model metadata and plots.
-The current plotting convention classifies names containing ``"_br"`` as
-broad-line components and other built-in line names as narrow components.
+The current plotting convention draws names containing ``"_br"`` and [O III]
+wing names ending in ``"w"`` with broad-component styling; other built-in line
+names use narrow-component styling.
 ``compname`` is used for grouping/tie scoping by line complex; it is not just a
 display label.
 """
@@ -671,7 +672,13 @@ def _build_default_prior_config(
             "max": 0.3,
         },
         "gal_v_kms": {"dist": "Normal", "loc": 0.0, "scale": 120.0},
-        "log_gal_sigma_kms": {"dist": "Normal", "loc": np.log(150.0), "scale": 0.4},
+        "log_gal_sigma_kms": {
+            "dist": "TruncatedNormal",
+            "loc": np.log(150.0),
+            "scale": 0.4,
+            "low": np.log(30.0),
+            "high": np.log(500.0),
+        },
         "log_Fe_uv_norm": {"dist": "LogNormal", "loc": np.log(max(0.03 * fscale, 1e-12)), "scale": 1.0},
         "log_Fe_op_over_uv": {"dist": "Normal", "loc": 0.0, "scale": 1.0},
         "log_Fe_uv_FWHM": {"dist": "LogNormal", "loc": np.log(3000.0), "scale": 0.5},

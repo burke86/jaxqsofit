@@ -39,6 +39,36 @@ CGS_TO_JAXQSOFIT_FLUX = 1.0e17
 AMPLITUDE_FLOOR = 1e-32
 
 
+def extend_loglam_grid(wave: np.ndarray, pad_kms: float = 3000.0) -> np.ndarray:
+    """Return ``wave`` padded on both sides by a fixed velocity width.
+
+    The host LOSVD convolution is performed in log-wavelength space, so padding
+    in velocity units gives roughly uniform convolution support across the
+    spectrum.
+    """
+    wave = np.asarray(wave, dtype=float)
+    if wave.ndim != 1 or wave.size < 2:
+        raise ValueError("wave must be a one-dimensional wavelength grid with at least two points.")
+    if not np.all(np.isfinite(wave)) or np.any(wave <= 0.0):
+        raise ValueError("wave must contain finite positive wavelengths.")
+    if np.any(np.diff(wave) <= 0.0):
+        raise ValueError("wave must be strictly increasing.")
+
+    pad_kms = float(pad_kms)
+    if not np.isfinite(pad_kms) or pad_kms <= 0.0:
+        return wave.copy()
+
+    lnwave = np.log(wave)
+    dln = float(np.nanmedian(np.diff(lnwave)))
+    if not np.isfinite(dln) or dln <= 0.0:
+        raise ValueError("wave must have a finite positive median log-wavelength spacing.")
+
+    n_pad = max(1, int(np.ceil((pad_kms / C_KMS) / dln)))
+    left = lnwave[0] - dln * np.arange(n_pad, 0, -1, dtype=float)
+    right = lnwave[-1] + dln * np.arange(1, n_pad + 1, dtype=float)
+    return np.exp(np.concatenate([left, lnwave, right]))
+
+
 def _materialize_prior_mapping(prior_config):
     """Return a flat prior mapping for low-level model helpers.
 
@@ -1850,15 +1880,24 @@ def reconstruct_posterior_components(
         raise ValueError("wave_out must be a finite 1D wavelength grid.")
 
     if decompose_host:
+        host_wave_out = extend_loglam_grid(wave_out, pad_kms=float(prior_config.get("host_pad_kms", 3000.0)))
         fsps_grid = build_fsps_template_grid(
-            wave_out=wave_out,
+            wave_out=host_wave_out,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             dsps_ssp_fn=dsps_ssp_fn,
             template_norms=template_norms,
         )
         templates = np.asarray(fsps_grid.templates, dtype=float)
+        host_wave_out = np.asarray(fsps_grid.wave, dtype=float)
+        if templates.shape[0] != host_wave_out.size:
+            raise RuntimeError(
+                "Posterior reconstruction host template grid has incompatible "
+                f"wavelength support: templates have {templates.shape[0]} pixels, "
+                f"host_wave_out has {host_wave_out.size}."
+            )
     else:
+        host_wave_out = wave_out
         n_templates = int(len(tuple(age_grid_gyr)) * len(tuple(logzsol_grid)))
         templates = np.zeros((wave_out.size, n_templates), dtype=float)
     lnwave = np.log(wave_out)
@@ -1919,6 +1958,8 @@ def reconstruct_posterior_components(
 
     wave_j = jnp.asarray(wave_out, dtype=jnp.float64)
     lnwave_j = jnp.asarray(lnwave, dtype=jnp.float64)
+    host_wave_j = jnp.asarray(host_wave_out, dtype=jnp.float64)
+    host_lnwave_j = jnp.log(host_wave_j)
     templates_j = jnp.asarray(templates, dtype=jnp.float64)
     fsps_weights_j = jnp.asarray(fsps_weights, dtype=jnp.float64)
     poly_coeffs_j = jnp.asarray(poly_coeffs, dtype=jnp.float64)
@@ -1987,13 +2028,14 @@ def reconstruct_posterior_components(
             poly_coeffs_i value.
         """
         host_intrinsic = templates_j @ weights_i
-        host_model = _shift_and_broaden_single_spectrum_lnlam(
-            lnwave_j,
+        host_model_ext = _shift_and_broaden_single_spectrum_lnlam(
+            host_lnwave_j,
             host_intrinsic,
             gal_v_i,
             gal_sigma_i,
             convolution_method=convolution_method,
         )
+        host_model = jnp.interp(wave_j, host_wave_j, host_model_ext, left=0.0, right=0.0)
 
         pl_model = _powerlaw_jax(
             wave_j,
@@ -2480,6 +2522,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     flux = _np_to_jnp(flux)
     err = _np_to_jnp(err)
     lnwave = jnp.log(wave)
+    host_wave_value = getattr(fsps_grid, "wave", None)
+    host_wave = wave if host_wave_value is None else _np_to_jnp(host_wave_value)
+    host_lnwave = jnp.log(host_wave)
     templates = _np_to_jnp(fsps_grid.templates)
     fe_uv_wave = _np_to_jnp(fe_uv_wave)
     fe_uv_flux = _np_to_jnp(fe_uv_flux)
@@ -2779,7 +2824,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         log_host_aperture_scale = _sample_log_host_aperture_scale(prior_config)
         host_aperture_scale = jnp.exp(log_host_aperture_scale)
         if host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
-            gal_intrinsic_total, fsps_weights, fsps_weights_frac = _delayed_sfh_host_spectrum(
+            gal_intrinsic_total_ext, fsps_weights, fsps_weights_frac = _delayed_sfh_host_spectrum(
                 fsps_grid,
                 prior_config,
                 host_amp,
@@ -2793,7 +2838,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             fsps_weights_frac = jax.nn.softmax(raw_w)
             fsps_weights_total = host_amp * fsps_weights_frac
             fsps_weights = host_aperture_scale * fsps_weights_total
-            gal_intrinsic_total = jnp.dot(templates, fsps_weights_total)
+            gal_intrinsic_total_ext = jnp.dot(templates, fsps_weights_total)
         else:
             raise ValueError("host_sfh_model must be one of: 'flexible', 'delayed'.")
         gal_v_kms = _sample_prior(prior_config, 'gal_v_kms', dist.Normal(0.0, 150.0))
@@ -2805,12 +2850,19 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             default_log_distribution=dist.Normal(np.log(150.0), 0.4),
             default_to_log=True,
         )
-        gal_model_intrinsic_total = _shift_and_broaden_single_spectrum_lnlam(
-            lnwave,
-            gal_intrinsic_total,
+        gal_model_intrinsic_total_ext = _shift_and_broaden_single_spectrum_lnlam(
+            host_lnwave,
+            gal_intrinsic_total_ext,
             gal_v_kms,
             gal_sigma_kms,
             convolution_method=convolution_method,
+        )
+        gal_model_intrinsic_total = jnp.interp(
+            wave,
+            host_wave,
+            gal_model_intrinsic_total_ext,
+            left=0.0,
+            right=0.0,
         )
         gal_model_intrinsic = host_aperture_scale * gal_model_intrinsic_total
     else:
