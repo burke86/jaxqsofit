@@ -1889,6 +1889,16 @@ def reconstruct_posterior_components(
             template_norms=template_norms,
         )
         templates = np.asarray(fsps_grid.templates, dtype=float)
+        host_wave_out = np.asarray(getattr(fsps_grid, "wave", host_wave_out), dtype=float)
+        if templates.shape[0] != host_wave_out.size:
+            if templates.shape[0] == wave_out.size:
+                host_wave_out = wave_out
+            else:
+                raise RuntimeError(
+                    "Posterior reconstruction host template grid has incompatible "
+                    f"wavelength support: templates have {templates.shape[0]} pixels, "
+                    f"host_wave_out has {host_wave_out.size}."
+                )
     else:
         host_wave_out = wave_out
         n_templates = int(len(tuple(age_grid_gyr)) * len(tuple(logzsol_grid)))
