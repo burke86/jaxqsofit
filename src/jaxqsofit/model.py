@@ -1890,6 +1890,7 @@ def reconstruct_posterior_components(
         )
         templates = np.asarray(fsps_grid.templates, dtype=float)
     else:
+        host_wave_out = wave_out
         n_templates = int(len(tuple(age_grid_gyr)) * len(tuple(logzsol_grid)))
         templates = np.zeros((wave_out.size, n_templates), dtype=float)
     lnwave = np.log(wave_out)
@@ -1950,7 +1951,7 @@ def reconstruct_posterior_components(
 
     wave_j = jnp.asarray(wave_out, dtype=jnp.float64)
     lnwave_j = jnp.asarray(lnwave, dtype=jnp.float64)
-    host_wave_j = jnp.asarray(np.asarray(getattr(fsps_grid, "wave", wave_out), dtype=float), dtype=jnp.float64)
+    host_wave_j = jnp.asarray(host_wave_out, dtype=jnp.float64)
     host_lnwave_j = jnp.log(host_wave_j)
     templates_j = jnp.asarray(templates, dtype=jnp.float64)
     fsps_weights_j = jnp.asarray(fsps_weights, dtype=jnp.float64)
