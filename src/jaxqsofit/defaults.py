@@ -250,8 +250,9 @@ components as explicit rows with shared positive tie indices.
 Line naming and plotting
 ------------------------
 ``linename`` is the output component name used in model metadata and plots.
-The current plotting convention classifies names containing ``"_br"`` as
-broad-line components and other built-in line names as narrow components.
+The current plotting convention draws names containing ``"_br"`` and [O III]
+wing names ending in ``"w"`` with broad-component styling; other built-in line
+names use narrow-component styling.
 ``compname`` is used for grouping/tie scoping by line complex; it is not just a
 display label.
 """

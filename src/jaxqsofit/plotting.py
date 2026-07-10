@@ -35,6 +35,17 @@ __all__ = [
 ]
 
 
+def _plot_line_component_as_broad(label):
+    """Return True for line profiles drawn with broad-component styling."""
+    name = str(label).lower()
+    base = name.rsplit('_', 1)[0] if name.rsplit('_', 1)[-1].isdigit() else name
+    return (
+        base.endswith('_br')
+        or ('_br' in base)
+        or base.endswith('w')
+    )
+
+
 def posterior_series(fitter, param_names=None, max_vector_elems=2):
     """Flatten posterior samples into labeled 1D series for diagnostics.
 
@@ -976,7 +987,7 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
             for i in range(n_profiles):
                 prof = profiles[i]
                 cname = str(comp_labels[i]).lower()
-                is_broad = cname.endswith('_br') or ('_br' in cname)
+                is_broad = _plot_line_component_as_broad(cname)
                 if is_broad:
                     lbl = 'broad components' if (show_line_leg and not drew_broad_label) else None
                     ax.plot(
