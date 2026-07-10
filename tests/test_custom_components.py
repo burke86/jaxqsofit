@@ -98,11 +98,14 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
     )
 
     class _Grid:
-        templates = np.zeros((5, 1), dtype=float)
+        def __init__(self, wave):
+            self.wave = np.asarray(wave, dtype=float)
+            self.templates = np.zeros((self.wave.size, 1), dtype=float)
+
         age_grid_gyr = np.array([1.0], dtype=float)
         logzsol_grid = np.array([0.0], dtype=float)
 
-    monkeypatch.setattr(modelmod, "build_fsps_template_grid", lambda **kwargs: _Grid())
+    monkeypatch.setattr(modelmod, "build_fsps_template_grid", lambda **kwargs: _Grid(kwargs["wave_out"]))
 
     wave_out = np.linspace(2000.0, 3000.0, 5)
     samples = {
