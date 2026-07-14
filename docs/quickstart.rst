@@ -344,6 +344,56 @@ amplitude scale used to seed the independent amplitude prior.
 Broad-line measurements
 -----------------------
 
+Individual Gaussian summary parameters
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+After fitting, ``q.line_result`` contains posterior-median parameters for every
+individual Gaussian component, and ``q.line_result_name`` contains the
+corresponding field names.  Pair them to make a convenient lookup mapping:
+
+.. code-block:: python
+
+   line = dict(zip(q.line_result_name, q.line_result))
+
+   for component in ["Hb_br_1", "Hb_br_2"]:
+       amplitude = line[f"{component}_scale"]
+       amplitude_err = line[f"{component}_scale_err"]
+       center_lnlam = line[f"{component}_centerwave"]
+       center_lnlam_err = line[f"{component}_centerwave_err"]
+       sigma_lnlam = line[f"{component}_sigma"]
+       sigma_lnlam_err = line[f"{component}_sigma_err"]
+
+       center_angstrom = np.exp(center_lnlam)
+       velocity_kms = 299792.458 * (center_lnlam - np.log(4862.68))
+
+       print(
+           component,
+           amplitude,
+           amplitude_err,
+           center_angstrom,
+           velocity_kms,
+           sigma_lnlam,
+           sigma_lnlam_err,
+       )
+
+Components expanded from a row with ``ngauss > 1`` have names such as
+``Hb_br_1`` and ``Hb_br_2`` (with an underscore before the component number).
+For each component, the available summary fields are ``_scale``,
+``_centerwave``, and ``_sigma``, together with their ``_err`` fields.  The
+central values are posterior medians and the ``_err`` values are posterior
+standard deviations.
+
+Despite the ``_centerwave`` field name, centers are stored as natural-log
+wavelength, ``ln(Angstrom)``, and ``_sigma`` is likewise a width in natural-log
+wavelength.  Thus ``np.exp(center_lnlam)`` gives the rest-frame center in
+Angstrom.  For a component with laboratory wavelength ``lambda0``, its
+velocity offset is ``c * (center_lnlam - np.log(lambda0))``.  The small-width
+Gaussian velocity dispersion is approximately ``c * sigma_lnlam``.
+
+These fields are compact median-and-error summaries.  Analyses that require
+credible intervals, parameter covariances, or component velocity-separation
+distributions should use the posterior draws described below instead.
+
 After fitting, per-component line draws are available in ``q.pred_out``:
 
 .. code-block:: python
