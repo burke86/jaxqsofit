@@ -18,6 +18,7 @@ from jaxsedfit.filters import load_filter_curves
 import jax
 import jax.numpy as jnp
 import optax
+import numpyro.distributions as dist
 from numpyro.handlers import reparam
 from numpyro.infer import MCMC, NUTS, Predictive, SVI, Trace_ELBO, init_to_value
 from numpyro.infer.autoguide import AutoDelta
@@ -1805,6 +1806,7 @@ class JAXQSOFit:
         fit_poly_order = int(cont_cfg.polynomial_order)
         broadening_convolution = str(cont_cfg.broadening_convolution).lower()
         method = str(infer_cfg.method)
+        random_seed = int(infer_cfg.random_seed)
         self._posterior_state = _PosteriorState(method=method)
         fsps_age_grid = host_cfg.age_grid_gyr
         fsps_logzsol_grid = host_cfg.logzsol_grid
@@ -2056,6 +2058,7 @@ class JAXQSOFit:
                 use_psf_phot=use_psf_phot_use,
                 custom_components=self._fit_custom_components,
                 custom_line_components=self._fit_custom_line_components,
+                random_seed=random_seed,
             )
         elif method == 'optax':
             self.run_fsps_optax_fit(
@@ -2080,6 +2083,7 @@ class JAXQSOFit:
                 custom_components=self._fit_custom_components,
                 custom_line_components=self._fit_custom_line_components,
                 plot_init=plot_init,
+                random_seed=random_seed,
             )
         elif method == 'optax+nuts':
             self.run_fsps_optax_nuts_fit(
@@ -2110,6 +2114,7 @@ class JAXQSOFit:
                 custom_components=self._fit_custom_components,
                 custom_line_components=self._fit_custom_line_components,
                 plot_init=plot_init,
+                random_seed=random_seed,
             )
         else:
             raise ValueError(f"Unknown inference method='{method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
@@ -2150,7 +2155,7 @@ class JAXQSOFit:
                              use_psf_phot=False,
                              custom_components=None,
                              custom_line_components=None,
-                             init_values=None):
+                             init_values=None, random_seed=0):
         """Fit the full model using NUTS MCMC and store posterior summaries.
 
         Parameters
@@ -2323,7 +2328,7 @@ class JAXQSOFit:
             max_tree_depth=int(max_tree_depth),
         )
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
-        rng_key = jax.random.PRNGKey(0)
+        rng_key = jax.random.PRNGKey(int(random_seed))
         mcmc.run(
             rng_key,
             wave=wave,
@@ -2543,7 +2548,7 @@ class JAXQSOFit:
                            use_psf_phot=False,
                            custom_components=None,
                            custom_line_components=None,
-                           plot_init=False):
+                           plot_init=False, random_seed=0):
         """Fit a MAP approximation using staged SVI with an Optax optimizer.
 
         Parameters
@@ -2743,7 +2748,7 @@ class JAXQSOFit:
             psf_filter_curves_run = psf_filter_curves if psf_filter_curves_i is None else psf_filter_curves_i
             optimizer = optax_to_numpyro(optax.adam(learning_rate))
             svi = SVI(qso_fsps_joint_model, guide, optimizer, loss=Trace_ELBO())
-            key = jax.random.PRNGKey(0)
+            key = jax.random.PRNGKey(int(random_seed))
             result = svi.run(
                 key,
                 int(steps),
@@ -2795,6 +2800,9 @@ class JAXQSOFit:
             cfg = prior_config.get(key, default)
             if isinstance(cfg, dict):
                 value = cfg.get(field, cfg.get('value', cfg.get('loc', default)))
+            elif isinstance(cfg, dist.Distribution):
+                base_dist = getattr(cfg, 'base_dist', cfg)
+                value = getattr(cfg, field, getattr(base_dist, field, getattr(base_dist, 'loc', default)))
             elif isinstance(cfg, (tuple, list)) and len(cfg) > 0:
                 value = cfg[0]
             else:
@@ -2831,7 +2839,14 @@ class JAXQSOFit:
                 values['log_stellar_mass'] = _prior_field('log_stellar_mass', 'loc', 9.0)
                 values['log_sfh_age_gyr'] = _prior_field('log_sfh_age_gyr', 'loc', np.log(3.0))
                 values['log_sfh_tau_over_age'] = _prior_field('log_sfh_tau_over_age', 'loc', 0.0)
-                values['gal_lgmet'] = _prior_field('gal_lgmet', 'loc', 0.0)
+                gal_lgmet = _prior_field('gal_lgmet', 'loc', 0.0)
+                ssp_lgmet = np.asarray(getattr(fsps_grid.host_basis_jax, 'ssp_lgmet', []), dtype=float)
+                if ssp_lgmet.size and np.any(np.isfinite(ssp_lgmet)):
+                    low = float(np.nanmin(ssp_lgmet))
+                    high = float(np.nanmax(ssp_lgmet))
+                    margin = min(1.0e-6, max(0.0, 0.25 * (high - low)))
+                    gal_lgmet = float(np.clip(gal_lgmet, low + margin, high - margin))
+                values['gal_lgmet'] = gal_lgmet
                 values['log_gal_lgmet_scatter'] = _prior_field('log_gal_lgmet_scatter', 'loc', np.log(0.15))
                 values['log_host_aperture_scale'] = _prior_field('log_host_aperture_scale', 'value', 0.0)
             return values
@@ -2971,7 +2986,7 @@ class JAXQSOFit:
         losses = np.concatenate([np.asarray(res1.losses), np.asarray(res2.losses)])
         map_point = guide2.median(svi_params)
         samples = {k: np.asarray(v)[None, ...] for k, v in map_point.items()}
-        rng_key = jax.random.PRNGKey(0)
+        rng_key = jax.random.PRNGKey(int(random_seed))
 
         pred = Predictive(
             qso_fsps_joint_model,
@@ -3055,7 +3070,7 @@ class JAXQSOFit:
                                 use_psf_phot=False,
                                 custom_components=None,
                                 custom_line_components=None,
-                                plot_init=False):
+                                plot_init=False, random_seed=0):
         """Warm-start with Optax MAP, then run NUTS as final inference.
 
         Parameters
@@ -3125,6 +3140,7 @@ class JAXQSOFit:
             custom_components=custom_components,
             custom_line_components=custom_line_components,
             plot_init=plot_init,
+            random_seed=random_seed,
         )
         init_values = getattr(self, 'optax_map_point', None)
         self.run_fsps_numpyro_fit(
@@ -3153,6 +3169,7 @@ class JAXQSOFit:
             custom_components=custom_components,
             custom_line_components=custom_line_components,
             init_values=init_values,
+            random_seed=random_seed,
         )
 
     def _consume_posterior_outputs(self, samples, pred_out, fsps_grid, tied_line_meta, use_lines, decompose_host):

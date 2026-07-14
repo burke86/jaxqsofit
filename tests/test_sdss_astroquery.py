@@ -172,7 +172,8 @@ def test_sdss_fit_wrms_below_threshold():
             ),
             lines=LineConfig(enabled=True),
             inference=InferenceConfig(
-                method="optax+nuts",
+                method="optax",
+                random_seed=0,
                 map_steps=int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '1200')),
                 learning_rate=float(os.getenv('JAXQSOFIT_WRMS_OPTAX_LR', '1e-2')),
                 num_warmup=int(os.getenv('JAXQSOFIT_WRMS_NUTS_WARMUP', '50')),

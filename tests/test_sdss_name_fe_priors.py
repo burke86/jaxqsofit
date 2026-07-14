@@ -60,7 +60,8 @@ def test_sdss_name_fe_width_prior_wrms_below_threshold():
     prior_config.fe.optical_fwhm = dist.Normal(loc=np.log(100.0), scale=0.1)
 
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=float(coord.ra.deg), dec=float(coord.dec.deg))
-    q.config.inference.method = "optax+nuts"
+    q.config.inference.method = "optax"
+    q.config.inference.random_seed = 0
     q.config.observation.apply_mw_deredden = False
     q.config.lines.enabled = True
     q.config.host.enabled = False

@@ -172,9 +172,14 @@ class AGNConfig:
 
 @dataclass
 class InferenceConfig:
-    """Inference defaults for Optax and NUTS."""
+    """Inference defaults for Optax and NUTS.
+
+    ``random_seed`` controls stochastic inference and posterior prediction so
+    repeated fits with the same configuration are reproducible.
+    """
 
     method: str = "optax+nuts"
+    random_seed: int = 0
     map_steps: int = 2000
     learning_rate: float = 1.0e-2
     num_warmup: int = 50

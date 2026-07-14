@@ -42,7 +42,8 @@ def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
     prior_config = PriorConfig.from_spectrum(flux=flux, pl_pivot=3000.0)
 
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.0)
-    q.config.inference.method = "optax+nuts"
+    q.config.inference.method = "optax"
+    q.config.inference.random_seed = 0
     q.config.observation.apply_mw_deredden = False
     q.config.preprocessing.mask_lya_forest = True
     q.config.lines.enabled = True
@@ -55,7 +56,7 @@ def test_selsing_composite_fit_wrms_below_threshold(tmp_path: Path):
     q.config.output.save_fig = False
     q.config.output.save_result = False
     q.config.prior_config = prior_config
-    q.config.inference.map_steps = int(os.getenv("JAXQSOFIT_SELSING_OPTAX_STEPS", "500"))
+    q.config.inference.map_steps = int(os.getenv("JAXQSOFIT_SELSING_OPTAX_STEPS", "1200"))
     q.config.inference.learning_rate = float(os.getenv("JAXQSOFIT_SELSING_OPTAX_LR", "1e-2"))
     q.config.inference.num_warmup = int(os.getenv("JAXQSOFIT_SELSING_NUTS_WARMUP", "30"))
     q.config.inference.num_samples = int(os.getenv("JAXQSOFIT_SELSING_NUTS_SAMPLES", "30"))

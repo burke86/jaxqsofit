@@ -398,6 +398,7 @@ def test_fit_dispatch_optax(monkeypatch):
     monkeypatch.setattr(q, 'run_fsps_optax_fit', _stub_optax)
 
     q.config.inference.method = 'optax'
+    q.config.inference.random_seed = 73
     q.config.inference.plot_init = True
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
@@ -407,6 +408,7 @@ def test_fit_dispatch_optax(monkeypatch):
 
     assert called['optax'] == 1
     assert called['kwargs']['plot_init'] is True
+    assert called['kwargs']['random_seed'] == 73
 
 
 def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
@@ -568,6 +570,7 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
     monkeypatch.setattr(q, 'run_fsps_optax_nuts_fit', _stub_optax_nuts)
 
     q.config.inference.method = 'optax+nuts'
+    q.config.inference.random_seed = 41
     q.config.inference.plot_init = True
     q.config.inference.dense_mass = False
     q.config.inference.max_tree_depth = 7
@@ -581,6 +584,7 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
     assert called['kwargs']['plot_init'] is True
     assert called['kwargs']['dense_mass'] is False
     assert called['kwargs']['max_tree_depth'] == 7
+    assert called['kwargs']['random_seed'] == 41
 
 
 def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
@@ -608,6 +612,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
     monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
 
     svi_calls = []
+    svi_keys = []
 
     class FakeSVIResult:
         losses = np.array([0.0])
@@ -619,6 +624,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
             pass
 
         def run(self, key, steps, **kwargs):
+            svi_keys.append(np.asarray(key))
             svi_calls.append(kwargs)
             return FakeSVIResult()
 
@@ -662,6 +668,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
         psf_mag_errs=np.array([0.05, 0.06]),
         psf_filter_curves=psf_filter_curves,
         use_psf_phot=True,
+        random_seed=19,
     )
 
     assert len(svi_calls) == 2
@@ -671,6 +678,8 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
     assert svi_calls[1]["wave"].shape[0] == q.wave.size
     assert svi_calls[1]["psf_filter_curves"]["trans"].shape == (2, q.wave.size)
     assert svi_calls[1]["psf_filter_curves"] is psf_filter_curves
+    expected_key = np.asarray(coremod.jax.random.PRNGKey(19))
+    assert all(np.array_equal(key, expected_key) for key in svi_keys)
 
 
 def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeypatch):
