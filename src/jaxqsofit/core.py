@@ -333,6 +333,11 @@ class JAXQSOFit:
 
         self.lam_in = np.asarray(spec.wave_obs, dtype=np.float64)
         self.flux_in = np.asarray(spec.fluxes, dtype=np.float64)
+        self.mask_in = (
+            np.ones_like(self.flux_in, dtype=bool)
+            if spec.mask is None
+            else np.asarray(spec.mask, dtype=bool)
+        )
         if spec.errors is None:
             self.err_in = np.full_like(self.flux_in, 1e-6, dtype=np.float64)
         else:
@@ -342,8 +347,8 @@ class JAXQSOFit:
             else:
                 self.err_in = err_arr
         self.z = float(obs.redshift)
-        self.wdisp = spec.wavelength_dispersion
         self.resolving_power = spec.resolving_power
+        self.apply_instrumental_resolution = bool(spec.apply_instrumental_resolution)
         self.ra = -999 if obs.ra is None else float(obs.ra)
         self.dec = -999 if obs.dec is None else float(obs.dec)
         self.install_path = os.path.dirname(os.path.abspath(__file__))
@@ -543,13 +548,14 @@ class JAXQSOFit:
         lam,
         flux,
         err=None,
+        mask=None,
         z=0.0,
         ra=None,
         dec=None,
         filename=None,
         output_path=None,
-        wdisp=None,
         resolving_power=None,
+        apply_instrumental_resolution=False,
         psf_mags=None,
         psf_mag_errs=None,
         psf_bands=None,
@@ -565,6 +571,8 @@ class JAXQSOFit:
         err : array-like or float, optional
             Flux-density uncertainty. If omitted, a small positive uncertainty
             is supplied by the downstream data preparation.
+        mask : array-like of bool, optional
+            Pixel keep-mask. ``True`` includes a pixel and ``False`` rejects it.
         z : float, optional
             Source redshift.
         ra, dec : float, optional
@@ -574,11 +582,12 @@ class JAXQSOFit:
             Object name and default output basename.
         output_path : str or pathlib.Path, optional
             Directory for saved figures and posterior bundles.
-        wdisp : array-like, optional
-            Per-pixel wavelength dispersion, usually from SDSS ``wdisp``.
         resolving_power : float, optional
             Effective resolving power used to downweight oversampled spectral
             likelihoods.
+        apply_instrumental_resolution : bool, optional
+            If True, include the Gaussian instrumental LSF in the forward model.
+            Requires a positive ``resolving_power``. Defaults to False.
         psf_mags, psf_mag_errs : array-like, optional
             PSF-aperture magnitudes and uncertainties used for spectral
             recalibration.
@@ -603,8 +612,9 @@ class JAXQSOFit:
                 wave_obs=lam,
                 fluxes=flux,
                 errors=err,
-                wavelength_dispersion=wdisp,
+                mask=mask,
                 resolving_power=resolving_power,
+                apply_instrumental_resolution=apply_instrumental_resolution,
             ),
             psf_photometry=psf,
             output=OutputConfig(output_path=output_path, save_name=filename),
@@ -664,6 +674,9 @@ class JAXQSOFit:
             'line_amp_per_component',
             'line_mu_per_component',
             'line_sig_per_component',
+            'line_sig_effective_per_component',
+            'line_amp_effective_per_component',
+            'gal_sigma_effective_kms',
             'delta_m_psf',
             'eta_psf',
             'scale_psf',
@@ -1137,12 +1150,14 @@ class JAXQSOFit:
             "lam_in",
             "flux_in",
             "err_in",
+            "mask_in",
+            "resolving_power",
+            "apply_instrumental_resolution",
             "z",
             "ra",
             "dec",
             "filename",
             "output_path",
-            "wdisp",
             "wave",
             "flux",
             "err",
@@ -1584,16 +1599,19 @@ class JAXQSOFit:
             lam=state["lam_in"],
             flux=state["flux_in"],
             err=state.get("err_in"),
+            mask=state.get("mask_in"),
+            resolving_power=state.get("resolving_power"),
+            apply_instrumental_resolution=state.get("apply_instrumental_resolution", False),
             z=state.get("z", 0.0),
             ra=state.get("ra", -999),
             dec=state.get("dec", -999),
             filename=state.get("filename", resolved_name),
             output_path=output_path if output_path is not None else state.get("output_path"),
-            wdisp=state.get("wdisp"),
             psf_mags=state.get("psf_mags_raw", state.get("psf_mags")),
             psf_mag_errs=state.get("psf_mag_errs_raw", state.get("psf_mag_errs")),
             psf_bands=state.get("psf_bands"),
         )
+        state.pop("wdisp", None)
         obj.__dict__.update(state)
         obj._sync_posterior_state_from_legacy_attrs()
         obj._resumed_from_samples = True
@@ -1874,10 +1892,17 @@ class JAXQSOFit:
 
         save_fits_name = self.filename
 
-        ind_gooderror = np.where((self.err_in > 0) & np.isfinite(self.err_in) & (self.flux_in != 0) & np.isfinite(self.flux_in), True, False)
-        self.err = self.err_in[ind_gooderror]
-        self.flux = self.flux_in[ind_gooderror]
-        self.lam = self.lam_in[ind_gooderror]
+        pixel_keep = (
+            self.mask_in
+            & np.isfinite(self.lam_in)
+            & (self.lam_in > 0.0)
+            & np.isfinite(self.flux_in)
+            & np.isfinite(self.err_in)
+            & (self.err_in > 0.0)
+        )
+        self.err = self.err_in[pixel_keep]
+        self.flux = self.flux_in[pixel_keep]
+        self.lam = self.lam_in[pixel_keep]
 
         if wave_range is not None:
             self._wave_trim(self.lam, self.flux, self.err, self.z)
@@ -1914,6 +1939,11 @@ class JAXQSOFit:
         self._balmer_tau_shape = np.asarray(balmer_tau_shape, dtype=float)
         self._balmer_below_edge = np.asarray(balmer_below_edge, dtype=bool)
         resolving_power = self.resolving_power
+        apply_instrumental_resolution = bool(self.apply_instrumental_resolution)
+        if apply_instrumental_resolution and resolving_power is None:
+            raise ValueError(
+                "apply_instrumental_resolution=True requires SpectroscopyData.resolving_power."
+            )
         if resolving_power is None:
             warnings.warn(
                 "SpectroscopyData.resolving_power is None; jaxqsofit will treat spectral pixels as independent, "
@@ -1982,6 +2012,7 @@ class JAXQSOFit:
             poly_pivot = _spectrum_center_pivot(self.wave)
         prior_config["poly_pivot"] = float(np.asarray(poly_pivot, dtype=float))
         prior_config["resolving_power"] = resolving_power
+        prior_config["apply_instrumental_resolution"] = apply_instrumental_resolution
         self._fit_prior_config = prior_config
         psf_mags_use, psf_mag_errs_use, _psf_bands_use, psf_filter_curves_use, use_psf_phot_use = self._prepare_psf_photometry(
             wave_obs=self.lam,

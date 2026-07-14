@@ -154,7 +154,6 @@ def test_sdss_fit_wrms_below_threshold():
                 wave_obs=lam,
                 fluxes=flux,
                 errors=err,
-                wavelength_dispersion=wdisp,
                 resolving_power=resolving_power,
             ),
             preprocessing=PreprocessingConfig(mask_lya_forest=True),
