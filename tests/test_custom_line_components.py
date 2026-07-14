@@ -43,12 +43,12 @@ def test_custom_line_component_accepts_numpyro_distribution_priors():
 
     cfg = inject_default_custom_line_component_priors({}, np.array([1.0, 2.0, 3.0]), [comp])
 
-    assert cfg["custom_line_exp_wing_amp"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["custom_line_exp_wing_amp"]["loc"], np.log(0.3))
-    assert cfg["custom_line_exp_wing_amp"]["scale"] == 0.8
-    assert cfg["custom_line_exp_wing_tau"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["custom_line_exp_wing_tau"]["loc"], np.log(35.0))
-    assert cfg["custom_line_exp_wing_tau"]["scale"] == 0.5
+    assert isinstance(cfg["custom_line_exp_wing_amp"], dist.LogNormal)
+    assert np.isclose(cfg["custom_line_exp_wing_amp"].loc, np.log(0.3))
+    assert cfg["custom_line_exp_wing_amp"].scale == 0.8
+    assert isinstance(cfg["custom_line_exp_wing_tau"], dist.LogNormal)
+    assert np.isclose(cfg["custom_line_exp_wing_tau"].loc, np.log(35.0))
+    assert cfg["custom_line_exp_wing_tau"].scale == 0.5
 
 
 def test_custom_line_components_add_to_broad_and_narrow_models():

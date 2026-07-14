@@ -4,6 +4,14 @@ from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Any, Mapping, Sequence
 
 import numpy as np
+import numpyro.distributions as dist
+
+
+@dataclass(frozen=True)
+class ErrorScaledHalfNormalPrior:
+    """Half-normal prior whose scale is resolved from the observed errors."""
+
+    scale_multiplier: float
 
 
 @dataclass
@@ -251,17 +259,41 @@ def _numpyro_distribution_to_mapping(value: Any) -> dict[str, Any] | None:
     raise TypeError(f"Unsupported NumPyro prior distribution: {name}")
 
 
-def _prior_to_mapping(value: Any) -> Any:
-    """Convert public prior specs to low-level mappings.
+def _mapping_to_numpyro_distribution(value: Mapping[str, Any]) -> dist.Distribution:
+    """Restore a NumPyro distribution from a legacy serialized mapping."""
+    family = str(value.get("dist", value.get("family", ""))).lower()
+    if family in {"normal", "gaussian"}:
+        return dist.Normal(value.get("loc", 0.0), value.get("scale", 1.0))
+    if family in {"truncatednormal", "truncated_normal", "truncnormal", "truncnorm"}:
+        return dist.TruncatedNormal(
+            value.get("loc", 0.0), value.get("scale", 1.0),
+            low=value.get("low", -np.inf), high=value.get("high", np.inf),
+        )
+    if family in {"lognormal", "log-normal", "log_normal"}:
+        return dist.LogNormal(value.get("loc", 0.0), value.get("scale", 1.0))
+    if family in {"halfnormal", "half_normal"}:
+        return dist.HalfNormal(value.get("scale", 1.0))
+    if family in {"student_t", "studentt", "t"}:
+        return dist.StudentT(value.get("df", 5.0), value.get("loc", 0.0), value.get("scale", 1.0))
+    if family in {"uniform", "flat"}:
+        return dist.Uniform(value.get("low", 0.0), value.get("high", 1.0))
+    if family in {"exponential", "exp"}:
+        return dist.Exponential(1.0 / value.get("scale", 1.0))
+    raise TypeError(f"Unsupported serialized prior distribution: {family!r}")
+
+
+def _prior_to_mapping(value: Any) -> dist.Distribution:
+    """Return the canonical in-memory NumPyro distribution.
 
     Parameters
     ----------
     value : object
         value value.
     """
-    prior = _numpyro_distribution_to_mapping(value)
-    if prior is not None:
-        return prior
+    if isinstance(value, dist.Distribution):
+        return value
+    if isinstance(value, Mapping):
+        return _mapping_to_numpyro_distribution(value)
     raise TypeError("Prior fields must be supported numpyro.distributions objects.")
 
 
@@ -557,7 +589,7 @@ class PriorConfig:
         self.feii = _coerce_dataclass(FeIIPriorConfig, value)
 
     def to_mapping(self) -> dict[str, Any]:
-        """Return the flat prior mapping consumed by low-level model code."""
+        """Return flat model-site keys with distributions kept as objects."""
         out: dict[str, Any] = dict(self._model_priors)
         out.update(self.continuum.to_mapping())
         out.update(self.host.to_mapping())

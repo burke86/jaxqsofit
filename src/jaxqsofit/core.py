@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import glob
 import warnings
+from dataclasses import asdict, is_dataclass
 from pathlib import Path
 
 import extinction
@@ -973,12 +974,19 @@ class JAXQSOFit:
         value : object
             value value.
         """
+        from .config import _numpyro_distribution_to_mapping
+
+        prior = _numpyro_distribution_to_mapping(value)
+        if prior is not None:
+            return JAXQSOFit._serialize_for_hdf5(prior)
         if isinstance(value, CustomComponentSpec):
-            return value.to_state()
+            return JAXQSOFit._serialize_for_hdf5(value.to_state())
         if isinstance(value, CustomLineComponentSpec):
-            return value.to_state()
+            return JAXQSOFit._serialize_for_hdf5(value.to_state())
         if hasattr(value, "to_mapping"):
             return JAXQSOFit._serialize_for_hdf5(value.to_mapping())
+        if is_dataclass(value) and not isinstance(value, type):
+            return JAXQSOFit._serialize_for_hdf5(asdict(value))
         if isinstance(value, dict):
             return {str(k): JAXQSOFit._serialize_for_hdf5(v) for k, v in value.items()}
         if isinstance(value, (list, tuple)):

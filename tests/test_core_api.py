@@ -490,8 +490,8 @@ def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     expected_rest_fscale = np.nanmedian(np.abs(flux * (1.0 + z)))
     observed_fscale = np.nanmedian(np.abs(flux))
 
-    assert np.isclose(prior_config["log_cont_norm"]["loc"], np.log(expected_rest_fscale))
-    assert not np.isclose(prior_config["log_cont_norm"]["loc"], np.log(observed_fscale))
+    assert np.isclose(prior_config["log_cont_norm"].loc, np.log(expected_rest_fscale))
+    assert not np.isclose(prior_config["log_cont_norm"].loc, np.log(observed_fscale))
     assert np.allclose(q.flux, flux * (1.0 + z))
 
 
@@ -548,11 +548,11 @@ def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     names = [comp.name for comp in components]
     assert names == ["bal_nv", "bal_siiv", "bal_civ"]
     for comp in components:
-        assert np.isclose(comp.parameter_priors["tau_peak"]["scale"], 0.5)
+        assert np.isclose(comp.parameter_priors["tau_peak"].scale, 0.5)
         covering_cfg = comp.parameter_priors["covering"]
-        assert np.isclose(covering_cfg["loc"], 0.35)
-        assert np.isclose(covering_cfg["scale"], 0.11)
-        assert np.isclose(covering_cfg["high"], 0.80)
+        assert np.isclose(covering_cfg.base_dist.loc, 0.35)
+        assert np.isclose(covering_cfg.base_dist.scale, 0.11)
+        assert np.isclose(covering_cfg.high, 0.80)
 
 
 def test_fit_dispatch_optax_nuts(monkeypatch):

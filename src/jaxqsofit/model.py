@@ -28,6 +28,7 @@ from .custom_components import (
     normalize_custom_components,
     normalize_custom_line_components,
 )
+from .config import ErrorScaledHalfNormalPrior
 
 C_KMS = 299792.458
 _SFD_QUERY_CACHE: Dict[str, Any] = {}
@@ -1154,6 +1155,8 @@ def _prior_distribution(prior_config, key, default_distribution):
     cfg = prior_config.get(key, None)
     if cfg is None:
         return default_distribution
+    if isinstance(cfg, dist.Distribution):
+        return cfg
     if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
         return dist.Normal(
             jnp.asarray(cfg[0], dtype=jnp.float64),
@@ -1235,6 +1238,8 @@ def _prior_family(prior_config, key, default_family=""):
         default_family value.
     """
     cfg = prior_config.get(key, None)
+    if isinstance(cfg, dist.Distribution):
+        return cfg.__class__.__name__.lower()
     if isinstance(cfg, Mapping):
         return str(cfg.get("dist", cfg.get("family", default_family))).lower()
     return default_family.lower()
@@ -1255,6 +1260,8 @@ def _prior_loc_scale(prior_config, key, default_loc=0.0, default_scale=1.0):
         default_scale value.
     """
     cfg = prior_config.get(key, None)
+    if isinstance(cfg, dist.Distribution) and hasattr(cfg, "loc") and hasattr(cfg, "scale"):
+        return cfg.loc, cfg.scale
     if isinstance(cfg, Mapping):
         return (
             jnp.asarray(cfg.get("loc", default_loc), dtype=jnp.float64),
@@ -1283,6 +1290,12 @@ def _halfnormal_prior(prior_config, key, default_scale, *, ref_scale=None):
         ref_scale value.
     """
     cfg = prior_config.get(key, None)
+    if isinstance(cfg, ErrorScaledHalfNormalPrior) and ref_scale is not None:
+        scale = cfg.scale_multiplier * ref_scale
+        return dist.HalfNormal(jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-6))
+    if isinstance(cfg, Mapping) and "scale_multiplier" in cfg and ref_scale is not None:
+        scale = cfg["scale_multiplier"] * ref_scale
+        return dist.HalfNormal(jnp.maximum(jnp.asarray(scale, dtype=jnp.float64), 1.0e-6))
     if isinstance(cfg, Mapping) and "scale_mult_err" in cfg and ref_scale is not None:
         return dist.HalfNormal(jnp.maximum(jnp.asarray(cfg["scale_mult_err"] * ref_scale, dtype=jnp.float64), 1.0e-6))
     return _prior_distribution(prior_config, key, dist.HalfNormal(default_scale))
@@ -1613,6 +1626,8 @@ def _sample_from_prior_config(key, cfg):
     cfg : object
         cfg value.
     """
+    if isinstance(cfg, dist.Distribution):
+        return numpyro.sample(key, cfg)
     if isinstance(cfg, Mapping):
         return _sample_prior({key: cfg}, key, dist.Normal(0.0, 1.0))
     if isinstance(cfg, (tuple, list)) and len(cfg) >= 2:
@@ -2608,8 +2623,11 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             default_value_distribution=dist.LogNormal(0.0, 1.0),
             default_log_distribution=dist.Normal(0.0, 1.0),
         )
-        if isinstance(prior_config.get('log_frac_host', None), dict) and ('df' in prior_config['log_frac_host']):
-            log_frac_host_df = float(prior_config['log_frac_host']['df'])
+        log_frac_host_prior = prior_config.get('log_frac_host', None)
+        if isinstance(log_frac_host_prior, dist.StudentT):
+            log_frac_host_df = float(np.asarray(log_frac_host_prior.df))
+        elif isinstance(log_frac_host_prior, dict) and ('df' in log_frac_host_prior):
+            log_frac_host_df = float(log_frac_host_prior['df'])
         else:
             log_frac_host_df = float(prior_config.get('log_frac_host_df', 3.0))
         log_frac_host_loc, log_frac_host_scale = _prior_loc_scale(prior_config, 'log_frac_host')

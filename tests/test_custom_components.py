@@ -62,10 +62,10 @@ def test_custom_component_accepts_numpyro_distribution_priors():
 
     cfg = inject_default_custom_component_priors({}, np.array([1.0, 2.0, 3.0]), [comp])
 
-    assert cfg["custom_blue_tilt_c0"] == {"dist": "Normal", "loc": 0.0, "scale": 0.2}
-    assert cfg["custom_blue_tilt_amp"]["dist"] == "LogNormal"
-    assert np.isclose(cfg["custom_blue_tilt_amp"]["loc"], np.log(0.1))
-    assert cfg["custom_blue_tilt_amp"]["scale"] == 0.5
+    assert isinstance(cfg["custom_blue_tilt_c0"], dist.Normal)
+    assert isinstance(cfg["custom_blue_tilt_amp"], dist.LogNormal)
+    assert np.isclose(cfg["custom_blue_tilt_amp"].loc, np.log(0.1))
+    assert cfg["custom_blue_tilt_amp"].scale == 0.5
 
 
 def test_custom_component_shared_parameter_site_injection():

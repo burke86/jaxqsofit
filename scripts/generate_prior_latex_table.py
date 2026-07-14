@@ -11,8 +11,10 @@ from __future__ import annotations
 import argparse
 import ast
 import copy
-import importlib.util
+import importlib
 import math
+import sys
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any
 
@@ -28,12 +30,13 @@ C_KMS = 299792.458
 
 
 def _load_defaults_module():
-    spec = importlib.util.spec_from_file_location("jaxqsofit_defaults", DEFAULTS_PATH)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load defaults module from {DEFAULTS_PATH}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+    # Import through the package so defaults.py's relative imports work when
+    # this script is executed directly from a source checkout.
+    sys.path.insert(0, str(SRC_DIR.parent))
+    try:
+        return importlib.import_module("jaxqsofit.defaults")
+    finally:
+        sys.path.pop(0)
 
 
 def _extract_literal_sample_sites(model_path: Path) -> set[str]:
@@ -115,14 +118,21 @@ def _build_tied_line_groups(line_rows: list[dict[str, Any]], wave_min: float, wa
     amp_max: list[float] = []
 
     for row in rows:
-        for i in range(int(row.get("ngauss", 1))):
+        ngauss = int(row.get("ngauss", 1))
+        for i in range(ngauss):
             names.append(f"{row['linename']}_{i + 1}")
-            compnames.append(str(row.get("compname", row["linename"])))
+            base_compname = str(row.get("compname", row["linename"]))
+            # Match model.py: components expanded from one multi-Gaussian row
+            # are independent, while explicit rows may share tie indices.
+            if ngauss > 1:
+                compnames.append(f"{base_compname}:{row['linename']}:{i + 1}")
+            else:
+                compnames.append(base_compname)
             vindex.append(int(row["vindex"]))
             windex.append(int(row["windex"]))
             findex.append(int(row["findex"]))
             fvalue.append(float(row["fvalue"]))
-            dln = float(row["voff"]) / C_KMS
+            dln = float(row["voff"])
             dmu_min.append(-dln)
             dmu_max.append(+dln)
             sig_init.append(max(float(row["inisig"]), 1e-5))
@@ -229,7 +239,13 @@ def _latex_escape(text: str) -> str:
     )
 
 
-def _dist_label(cfg: dict[str, Any]) -> str:
+def _dist_label(cfg: Any) -> str:
+    if not isinstance(cfg, dict):
+        from jaxqsofit.config import _numpyro_distribution_to_mapping
+
+        cfg = _numpyro_distribution_to_mapping(cfg) or cfg
+    if not isinstance(cfg, dict):
+        return _latex_escape(repr(cfg))
     dist_name = str(cfg.get("dist", "Unknown"))
     if dist_name.lower() == "normal":
         return f"$\\mathcal{{N}}({_fmt_float(cfg['loc'])},\\ {_fmt_float(cfg['scale'])})$"
@@ -488,6 +504,235 @@ def _build_line_group_rows(groups: dict[str, Any]) -> list[tuple[str, str, str]]
     return rows
 
 
+def _tn_label(init: float, lower: float, upper: float, *, factor: float = 1.0) -> str:
+    """Format the truncated-normal prior used by the tied-line model."""
+    init *= factor
+    lower *= factor
+    upper *= factor
+    scale = 0.25 * max(upper - lower, 0.0)
+    return (
+        "$\\mathcal{TN}("
+        f"{_fmt_float(init)},\\,{_fmt_float(scale)},\\,"
+        f"[{_fmt_float(lower)},{_fmt_float(upper)}])$"
+    )
+
+
+def _build_complex_line_tables(
+    line_rows: list[dict[str, Any]], wave_min: float, wave_max: float
+) -> list[tuple[str, list[str], list[tuple[str, list[str]]]]]:
+    """Build complex-oriented tables with one emission line per column."""
+    active = [row for row in line_rows if wave_min < float(row["lambda"]) < wave_max]
+    groups = _build_tied_line_groups(active, wave_min, wave_max)
+
+    group_by_member: dict[str, dict[str, tuple[dict[str, Any], int]]] = {
+        "A": {}, "V": {}, "S": {}
+    }
+    for prefix, key in (("A", "amp_groups"), ("V", "dmu_groups"), ("S", "sig_groups")):
+        for group in groups[key]:
+            for member_index, member in enumerate(group["members"]):
+                group_by_member[prefix][member] = (group, member_index)
+
+    by_complex: OrderedDict[str, list[dict[str, Any]]] = OrderedDict()
+    for row in active:
+        by_complex.setdefault(str(row["compname"]), []).append(row)
+
+    output = []
+    for complex_name, rows in by_complex.items():
+        local_labels: dict[str, dict[int, str]] = {"A": {}, "V": {}, "S": {}}
+
+        def label(prefix: str, gid: int) -> str:
+            labels = local_labels[prefix]
+            if gid not in labels:
+                labels[gid] = f"{prefix}{len(labels) + 1}"
+            return labels[gid]
+
+        headings = [f"\\texttt{{{_latex_escape(str(row['linename']))}}}" for row in rows]
+        wavelengths = [f"${float(row['lambda']):.2f}$" for row in rows]
+        ngauss = [str(int(row.get("ngauss", 1))) for row in rows]
+        amplitude_cells: list[str] = []
+        velocity_cells: list[str] = []
+        width_cells: list[str] = []
+
+        for row in rows:
+            members = [
+                f"{row['linename']}_{i + 1}"
+                for i in range(int(row.get("ngauss", 1)))
+            ]
+            cells: dict[str, list[tuple[str, str, float]]] = {"A": [], "V": [], "S": []}
+            for member in members:
+                for prefix in ("A", "V", "S"):
+                    group, member_index = group_by_member[prefix][member]
+                    tie = label(prefix, int(group["gid"]))
+                    ratio = 1.0
+                    if prefix == "A":
+                        prior = _tn_label(group["init"], group["min"], group["max"])
+                        ratio = float(group["ratios"][member_index])
+                    elif prefix == "V":
+                        prior = _tn_label(group["init"], group["min"], group["max"], factor=C_KMS)
+                    else:
+                        prior = _tn_label(group["init"], group["min"], group["max"], factor=C_KMS)
+                    cells[prefix].append((tie, prior, ratio))
+
+            def compact_cell(entries: list[tuple[str, str, float]]) -> str:
+                """Render a cell without nested alignment row separators.
+
+                Keeping ``\\`` out of cells prevents table linters from
+                mistaking an inner stack break for the end of the outer row.
+                Components with identical priors share one displayed prior and
+                retain separate tie badges.
+                """
+                by_prior: OrderedDict[tuple[str, float], list[str]] = OrderedDict()
+                for tie, prior, ratio in entries:
+                    by_prior.setdefault((prior, ratio), []).append(tie)
+                chunks = []
+                for (prior, ratio), ties in by_prior.items():
+                    symbols = []
+                    for tie in ties:
+                        prefix, group_number = tie[0], tie[1:]
+                        if prefix == "A":
+                            symbols.append(f"A_{{{group_number}}}")
+                        elif prefix == "V":
+                            symbols.append(f"\\Delta v_{{{group_number}}}")
+                        else:
+                            symbols.append(f"\\sigma_{{v,{group_number}}}")
+                    joined = ",".join(symbols)
+                    if math.isclose(ratio, 1.0):
+                        chunks.append(f"${joined}\\sim$ {prior}")
+                    else:
+                        chunks.append(
+                            f"${_fmt_float(ratio)}\\,{joined}$, with ${joined}\\sim$ {prior}"
+                        )
+                return "\\mbox{" + ";\\quad ".join(chunks) + "}"
+
+            amplitude_cells.append(compact_cell(cells["A"]))
+            velocity_cells.append(compact_cell(cells["V"]))
+            width_cells.append(compact_cell(cells["S"]))
+
+        table_rows = [
+            ("$\\lambda_0$ [\\AA]", wavelengths),
+            ("Gaussian components", ngauss),
+            ("Amplitude $A$", amplitude_cells),
+            ("Velocity offset $\\Delta v$ [km s$^{-1}$]", velocity_cells),
+            ("Width $\\sigma_v$ [km s$^{-1}$]", width_cells),
+        ]
+        output.append((complex_name, headings, table_rows))
+    return output
+
+
+def _render_complex_line_tables(
+    tables: list[tuple[str, list[str], list[tuple[str, list[str]]]]], caption: str
+) -> str:
+    """Render the line list in the same three-column style as prior tables."""
+    pretty_line_names = {
+        "Ha_br": "Broad H$\\alpha$",
+        "Ha_na": "Narrow H$\\alpha$",
+        "NII6549": "[N~II] $\\lambda6549$",
+        "NII6585": "[N~II] $\\lambda6585$",
+        "SII6718": "[S~II] $\\lambda6718$",
+        "SII6732": "[S~II] $\\lambda6732$",
+        "Hb_br": "Broad H$\\beta$",
+        "Hb_na": "Narrow H$\\beta$",
+        "OIII4959c": "[O~III] $\\lambda4959$ core",
+        "OIII5007c": "[O~III] $\\lambda5007$ core",
+        "OIII4959w": "[O~III] $\\lambda4959$ wing",
+        "OIII5007w": "[O~III] $\\lambda5007$ wing",
+        "Hg_br": "Broad H$\\gamma$",
+        "Hg_na": "Narrow H$\\gamma$",
+        "Hd_br": "Broad H$\\delta$",
+        "Hd_na": "Narrow H$\\delta$",
+        "OII3728": "[O~II] $\\lambda3728$",
+        "NeV3426": "[Ne~V] $\\lambda3426$",
+        "MgII_br": "Broad Mg~II $\\lambda2798$",
+        "MgII_na": "Narrow Mg~II $\\lambda2798$",
+        "CIII_br": "Broad C~III] $\\lambda1909$",
+        "CIII_na": "Narrow C~III] $\\lambda1909$",
+        "SiIII1892": "Si~III] $\\lambda1892$",
+        "AlIII1857": "Al~III $\\lambda1857$",
+        "SiII1816": "Si~II $\\lambda1817$",
+        "NIII1750": "N~III] $\\lambda1750$",
+        "NIV1718": "N~IV] $\\lambda1718$",
+        "CIV_br": "Broad C~IV $\\lambda1549$",
+        "CIV_na": "Narrow C~IV $\\lambda1549$",
+        "OIII1663": "O~III] $\\lambda1663$ narrow component",
+        "OIII1663_br": "O~III] $\\lambda1663$ broad component",
+        "HeII1640": "He~II $\\lambda1640$ narrow component",
+        "HeII1640_br": "He~II $\\lambda1640$ broad component",
+        "SiIV_OIV1_br": "Broad Si~IV+O~IV] blend at $\\lambda1402$",
+        "SiIV_OIV2_br": "Broad Si~IV+O~IV] blend at $\\lambda1397$",
+        "CII1335": "C~II $\\lambda1335$",
+        "OI1304": "O~I $\\lambda1304$",
+        "Lya_br": "Broad Ly$\\alpha$ $\\lambda1216$",
+        "NV1240_br": "Broad N~V $\\lambda1240$",
+    }
+    note = (
+        "\\footnotesize\\textit{Note.} "
+        "$\\mathcal{N}(\\mu,\\sigma)$ indicates a normal prior with mean $\\mu$ and standard deviation $\\sigma$. "
+        "$\\mathcal{HN}(\\sigma)$ indicates a half-normal prior with scale $\\sigma$. "
+        "$\\log\\,\\mathcal{N}(\\mu,\\sigma)$ indicates a log-normal prior whose logarithm is normally distributed with mean $\\mu$ and standard deviation $\\sigma$. "
+        "$\\mathcal{TN}(\\mu,\\sigma,[a,b])$ indicates a truncated normal prior with location $\\mu$, scale $\\sigma$, lower bound $a$, and upper bound $b$. "
+        "$\\mathcal{T}(\\nu,\\mu,\\sigma)$ indicates a Student-$t$ prior with degrees of freedom $\\nu$, location $\\mu$, and scale $\\sigma$. "
+        "$\\mathcal{U}(a,b)$ indicates a uniform prior between the minimum value $a$ and maximum value $b$. "
+        "Each emission line occupies one row. Matching group subscripts on $A_g$, $\\Delta v_g$, and $\\sigma_{v,g}$ within a complex denote tied amplitude, velocity-offset, and width parameters, respectively; different subscripts are independent. "
+        "A multi-Gaussian line has one group subscript per independent Gaussian component. "
+        "Rest wavelengths $\\lambda_0$ are vacuum wavelengths in \\AA. Amplitudes $A_g$ are Gaussian peak flux densities in the same flux-density units as the input spectrum; the numerical values shown assume the default representative flux scale of unity. "
+        "Velocity offsets $\\Delta v_g$ and Gaussian widths $\\sigma_{v,g}$ are in km s$^{-1}$, converted from log-wavelength units using $c\\,\\Delta\\ln\\lambda$."
+    )
+    header = "\\textbf{Parameter} & \\textbf{Prior Distribution} & \\textbf{Parameter Description} \\\\"
+    blocks = [
+        "% Requires \\usepackage{longtable} in the document preamble.",
+        "{\\small",
+        "\\begin{longtable}{p{0.22\\linewidth} p{0.36\\linewidth} p{0.36\\linewidth}}",
+        "\\caption{{\\color{red}JAXQSOFit prior parameters for the emission line components.}"
+        "\\label{table:jaxqsofit_priors}} \\\\ ",
+        "\\hline",
+        header,
+        "\\hline",
+        "\\endfirsthead",
+        "\\multicolumn{3}{c}{\\tablename~\\thetable\\ continued} \\\\ ",
+        "\\hline",
+        header,
+        "\\hline",
+        "\\endhead",
+        "\\hline",
+        "\\multicolumn{3}{r}{Continued on next page} \\\\ ",
+        "\\endfoot",
+        "\\hline",
+        f"\\multicolumn{{3}}{{p{{0.94\\linewidth}}}}{{{note}}} \\\\ ",
+        "\\endlastfoot",
+    ]
+    for complex_name, headings, rows in tables:
+        row_map = {name: values for name, values in rows}
+        blocks.append(
+            f"\\multicolumn{{3}}{{l}}{{\\textbf{{{_latex_escape(complex_name)} complex}}}} \\\\"
+        )
+        for index, heading in enumerate(headings):
+            def unbox(value: str) -> str:
+                return value[6:-1] if value.startswith("\\mbox{") and value.endswith("}") else value
+
+            wavelength = row_map["$\\lambda_0$ [\\AA]"][index]
+            ngauss = int(row_map["Gaussian components"][index])
+            amplitude = unbox(row_map["Amplitude $A$"][index])
+            velocity = unbox(row_map["Velocity offset $\\Delta v$ [km s$^{-1}$]"][index])
+            width = unbox(row_map["Width $\\sigma_v$ [km s$^{-1}$]"][index])
+            raw_name = heading.removeprefix("\\texttt{").removesuffix("}").replace("\\_", "_")
+            display_name = pretty_line_names.get(raw_name, _latex_escape(raw_name))
+            prior_cell = (
+                f"\\textit{{Amplitude:}} {amplitude}\\newline "
+                f"\\textit{{Velocity:}} {velocity}\\newline "
+                f"\\textit{{Width:}} {width}"
+            )
+            component_word = "component" if ngauss == 1 else "components"
+            description = (
+                f"{display_name} emission line with vacuum rest wavelength "
+                f"$\\lambda_0={wavelength.strip('$')}\\,\\AA$; modeled with "
+                f"{ngauss} Gaussian {component_word}."
+            )
+            blocks.append(f"{heading} & {prior_cell} & {description} \\\\")
+        blocks.append("\\hline")
+    blocks.extend(["\\end{longtable}", "}"])
+    return "\n".join(blocks)
+
+
 def _render_table(rows: list[tuple[str, str, str]], caption: str) -> str:
     lines = [
         "\\begin{table}[ht]",
@@ -544,17 +789,23 @@ def main() -> None:
     parser.add_argument("--include-elg-narrow-lines", action="store_true", help="Append default ELG narrow lines before grouping.")
     parser.add_argument("--include-high-ionization-lines", action="store_true", help="Append default high-ionization lines before grouping.")
     parser.add_argument("--include-line-groups", action="store_true", help="Include one row per default tied-line group.")
+    parser.add_argument(
+        "--line-table-only",
+        action="store_true",
+        help="Write only the complex-oriented emission-line table (implies --include-line-groups).",
+    )
     args = parser.parse_args()
 
     defaults = _load_defaults_module()
     sample_sites = _extract_literal_sample_sites(MODEL_PATH)
 
     flux = np.full(128, float(args.flux_scale), dtype=float)
-    prior = defaults.build_default_prior_config(
+    prior_config = defaults._build_default_prior_config(
         flux=flux,
         include_elg_narrow_lines=args.include_elg_narrow_lines,
         include_high_ionization_lines=args.include_high_ionization_lines,
     )
+    prior = prior_config.to_mapping()
 
     line_rows = copy.deepcopy(prior["line"]["table"])
     if args.include_elg_narrow_lines:
@@ -570,15 +821,29 @@ def main() -> None:
             atol_angstrom=1.0,
         )
 
-    main_rows, line_family_rows = _build_main_rows(prior=prior, sample_sites=sample_sites, fit_poly_order=args.fit_poly_order)
-    line_group_rows: list[tuple[str, str, str]] = list(line_family_rows)
-    if args.include_line_groups:
-        groups = _build_tied_line_groups(line_rows, wave_min=args.wave_min, wave_max=args.wave_max)
-        line_group_rows = _build_line_group_rows(groups)
+    include_line_table = args.include_line_groups or args.line_table_only
+    if args.line_table_only:
+        main_rows, line_family_rows = [], []
+    else:
+        main_rows, line_family_rows = _build_main_rows(
+            prior=prior, sample_sites=sample_sites, fit_poly_order=args.fit_poly_order
+        )
 
     main_caption = "JAXQSOFit prior parameters generated from \\texttt{defaults.py} and \\texttt{model.py}."
-    line_caption = "JAXQSOFit tied emission-line prior groups generated from the default line configuration."
-    latex = _render_tables(main_rows, line_group_rows, main_caption, line_caption)
+    line_caption = (
+        "Default JAXQSOFit emission-line priors, organized by fitting complex. "
+        "Lines are columns and tie badges identify shared model parameters."
+    )
+    if include_line_table:
+        complex_tables = _build_complex_line_tables(
+            line_rows, wave_min=args.wave_min, wave_max=args.wave_max
+        )
+        line_latex = _render_complex_line_tables(complex_tables, line_caption)
+        latex = line_latex if args.line_table_only else "\n\n".join(
+            [_render_table(main_rows, main_caption), line_latex]
+        )
+    else:
+        latex = _render_tables(main_rows, line_family_rows, main_caption, line_caption)
 
     if args.output is not None:
         args.output.write_text(latex + "\n")
