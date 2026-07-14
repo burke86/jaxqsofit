@@ -72,9 +72,17 @@ def _fit_once(
     optax_lr: float,
     dsps_ssp_fn: str,
 ) -> dict[str, Any]:
+    import numpyro.distributions as dist
+
     from jaxqsofit import JAXQSOFit, PriorConfig
 
     prior_config = PriorConfig.from_spectrum(flux=flux, redshift=z)
+    # The shared jaxsedfit host model interprets ``gal_lgmet`` as absolute
+    # log10(Z), bounded by the DSPS SSP grid (roughly -4.35 to -1.35 for the
+    # benchmark template).  Pin the benchmark prior inside that support so the
+    # historical base checkout and PR head are compared under the same valid
+    # initialization even when the installed jaxsedfit version has advanced.
+    prior_config.host.metallicity = dist.Normal(loc=-2.3, scale=0.3)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=184.0307, dec=-2.2383)
     q.config.observation.apply_mw_deredden = False
     q.config.lines.enabled = True
