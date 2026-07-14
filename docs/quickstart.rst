@@ -37,7 +37,13 @@ The ``fluxes`` and ``errors`` arrays should be in units of
 
    cfg = FitConfig(
        observation=Observation(object_id='demo', redshift=z),
-       spectroscopy=SpectroscopyData(wave_obs=lam, fluxes=flux, errors=err),
+       spectroscopy=SpectroscopyData(
+           wave_obs=lam,
+           fluxes=flux,
+           errors=err,
+           resolving_power=2000.0,
+           apply_instrumental_resolution=True,
+       ),
        continuum=ContinuumConfig(fit_feii=True, fit_balmer_continuum=True),
        host=HostConfig(enabled=True, dsps_ssp_fn='tempdata.h5'),
        inference=InferenceConfig(method='nuts'),
@@ -47,6 +53,32 @@ The ``fluxes`` and ``errors`` arrays should be in units of
    result = q.fit()
    result.samples
    result.plot_corner(show_plot=False)
+
+Instrumental resolution modeling
+---------------------------------
+
+Instrumental resolution modeling is opt-in and defaults to
+``apply_instrumental_resolution=False``.  It can be enabled only when a
+positive scalar ``resolving_power`` :math:`R=\lambda/\Delta\lambda_{\rm FWHM}`
+is provided.  Enabling it is recommended, particularly when fitting narrow
+emission lines or host-galaxy velocity dispersion, because including the line
+spread function in the forward model propagates the nonlinear width correction
+through the posterior and handles marginally resolved features more accurately
+than a post-fit correction.
+
+When enabled, ``jaxqsofit`` combines the intrinsic and instrumental Gaussian
+widths in quadrature while fitting.  The sampled and normally reported line
+widths remain the inferred *intrinsic*, resolution-corrected widths, analogous
+to the optional instrumental-resolution correction in PyQSOFit.  The effective
+widths actually used to generate the model spectrum are also available as
+``line_sig_effective_per_component`` and ``gal_sigma_effective_kms``.
+
+When disabled, even if ``resolving_power`` is present, reported line and host
+widths are widths of the observed, instrument-broadened features and are **not**
+corrected for instrumental resolution.  They may be deconvolved afterward for
+well-resolved Gaussian features, but that does not propagate the nonlinear
+correction through the posterior.  Broad quasar lines are usually insensitive
+to the difference; narrow or unresolved features are not.
 
 Continuum and host switches
 ---------------------------
@@ -213,6 +245,11 @@ redshift-dependent systematics that can arise when the continuum is first fit
 in a fixed set of rest-frame windows and then subtracted before line fitting.
 In that sense it is a fully Bayesian alternative to a staged
 window-continuum workflow.
+
+Like PyQSOFit, instrumental-resolution correction is optional.  In
+``jaxqsofit`` it is controlled by ``apply_instrumental_resolution`` and only
+operates when ``resolving_power`` is supplied.  It is disabled by default, so
+users who require intrinsic line widths should enable it explicitly.
 
 The host model also differs. PyQSOFit-style host decomposition is closest to
 ``sfh_model="flexible"`` in ``jaxqsofit``: the host is represented as a
@@ -390,6 +427,14 @@ Angstrom.  For a component with laboratory wavelength ``lambda0``, its
 velocity offset is ``c * (center_lnlam - np.log(lambda0))``.  The small-width
 Gaussian velocity dispersion is approximately ``c * sigma_lnlam``.
 
+The meaning of this reported width depends on the spectroscopy configuration.
+With ``apply_instrumental_resolution=True``, ``_sigma`` and
+``line_sig_per_component`` are intrinsic, resolution-corrected widths.  With
+the default ``False`` setting they describe the instrument-broadened observed
+profile and are not corrected.  The effective forward-model widths are stored
+separately in ``q.pred_out["line_sig_effective_per_component"]`` when
+instrumental modeling is enabled.
+
 These fields are compact median-and-error summaries.  Analyses that require
 credible intervals, parameter covariances, or component velocity-separation
 distributions should use the posterior draws described below instead.
@@ -401,6 +446,7 @@ After fitting, per-component line draws are available in ``q.pred_out``:
    amp = np.asarray(q.pred_out["line_amp_per_component"])
    mu = np.asarray(q.pred_out["line_mu_per_component"])
    sig = np.asarray(q.pred_out["line_sig_per_component"])
+   sig_effective = np.asarray(q.pred_out["line_sig_effective_per_component"])
 
 For most workflows, use the helper methods that reconstruct a named broad-line
 profile from those draws and then measure FWHM and integrated area:

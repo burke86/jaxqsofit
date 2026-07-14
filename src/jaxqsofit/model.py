@@ -151,6 +151,24 @@ def spectral_likelihood_weight_from_resolving_power(wave, resolving_power):
     return jnp.where(n_pix > 0.0, jnp.minimum(n_eff / n_pix, 1.0), jnp.asarray(1.0, dtype=jnp.float64))
 
 
+def instrumental_sigma_lnwave(resolving_power):
+    """Return Gaussian instrumental sigma in ln(wavelength) for scalar R."""
+    if resolving_power is None:
+        return jnp.asarray(0.0, dtype=jnp.float64)
+    resolving_power = jnp.asarray(resolving_power, dtype=jnp.float64)
+    return 1.0 / (2.354820045 * jnp.maximum(resolving_power, 1.0e-30))
+
+
+def instrumental_sigma_kms(resolving_power):
+    """Return Gaussian instrumental velocity sigma in km/s for scalar R."""
+    return C_KMS * instrumental_sigma_lnwave(resolving_power)
+
+
+def combine_gaussian_sigma(intrinsic_sigma, instrumental_sigma):
+    """Combine intrinsic and instrumental Gaussian sigmas in quadrature."""
+    return jnp.sqrt(jnp.square(intrinsic_sigma) + jnp.square(instrumental_sigma))
+
+
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
     """Rescale a template so its robust peak amplitude is O(target_amp).
 
@@ -1903,6 +1921,13 @@ def reconstruct_posterior_components(
     lnwave = np.log(wave_out)
     custom_components = normalize_custom_components(custom_components)
     convolution_method = str(prior_config.get("convolution_method", "fft")).lower()
+    apply_instrumental_resolution = bool(prior_config.get("apply_instrumental_resolution", False))
+    resolving_power = prior_config.get("resolving_power", None)
+    sigma_inst_kms = (
+        instrumental_sigma_kms(resolving_power)
+        if apply_instrumental_resolution else jnp.asarray(0.0, dtype=jnp.float64)
+    )
+    fwhm_inst_kms = 2.354820045 * sigma_inst_kms
 
     n_total = int(np.asarray(next(iter(samples.values()))).shape[0]) if len(samples) > 0 else 0
     if n_total == 0:
@@ -2028,11 +2053,12 @@ def reconstruct_posterior_components(
             poly_coeffs_i value.
         """
         host_intrinsic = templates_j @ weights_i
+        gal_sigma_model_i = combine_gaussian_sigma(gal_sigma_i, sigma_inst_kms)
         host_model_ext = _shift_and_broaden_single_spectrum_lnlam(
             host_lnwave_j,
             host_intrinsic,
             gal_v_i,
-            gal_sigma_i,
+            gal_sigma_model_i,
             convolution_method=convolution_method,
         )
         host_model = jnp.interp(wave_j, host_wave_j, host_model_ext, left=0.0, right=0.0)
@@ -2057,7 +2083,7 @@ def reconstruct_posterior_components(
             jnp.asarray(fe_uv_wave, dtype=jnp.float64),
             jnp.asarray(fe_uv_flux, dtype=jnp.float64),
             fe_uv_norm_i,
-            fe_uv_fwhm_i,
+            combine_gaussian_sigma(fe_uv_fwhm_i, fwhm_inst_kms),
             fe_uv_shift_i,
             convolution_method=convolution_method,
         )
@@ -2066,7 +2092,7 @@ def reconstruct_posterior_components(
             jnp.asarray(fe_op_wave, dtype=jnp.float64),
             jnp.asarray(fe_op_flux, dtype=jnp.float64),
             fe_op_norm_i,
-            fe_op_fwhm_i,
+            combine_gaussian_sigma(fe_op_fwhm_i, fwhm_inst_kms),
             fe_op_shift_i,
             convolution_method=convolution_method,
         )
@@ -2075,7 +2101,7 @@ def reconstruct_posterior_components(
             balmer_norm_i,
             15000.0,
             balmer_tau_i,
-            balmer_vel_i,
+            combine_gaussian_sigma(balmer_vel_i, sigma_inst_kms),
             convolution_method=convolution_method,
         )
         if fit_reddening:
@@ -2542,6 +2568,14 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     z_qso = jnp.asarray(z_qso, dtype=jnp.float64)
     prior_config = _materialize_prior_mapping(prior_config)
     convolution_method = str(prior_config.get("convolution_method", "fft")).lower()
+    apply_instrumental_resolution = bool(prior_config.get("apply_instrumental_resolution", False))
+    resolving_power = prior_config.get("resolving_power", None)
+    sigma_inst_ln = (
+        instrumental_sigma_lnwave(resolving_power)
+        if apply_instrumental_resolution else jnp.asarray(0.0, dtype=jnp.float64)
+    )
+    sigma_inst_kms = C_KMS * sigma_inst_ln
+    fwhm_inst_kms = 2.354820045 * sigma_inst_kms
     custom_components = normalize_custom_components(custom_components)
     custom_line_components = normalize_custom_line_components(custom_line_components)
     bal_absorption_components = tuple(
@@ -2712,12 +2746,14 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         if fit_reddening else jnp.ones_like(wave)
     )
     if fit_fe:
+        fe_uv_fwhm_model = combine_gaussian_sigma(fe_uv_fwhm, fwhm_inst_kms)
+        fe_op_fwhm_model = combine_gaussian_sigma(fe_op_fwhm, fwhm_inst_kms)
         fe_uv_model_intrinsic = _fe_template_component(
             wave,
             fe_uv_wave,
             fe_uv_flux,
             fe_uv_norm,
-            fe_uv_fwhm,
+            fe_uv_fwhm_model,
             fe_uv_shift,
             template_on_wave=fe_uv_flux_on_wave,
             convolution_method=convolution_method,
@@ -2727,7 +2763,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             fe_op_wave,
             fe_op_flux,
             fe_op_norm,
-            fe_op_fwhm,
+            fe_op_fwhm_model,
             fe_op_shift,
             template_on_wave=fe_op_flux_on_wave,
             convolution_method=convolution_method,
@@ -2736,12 +2772,13 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         fe_uv_model_intrinsic = jnp.zeros_like(wave)
         fe_op_model_intrinsic = jnp.zeros_like(wave)
     if fit_bc:
+        balmer_vel_model = combine_gaussian_sigma(balmer_vel, sigma_inst_kms)
         bc_model_intrinsic = _balmer_continuum_jax(
             wave,
             balmer_norm,
             balmer_te,
             balmer_tau,
-            balmer_vel,
+            balmer_vel_model,
             balmer_static_terms=balmer_static_terms,
             convolution_method=convolution_method,
         )
@@ -2850,11 +2887,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             default_log_distribution=dist.Normal(np.log(150.0), 0.4),
             default_to_log=True,
         )
+        gal_sigma_effective_kms = combine_gaussian_sigma(gal_sigma_kms, sigma_inst_kms)
         gal_model_intrinsic_total_ext = _shift_and_broaden_single_spectrum_lnlam(
             host_lnwave,
             gal_intrinsic_total_ext,
             gal_v_kms,
-            gal_sigma_kms,
+            gal_sigma_effective_kms,
             convolution_method=convolution_method,
         )
         gal_model_intrinsic_total = jnp.interp(
@@ -2870,6 +2908,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         fsps_weights = jnp.zeros((ntemp,))
         gal_model_intrinsic_total = jnp.zeros_like(wave)
         gal_model_intrinsic = jnp.zeros_like(wave)
+        gal_sigma_effective_kms = jnp.asarray(0.0, dtype=jnp.float64)
 
     custom_line_models = {}
     custom_line_broad_intrinsic = jnp.zeros_like(wave)
@@ -2895,6 +2934,13 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             return _sample_from_prior_config(key, cfg)
 
         custom_line_model = _evaluate_custom_line_component_jax(wave, prior_config, comp, _sample_line_value)
+        if apply_instrumental_resolution:
+            custom_line_model = _convolve_velocity_space(
+                lnwave,
+                custom_line_model,
+                sigma_inst_ln,
+                method=convolution_method,
+            )
         custom_line_models[comp.output_name] = custom_line_model
         if comp.line_kind == 'broad':
             custom_line_broad_intrinsic = custom_line_broad_intrinsic + custom_line_model
@@ -2916,6 +2962,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         amps = amp_group[fgroup] * _line_meta_array(tied_line_meta, 'flux_ratio', jax_key='flux_ratio_jax')
         mus = tied_line_meta['ln_lambda0'] + dmu
         line_component_broad_mask = _line_meta_array(tied_line_meta, 'broad_mask', jax_key='broad_mask_jax')
+        sigs_effective = combine_gaussian_sigma(sigs, sigma_inst_ln)
+        amps_effective = (
+            amps
+            * sigs / jnp.maximum(sigs_effective, 1.0e-30)
+            * jnp.exp(0.5 * (jnp.square(sigs) - jnp.square(sigs_effective)))
+        )
 
         if line_components_are_split:
             (
@@ -2925,9 +2977,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                 line_component_profiles,
             ) = _split_many_gauss_lnlam(
                 lnwave,
-                amps,
+                amps_effective,
                 mus,
-                sigs,
+                sigs_effective,
                 line_component_broad_mask,
                 return_profiles=bool(emit_deterministics),
             )
@@ -2937,11 +2989,11 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
             line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
         else:
-            line_model_intrinsic = _many_gauss_lnlam(lnwave, amps, mus, sigs) + custom_line_broad_intrinsic + custom_line_narrow_intrinsic
+            line_model_intrinsic = _many_gauss_lnlam(lnwave, amps_effective, mus, sigs_effective) + custom_line_broad_intrinsic + custom_line_narrow_intrinsic
             line_model_broad_intrinsic = jnp.zeros_like(wave)
             line_model_narrow_intrinsic = jnp.zeros_like(wave)
             line_component_profiles = (
-                amps[:, None] * jnp.exp(-0.5 * ((lnwave[None, :] - mus[:, None]) / sigs[:, None]) ** 2)
+                amps_effective[:, None] * jnp.exp(-0.5 * ((lnwave[None, :] - mus[:, None]) / sigs_effective[:, None]) ** 2)
                 if emit_deterministics
                 else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
             )
@@ -2949,6 +3001,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             numpyro.deterministic('line_amp_per_component', amps)
             numpyro.deterministic('line_mu_per_component', mus)
             numpyro.deterministic('line_sig_per_component', sigs)
+            numpyro.deterministic('line_sig_effective_per_component', sigs_effective)
+            numpyro.deterministic('line_amp_effective_per_component', amps_effective)
     else:
         line_model_broad_intrinsic = custom_line_broad_intrinsic
         line_model_narrow_intrinsic = custom_line_narrow_intrinsic
@@ -3121,6 +3175,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         numpyro.deterministic('gal_model_intrinsic', gal_model_intrinsic)
         numpyro.deterministic('gal_model_total', gal_model_total)
         numpyro.deterministic('gal_model', gal_model)
+        numpyro.deterministic('gal_sigma_effective_kms', gal_sigma_effective_kms)
         numpyro.deterministic('line_model_broad_intrinsic', line_model_broad_intrinsic)
         numpyro.deterministic('line_model_narrow_intrinsic', line_model_narrow_intrinsic)
         numpyro.deterministic('line_model_intrinsic', line_model_intrinsic)
@@ -3150,9 +3205,10 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         numpyro.deterministic('fsps_weights_frac', fsps_weights_frac)
 
     student_t_df = float(prior_config.get('student_t_df', 3.0))
-    spectral_likelihood_weight = spectral_likelihood_weight_from_resolving_power(
-        wave,
-        prior_config.get('resolving_power', None),
+    spectral_likelihood_weight = (
+        jnp.asarray(1.0, dtype=jnp.float64)
+        if apply_instrumental_resolution
+        else spectral_likelihood_weight_from_resolving_power(wave, resolving_power)
     )
     if emit_deterministics:
         numpyro.deterministic('spectral_likelihood_weight', spectral_likelihood_weight)

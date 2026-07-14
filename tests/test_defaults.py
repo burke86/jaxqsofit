@@ -48,12 +48,14 @@ def test_fit_config_to_dict_serializes_numpyro_priors():
     prior.powerlaw.slope = dist.Normal(loc=-1.5, scale=0.3)
     cfg = FitConfig(
         observation=Observation(redshift=0.1),
-        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1]),
+        spectroscopy=SpectroscopyData(wave_obs=[4000.0, 5000.0], fluxes=[1.0, 1.1], mask=[True, False]),
         prior_config=prior,
     )
 
     data = cfg.to_dict()
 
+    assert "wavelength_dispersion" not in data["spectroscopy"]
+    assert data["spectroscopy"]["mask"] == [True, False]
     assert data["prior_config"]["continuum"]["powerlaw"]["slope"] == {
         "dist": "Normal",
         "loc": -1.5,

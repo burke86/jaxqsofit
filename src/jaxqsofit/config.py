@@ -19,26 +19,43 @@ class Observation:
 
 @dataclass
 class SpectroscopyData:
-    """Observed spectral measurements on an observed-frame wavelength grid."""
+    """Observed spectral measurements on an observed-frame wavelength grid.
+
+    ``mask`` is an optional Boolean keep-mask: ``True`` includes a pixel in the
+    fit and ``False`` rejects it. It is combined with the automatic finite-flux,
+    finite-wavelength, and positive-finite-error mask before preprocessing.
+    """
 
     wave_obs: Sequence[float]
     fluxes: Sequence[float]
     errors: Sequence[float] | float | None = None
-    wavelength_dispersion: Sequence[float] | None = None
     resolving_power: float | None = None
+    apply_instrumental_resolution: bool = False
     mask: Sequence[bool] | None = None
 
     def validate(self) -> None:
-        """Validate spectroscopy payload array lengths."""
+        """Validate spectroscopy payload lengths and numerical domain."""
         n = len(self.wave_obs)
+        if n < 2:
+            raise ValueError("Spectroscopy requires at least two pixels.")
         if len(self.fluxes) != n:
             raise ValueError("Spectroscopy fluxes must have the same length as wave_obs.")
         if self.errors is not None and not np.isscalar(self.errors) and len(self.errors) != n:
             raise ValueError("Spectroscopy errors must be scalar, None, or match wave_obs length.")
-        if self.wavelength_dispersion is not None and len(self.wavelength_dispersion) != n:
-            raise ValueError("wavelength_dispersion must match wave_obs length.")
         if self.mask is not None and len(self.mask) != n:
             raise ValueError("spectroscopy mask must match wave_obs length.")
+        if self.apply_instrumental_resolution and self.resolving_power is None:
+            raise ValueError("apply_instrumental_resolution=True requires resolving_power.")
+        if self.resolving_power is not None:
+            resolving_power = float(self.resolving_power)
+            if not np.isfinite(resolving_power) or resolving_power <= 0.0:
+                raise ValueError("resolving_power must be finite and positive when provided.")
+        wave = np.asarray(self.wave_obs, dtype=float)
+        valid_wave = wave[np.isfinite(wave) & (wave > 0.0)]
+        if valid_wave.size < 2:
+            raise ValueError("wave_obs must contain at least two finite positive wavelengths.")
+        if np.any(np.diff(valid_wave) <= 0.0):
+            raise ValueError("wave_obs must be strictly increasing.")
 
 
 @dataclass
@@ -670,6 +687,8 @@ class FitConfig:
 
     def validate(self) -> None:
         """Validate required nested data payloads."""
+        if not np.isfinite(float(self.observation.redshift)) or float(self.observation.redshift) < 0.0:
+            raise ValueError("observation.redshift must be finite and non-negative.")
         self.spectroscopy.validate()
         if self.psf_photometry is not None:
             self.psf_photometry.validate()
@@ -690,6 +709,10 @@ def _coerce_dataclass(cls, value: Any):
     if isinstance(value, cls):
         return value
     if isinstance(value, Mapping):
+        unknown = set(value) - set(cls.__dataclass_fields__)
+        if unknown:
+            names = ", ".join(sorted(str(name) for name in unknown))
+            raise ValueError(f"Unknown {cls.__name__} field(s): {names}")
         kwargs = {}
         for field_name in cls.__dataclass_fields__:
             if field_name in value:
@@ -737,6 +760,12 @@ def fit_config_from_mapping(data: Mapping[str, Any]) -> FitConfig:
         Nested configuration dictionary, typically loaded from JSON/YAML or a
         serialized ``FitConfig``.
     """
+
+    allowed = set(FitConfig.__dataclass_fields__)
+    unknown = set(data) - allowed
+    if unknown:
+        names = ", ".join(sorted(str(name) for name in unknown))
+        raise ValueError(f"Unknown FitConfig field(s): {names}")
 
     psf_raw = data.get("psf_photometry")
     psf_obj = None if psf_raw is None else _coerce_dataclass(PSFPhotometryData, psf_raw)

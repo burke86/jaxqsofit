@@ -495,6 +495,30 @@ def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     assert np.allclose(q.flux, flux * (1.0 + z))
 
 
+def test_fit_applies_true_means_keep_mask_before_preprocessing_and_keeps_zero_flux(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    mask = np.ones(lam.size, dtype=bool)
+    mask[1] = False
+    flux[2] = 0.0
+    flux[3] = np.nan
+    err[4] = 0.0
+    lam[5] = np.nan
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, mask=mask, z=0.0)
+
+    monkeypatch.setattr(q, "run_fsps_optax_fit", lambda **kwargs: None)
+    q.config.inference.method = "optax"
+    q.config.observation.apply_mw_deredden = False
+    q.config.preprocessing.mask_lya_forest = False
+    q.config.output.plot_fig = False
+    q.config.output.save_result = False
+    q.fit()
+
+    expected_keep = mask & np.isfinite(lam) & (lam > 0.0) & np.isfinite(flux) & np.isfinite(err) & (err > 0.0)
+    assert np.array_equal(q.lam, lam[expected_keep])
+    assert np.array_equal(q.flux, flux[expected_keep])
+    assert q.flux[np.where(q.lam == lam[2])[0][0]] == 0.0
+
+
 def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
