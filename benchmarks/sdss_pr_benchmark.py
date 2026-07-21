@@ -280,22 +280,66 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
 
 def _run_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    result = run_benchmark(
-        label=args.label,
-        sha=args.sha,
-        repeats=args.repeats,
-        optax_steps=args.optax_steps,
-        optax_lr=args.optax_lr,
-        dsps_ssp_fn=args.dsps_ssp_fn,
-    )
+    try:
+        result = run_benchmark(
+            label=args.label,
+            sha=args.sha,
+            repeats=args.repeats,
+            optax_steps=args.optax_steps,
+            optax_lr=args.optax_lr,
+            dsps_ssp_fn=args.dsps_ssp_fn,
+        )
+    except Exception as exc:
+        from astroquery.exceptions import TimeoutError as AstroqueryTimeoutError
+        from urllib.error import URLError
+
+        if not isinstance(exc, (AstroqueryTimeoutError, TimeoutError, URLError)):
+            raise
+        result = {
+            "label": args.label,
+            "sha": args.sha,
+            "skipped": True,
+            "skip_reason": f"SDSS spectrum unavailable: {exc}",
+        }
     (args.output_dir / "benchmark.json").write_text(json.dumps(result, indent=2) + "\n")
-    (args.output_dir / "output").write_text(render_markdown(result, workflow_url=_workflow_url()))
+    if result.get("skipped"):
+        output = "\n".join([
+            "<!-- jaxqsofit benchmark -->",
+            "### jaxqsofit PR benchmark",
+            "",
+            f"Benchmark skipped: {result['skip_reason']}",
+            "",
+        ])
+    else:
+        output = render_markdown(result, workflow_url=_workflow_url())
+    (args.output_dir / "output").write_text(output)
 
 
 def _compare_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     baseline = json.loads(args.baseline_json.read_text())
     candidate = json.loads(args.candidate_json.read_text())
+    if baseline.get("skipped") or candidate.get("skipped"):
+        skipped = baseline if baseline.get("skipped") else candidate
+        comparison = {
+            "baseline": baseline,
+            "candidate": candidate,
+            "skipped": True,
+            "skip_reason": skipped["skip_reason"],
+        }
+        (args.output_dir / "benchmark-comparison.json").write_text(
+            json.dumps(comparison, indent=2) + "\n"
+        )
+        (args.output_dir / "output").write_text(
+            "\n".join([
+                "<!-- jaxqsofit benchmark -->",
+                "### jaxqsofit PR benchmark",
+                "",
+                f"Benchmark skipped: {skipped['skip_reason']}",
+                "",
+            ])
+        )
+        return
     comparison = {
         "baseline": baseline,
         "candidate": candidate,
