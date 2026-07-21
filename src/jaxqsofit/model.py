@@ -2414,10 +2414,24 @@ def reconstruct_posterior_components(
     fe_uv_norm = np.asarray(samples.get('Fe_uv_norm', np.zeros(n_total)), dtype=float)[sl]
     log_fe_op_over_uv = np.asarray(samples.get('log_Fe_op_over_uv', np.zeros(n_total)), dtype=float)[sl]
     fe_op_norm = fe_uv_norm * np.exp(log_fe_op_over_uv)
-    fe_uv_fwhm = np.asarray(samples.get('Fe_uv_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
-    fe_op_fwhm = np.asarray(samples.get('Fe_op_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
-    fe_uv_shift = np.asarray(samples.get('Fe_uv_shift', np.zeros(n_total)), dtype=float)[sl]
-    fe_op_shift = np.asarray(samples.get('Fe_op_shift', np.zeros(n_total)), dtype=float)[sl]
+    shared_fe_fwhm = samples.get('Fe_FWHM', None)
+    fe_uv_fwhm = np.asarray(
+        shared_fe_fwhm if shared_fe_fwhm is not None else samples.get('Fe_uv_FWHM', np.full(n_total, 3000.0)),
+        dtype=float,
+    )[sl]
+    fe_op_fwhm = np.asarray(
+        shared_fe_fwhm if shared_fe_fwhm is not None else samples.get('Fe_op_FWHM', np.full(n_total, 3000.0)),
+        dtype=float,
+    )[sl]
+    shared_fe_shift = samples.get('Fe_shift', None)
+    fe_uv_shift = np.asarray(
+        shared_fe_shift if shared_fe_shift is not None else samples.get('Fe_uv_shift', np.zeros(n_total)),
+        dtype=float,
+    )[sl]
+    fe_op_shift = np.asarray(
+        shared_fe_shift if shared_fe_shift is not None else samples.get('Fe_op_shift', np.zeros(n_total)),
+        dtype=float,
+    )[sl]
     balmer_norm = np.asarray(samples.get('Balmer_norm', np.zeros(n_total)), dtype=float)[sl]
     balmer_tau = np.asarray(samples.get('Balmer_Tau', np.full(n_total, 0.5)), dtype=float)[sl]
     balmer_vel = np.asarray(samples.get('Balmer_vel', np.full(n_total, 3000.0)), dtype=float)[sl]
@@ -3781,22 +3795,46 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         )
         log_fe_op_over_uv = _sample_prior(prior_config, 'log_Fe_op_over_uv', dist.Normal(0.0, 1.0))
         fe_op_norm = fe_uv_norm * jnp.exp(log_fe_op_over_uv)
-        fe_uv_fwhm = _sample_positive_distribution(
+        fe_fwhm_value_key = next(
+            (key for key in ('Fe_FWHM', 'Fe_uv_FWHM', 'Fe_op_FWHM') if key in prior_config),
+            'Fe_FWHM',
+        )
+        fe_fwhm_log_key = next(
+            (key for key in ('log_Fe_FWHM', 'log_Fe_uv_FWHM', 'log_Fe_op_FWHM') if key in prior_config),
+            'log_Fe_FWHM',
+        )
+        fe_fwhm = _sample_positive_distribution(
             prior_config,
-            value_key='Fe_uv_FWHM',
-            log_key='log_Fe_uv_FWHM',
+            value_key=fe_fwhm_value_key,
+            log_key=fe_fwhm_log_key,
             default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
             default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
         )
-        fe_op_fwhm = _sample_positive_distribution(
-            prior_config,
-            value_key='Fe_op_FWHM',
-            log_key='log_Fe_op_FWHM',
-            default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
-            default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
+        if fe_fwhm_value_key != 'Fe_FWHM':
+            numpyro.deterministic('Fe_FWHM', fe_fwhm)
+        fe_uv_fwhm = (
+            fe_fwhm if fe_fwhm_value_key == 'Fe_uv_FWHM'
+            else numpyro.deterministic('Fe_uv_FWHM', fe_fwhm)
         )
-        fe_uv_shift = _sample_prior(prior_config, 'Fe_uv_shift', dist.Normal(0.0, 0.01))
-        fe_op_shift = _sample_prior(prior_config, 'Fe_op_shift', dist.Normal(0.0, 0.01))
+        fe_op_fwhm = (
+            fe_fwhm if fe_fwhm_value_key == 'Fe_op_FWHM'
+            else numpyro.deterministic('Fe_op_FWHM', fe_fwhm)
+        )
+        fe_shift_key = next(
+            (key for key in ('Fe_shift', 'Fe_uv_shift', 'Fe_op_shift') if key in prior_config),
+            'Fe_shift',
+        )
+        fe_shift = _sample_prior(prior_config, fe_shift_key, dist.Normal(0.0, 0.01))
+        if fe_shift_key != 'Fe_shift':
+            numpyro.deterministic('Fe_shift', fe_shift)
+        fe_uv_shift = (
+            fe_shift if fe_shift_key == 'Fe_uv_shift'
+            else numpyro.deterministic('Fe_uv_shift', fe_shift)
+        )
+        fe_op_shift = (
+            fe_shift if fe_shift_key == 'Fe_op_shift'
+            else numpyro.deterministic('Fe_op_shift', fe_shift)
+        )
     else:
         fe_uv_norm = jnp.asarray(0.0)
         fe_op_norm = jnp.asarray(0.0)
@@ -4110,7 +4148,11 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         host_amp_out = jnp.asarray(0.0)
 
     frac_jitter = _sample_prior(prior_config, 'frac_jitter', dist.HalfNormal(0.02))
-    frac_fe_jitter = _sample_prior(prior_config, 'frac_fe_jitter', dist.Delta(0.20))
+    frac_fe_jitter = (
+        _sample_prior(prior_config, 'frac_fe_jitter', dist.Delta(0.20))
+        if fit_fe
+        else jnp.asarray(0.0)
+    )
     add_jitter = _sample_prior(
         prior_config,
         'add_jitter',

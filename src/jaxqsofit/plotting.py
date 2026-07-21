@@ -68,7 +68,7 @@ def posterior_series(fitter, param_names=None, max_vector_elems=2):
         param_names = [
             'cont_norm', 'host_amp', 'log_frac_host', 'PL_norm', 'PL_slope',
             'Fe_uv_norm', 'log_Fe_op_over_uv',
-            'Fe_uv_FWHM', 'Fe_op_FWHM',
+            'Fe_FWHM', 'Fe_shift',
             'Balmer_norm', 'Balmer_Tau', 'Balmer_vel',
             'gal_v_kms', 'log_gal_sigma_kms', 'gal_sigma_kms',
             'frac_jitter', 'add_jitter',

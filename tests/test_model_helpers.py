@@ -214,10 +214,8 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
             "PL_slope": np.array(-1.5),
             "log_Fe_uv_norm": np.array(np.log(0.01)),
             "log_Fe_op_over_uv": np.array(0.0),
-            "Fe_uv_FWHM": np.array(3000.0),
-            "Fe_op_FWHM": np.array(3000.0),
-            "Fe_uv_shift": np.array(0.0),
-            "Fe_op_shift": np.array(0.0),
+            "Fe_FWHM": np.array(3000.0),
+            "Fe_shift": np.array(0.0),
             "frac_jitter": np.array(0.0),
             "frac_fe_jitter": np.array(0.2),
             "add_jitter": np.array(0.0),
@@ -247,6 +245,14 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
     assert tr["PL_slope"]["fn"].__class__.__name__ in {"TruncatedNormal", "TwoSidedTruncatedDistribution"}
     assert tr["log_Fe_uv_norm"]["type"] == "sample"
     assert tr["Fe_uv_norm"]["type"] == "deterministic"
+    assert tr["Fe_FWHM"]["type"] == "sample"
+    assert tr["Fe_shift"]["type"] == "sample"
+    assert tr["Fe_uv_FWHM"]["type"] == "deterministic"
+    assert tr["Fe_op_FWHM"]["type"] == "deterministic"
+    assert tr["Fe_uv_shift"]["type"] == "deterministic"
+    assert tr["Fe_op_shift"]["type"] == "deterministic"
+    np.testing.assert_allclose(tr["Fe_uv_FWHM"]["value"], tr["Fe_op_FWHM"]["value"])
+    np.testing.assert_allclose(tr["Fe_uv_shift"]["value"], tr["Fe_op_shift"]["value"])
     np.testing.assert_allclose(np.asarray(tr["Fe_uv_norm"]["value"]), 0.01)
     fe_model = np.asarray(tr["f_fe_mgii_model"]["value"]) + np.asarray(tr["f_fe_balmer_model"]["value"])
     expected_sigma = np.sqrt(err**2 + (0.2 * np.abs(fe_model))**2)
@@ -260,10 +266,8 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
             "PL_slope": np.array(-1.5),
             "Fe_uv_norm": np.array(0.01),
             "log_Fe_op_over_uv": np.array(0.0),
-            "Fe_uv_FWHM": np.array(3000.0),
-            "Fe_op_FWHM": np.array(3000.0),
-            "Fe_uv_shift": np.array(0.0),
-            "Fe_op_shift": np.array(0.0),
+            "Fe_FWHM": np.array(3000.0),
+            "Fe_shift": np.array(0.0),
             "frac_jitter": np.array(0.0),
             "add_jitter": np.array(0.0),
         },
@@ -328,6 +332,7 @@ def test_ebv_is_sampled_in_standardizable_log_space_and_a2500_is_exposed():
     assert model_trace["log_ebv"]["type"] == "sample"
     assert model_trace["ebv"]["type"] == "deterministic"
     assert model_trace["reddening_a2500"]["type"] == "deterministic"
+    assert "frac_fe_jitter" not in model_trace
 
 
 def test_fe_template_component_smoothly_bounds_fwhm_below_template_base():
