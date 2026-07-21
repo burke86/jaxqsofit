@@ -113,7 +113,29 @@ class BALConfig:
 
 @dataclass
 class ContinuumConfig:
-    """Continuum and spectral component switches."""
+    """Continuum and spectral component switches.
+
+    Important
+    ---------
+    Intrinsic AGN reddening is **enabled by default** (``fit_reddening=True``).
+    One fitted E(B-V) screen attenuates the power-law continuum, UV/optical
+    Fe II, Balmer continuum, custom nuclear continuum components, and all
+    **broad emission lines**. It does not attenuate narrow emission lines or
+    host-galaxy starlight. Milky Way foreground dereddening is separate and is
+    controlled by :attr:`Observation.apply_mw_deredden`.
+
+    For stable NUTS geometry, the power-law is sampled by default in apparent
+    (post-attenuation) normalization and slope coordinates. The constant and
+    linear parts of the reddening curve are absorbed into those coordinates;
+    E(B-V) controls the remaining curvature. This is an exact coordinate
+    transformation and does not change the physical model or priors.
+
+    The polynomial is a multiplicative residual flux-calibration term applied
+    to the complete model spectrum. ``polynomial_order`` is its highest
+    residual-curvature degree. The constant and linear directions are omitted
+    because they duplicate the power-law normalization and slope;
+    consequently, values below two add no polynomial coefficients.
+    """
 
     fit_power_law: bool = True
     fit_feii: bool = True
@@ -143,11 +165,41 @@ class HostConfig:
 
 @dataclass
 class LineConfig:
-    """Emission-line model configuration."""
+    """Emission-line model configuration.
+
+    Narrow-line centroid behavior
+    -----------------------------
+    The default ``pool_narrow_centroids=True`` pools narrow cores into three
+    exact kinematic families: low-ionization/systemic, high-ionization, and
+    coronal. Every line within a family shares one centroid and one FWHM,
+    including lines in different complexes. There are no per-complex residual
+    centroid or width offsets and no wavelength-calibration-error parameters.
+    The low-ionization velocity has a zero-centered Normal prior with default
+    scale 250 km/s. The high-ionization velocity is offset from it with a
+    default 150 km/s scale, and the coronal velocity is offset from the
+    high-ionization velocity with a default 250 km/s scale.
+
+    Broad components and components identified as wings or outflows do not
+    participate in global NLR pooling; their existing centroid models are
+    retained. Explicit centroid ties defined by positive ``vindex`` values in
+    the line table are also retained.
+
+    Set ``pool_narrow_centroids=False`` to restore the line-table kinematics:
+    otherwise untied narrow groups receive independent bounded centroids and
+    widths, while explicit ``vindex`` and ``windex`` ties remain intact.
+
+    ``include_elg_narrow_lines`` and ``include_high_ionization_lines`` append
+    the corresponding built-in optional rows to the active line table. These
+    are model-component switches, not prior-construction options, and apply
+    whether the fit uses automatically generated or user-supplied priors.
+    """
 
     enabled: bool = True
     use_broad_lines: bool = True
     use_narrow_lines: bool = True
+    pool_narrow_centroids: bool = True
+    include_elg_narrow_lines: bool = False
+    include_high_ionization_lines: bool = False
     custom_components: Sequence[Any] | None = None
     custom_line_components: Sequence[Any] | None = None
 
@@ -187,6 +239,8 @@ class InferenceConfig:
     num_chains: int = 1
     target_accept_prob: float = 0.9
     dense_mass: bool = True
+    line_block_dense_mass: bool = False
+    standardize_active_priors: bool = False
     max_tree_depth: int = 8
     plot_init: bool = False
 
@@ -432,6 +486,7 @@ class FeIIPriorConfig:
     op_over_uv: Any | None = None
     uv_fwhm: Any | None = None
     optical_fwhm: Any | None = None
+    fractional_error: Any | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic Fe II prior settings into model-site keys."""
@@ -444,6 +499,8 @@ class FeIIPriorConfig:
             out["log_Fe_uv_FWHM"] = _prior_to_mapping(self.uv_fwhm)
         if self.optical_fwhm is not None:
             out["log_Fe_op_FWHM"] = _prior_to_mapping(self.optical_fwhm)
+        if self.fractional_error is not None:
+            out["frac_fe_jitter"] = _prior_to_mapping(self.fractional_error)
         return out
 
 
@@ -518,8 +575,6 @@ class PriorConfig:
         redshift: float | None = None,
         *,
         line_config: Mapping[str, Any] | None = None,
-        include_elg_narrow_lines: bool = False,
-        include_high_ionization_lines: bool = False,
         pl_pivot: float | None = None,
     ) -> "PriorConfig":
         """Build default priors from an observed spectrum flux scale.
@@ -540,12 +595,6 @@ class PriorConfig:
         line_config : mapping, optional
             Optional line-table or line-prior settings passed to the default
             prior builder.
-        include_elg_narrow_lines : bool, optional
-            If True, include additional narrow emission-line galaxy lines in
-            the default line table.
-        include_high_ionization_lines : bool, optional
-            If True, include high-ionization quasar lines in the default line
-            table.
         pl_pivot : float, optional
             Rest-frame wavelength pivot for the power-law continuum prior.
         """
@@ -556,8 +605,6 @@ class PriorConfig:
         return _build_default_prior_config(
             flux_for_priors,
             line_config=None if line_config is None else dict(line_config),
-            include_elg_narrow_lines=include_elg_narrow_lines,
-            include_high_ionization_lines=include_high_ionization_lines,
             pl_pivot=pl_pivot,
         )
 

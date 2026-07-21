@@ -47,7 +47,11 @@ from .custom_components import (
     normalize_custom_components,
     normalize_custom_line_components,
 )
-from .defaults import build_default_bal_components, _build_default_prior_config
+from .defaults import (
+    append_optional_line_rows,
+    build_default_bal_components,
+    _build_default_prior_config,
+)
 from .model import (
     C_KMS,
     _continuum_output_waves_from_prior_config,
@@ -55,11 +59,19 @@ from .model import (
     _balmer_static_terms_jax,
     _format_wave_label,
     _get_sfd_query,
+    _direct_width_site,
+    _line_amplitude_site,
+    _line_indices,
+    _line_meta_broad_mask,
+    _line_meta_int,
+    _nlr_width_site,
     _normalize_template_flux,
     _np_to_jnp,
+    _ordered_width_site,
     _spectrum_center_pivot,
     FSPSTemplateGrid,
     build_fsps_template_grid,
+    build_orthogonal_polynomial_basis_config,
     build_tied_line_meta_from_linelist,
     extend_loglam_grid,
     qso_fsps_joint_model,
@@ -218,6 +230,157 @@ def _numpyro_geometry_reparam_config(
         decompose_host value.
     """
     return {}
+
+
+def _line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
+    """Return NumPyro dense-mass site blocks for individual line complexes."""
+    blocks = []
+    width_complexes = list(
+        tied_line_meta.get("broad_width_order_complex_indices", [])
+    )
+    width_labels = list(
+        tied_line_meta.get("broad_width_order_site_labels", [])
+    )
+    centroid_hierarchies = list(
+        tied_line_meta.get("broad_centroid_hierarchy_groups", [])
+    )
+    for complex_group in tied_line_meta.get("amp_complex_groups", []):
+        complex_index = int(complex_group["complex_index"])
+        complex_label = str(
+            complex_group.get("site_label", f"complex_{complex_index}")
+        )
+        sites = [
+            _line_amplitude_site(
+                complex_label, standardized=standardized_amplitudes
+            )
+        ]
+        for order_index, owner_index in enumerate(width_complexes):
+            if int(owner_index) == complex_index:
+                order_label = (
+                    str(width_labels[order_index])
+                    if order_index < len(width_labels)
+                    else str(order_index)
+                )
+                sites.append(
+                    _ordered_width_site(order_label, standardized=True)
+                )
+        for hierarchy_index, hierarchy in enumerate(centroid_hierarchies):
+            if int(hierarchy.get("complex_index", -1)) == complex_index:
+                sites.extend(
+                    [
+                        f"line_broad_center_{hierarchy_index}_std",
+                        f"line_broad_relative_offsets_{hierarchy_index}_std",
+                    ]
+                )
+        blocks.append(tuple(sites))
+    return blocks
+
+
+def _build_line_init_values(tied_line_meta, prior_config, *, use_lines=True):
+    """Initialize all tied-line latent coordinates at their prior locations."""
+    values = {}
+    if not use_lines or int(tied_line_meta.get("n_lines", 0)) <= 0:
+        return values
+
+    n_v = int(tied_line_meta.get("n_vgroups", 0))
+    n_w = int(tied_line_meta.get("n_wgroups", 0))
+    n_f = int(tied_line_meta.get("n_fgroups", 0))
+    if n_v > 0:
+        independent_vgroups = _line_meta_int(
+            tied_line_meta,
+            "independent_vgroup_ids",
+            default=np.arange(n_v),
+        )
+        if independent_vgroups.size:
+            values["line_dmu_independent_group_std"] = np.zeros(
+                independent_vgroups.size, dtype=float
+            )
+        nlr_families = tied_line_meta.get("nlr_vgroup_families", {})
+        family_sites = {
+            "low": "line_nlr_center_std",
+            "high": "line_high_ion_offset_std",
+            "coronal": "line_coronal_offset_std",
+        }
+        for family, site in family_sites.items():
+            if _line_meta_int(nlr_families, family, default=[]).size:
+                values[site] = np.array(0.0)
+        for hierarchy_index, hierarchy in enumerate(
+            tied_line_meta.get("broad_centroid_hierarchy_groups", [])
+        ):
+            values[f"line_broad_center_{hierarchy_index}_std"] = np.array(0.0)
+            values[f"line_broad_relative_offsets_{hierarchy_index}_std"] = np.zeros(
+                len(hierarchy["component_groups"]) - 1, dtype=float
+            )
+
+    if n_w > 0:
+        wgroup = _line_meta_int(tied_line_meta, "wgroup")
+        broad_mask = _line_meta_broad_mask(tied_line_meta)
+        wgroup_is_broad = np.asarray(
+            [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
+            dtype=bool,
+        )
+        unordered_ids = _line_meta_int(
+            tied_line_meta,
+            "unordered_width_group_ids",
+            default=np.arange(n_w),
+        )
+        if unordered_ids.size and np.any(wgroup_is_broad[unordered_ids]):
+            values["line_log_broad_fwhm_std"] = np.array(0.0)
+        if unordered_ids.size and np.any(~wgroup_is_broad[unordered_ids]):
+            values["line_log_narrow_fwhm_std"] = np.array(0.0)
+        if unordered_ids.size:
+            values["line_log_fwhm_delta_group_std"] = np.zeros(
+                unordered_ids.size, dtype=float
+            )
+        for direct_group in tied_line_meta.get("direct_width_groups", []):
+            values[
+                _direct_width_site(
+                    str(direct_group["site_label"]), standardized=True
+                )
+            ] = np.array(0.0)
+        for family, group_ids in tied_line_meta.get(
+            "nlr_wgroup_families", {}
+        ).items():
+            if _line_indices(group_ids).size:
+                values[_nlr_width_site(family, standardized=True)] = np.array(0.0)
+        order_labels = list(
+            tied_line_meta.get("broad_width_order_site_labels", [])
+        )
+        for order_index, group_ids in enumerate(
+            tied_line_meta.get("broad_width_order_groups", [])
+        ):
+            order_label = (
+                str(order_labels[order_index])
+                if order_index < len(order_labels)
+                else str(order_index)
+            )
+            values[_ordered_width_site(order_label, standardized=True)] = np.zeros(
+                len(group_ids), dtype=float
+            )
+
+    if n_f > 0:
+        amp_init = np.asarray(
+            tied_line_meta.get("amp_init_group", np.zeros(n_f)), dtype=float
+        )
+        standardized = bool(prior_config.get("standardize_active_priors", False))
+        for complex_group in tied_line_meta.get(
+            "amp_complex_groups",
+            [{"complex_index": 0, "fgroup_ids": list(range(n_f))}],
+        ):
+            complex_index = int(complex_group["complex_index"])
+            complex_label = str(
+                complex_group.get("site_label", f"complex_{complex_index}")
+            )
+            group_ids = _line_meta_int(complex_group, "fgroup_ids")
+            site = _line_amplitude_site(
+                complex_label, standardized=standardized
+            )
+            values[site] = (
+                np.zeros(group_ids.size, dtype=float)
+                if standardized
+                else amp_init[group_ids]
+            )
+    return values
 
 
 def _get_sdss_filters():
@@ -658,11 +821,14 @@ class JAXQSOFit:
             custom_line_components value.
         """
         return_sites = [
+            'PL_norm',
+            'PL_slope',
             'f_pl_model',
             'f_fe_mgii_model',
             'f_fe_balmer_model',
             'f_bc_model',
             'f_poly_model',
+            'ebv',
             'reddening_a2500',
             'agn_model',
             'gal_model',
@@ -674,6 +840,7 @@ class JAXQSOFit:
             'model',
             'fsps_weights',
             'line_amp_per_component',
+            'line_amp_group',
             'line_mu_per_component',
             'line_sig_per_component',
             'line_sig_effective_per_component',
@@ -1246,6 +1413,8 @@ class JAXQSOFit:
             'amp_init_group': np.array([], dtype=float),
             'amp_min_group': np.array([], dtype=float),
             'amp_max_group': np.array([], dtype=float),
+            'broad_mask': np.array([], dtype=float),
+            'broad_mask_jax': _np_to_jnp(np.array([], dtype=float)),
             'names': [],
             'compnames': [],
             'line_lambda': np.array([], dtype=float),
@@ -1349,7 +1518,13 @@ class JAXQSOFit:
         use_lines = bool(getattr(self, "_fit_fit_lines", True))
         line_table = _extract_line_table_from_prior_config(prior_config)
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_meta_from_linelist(
+                line_table,
+                wave,
+                pool_narrow_centroids=bool(
+                    prior_config.get("pool_narrow_centroids", True)
+                ),
+            )
         else:
             tied_line_meta = self._empty_tied_line_meta()
         if use_lines and line_table is None and len(custom_line_components) == 0:
@@ -1796,6 +1971,9 @@ class JAXQSOFit:
         fit_lines = bool(line_cfg.enabled)
         use_broad_lines = bool(line_cfg.use_broad_lines)
         use_narrow_lines = bool(line_cfg.use_narrow_lines)
+        pool_narrow_centroids = bool(line_cfg.pool_narrow_centroids)
+        include_elg_narrow_lines = bool(line_cfg.include_elg_narrow_lines)
+        include_high_ionization_lines = bool(line_cfg.include_high_ionization_lines)
         decompose_host = bool(host_cfg.enabled)
         fit_pl = bool(cont_cfg.fit_power_law)
         fit_fe = bool(cont_cfg.fit_feii)
@@ -1817,6 +1995,8 @@ class JAXQSOFit:
         nuts_chains = int(infer_cfg.num_chains)
         nuts_target_accept = float(infer_cfg.target_accept_prob)
         nuts_dense_mass = bool(infer_cfg.dense_mass)
+        line_block_dense_mass = bool(infer_cfg.line_block_dense_mass)
+        standardize_active_priors = bool(infer_cfg.standardize_active_priors)
         nuts_max_tree_depth = int(infer_cfg.max_tree_depth)
         optax_steps = int(infer_cfg.map_steps)
         optax_lr = float(infer_cfg.learning_rate)
@@ -1853,6 +2033,7 @@ class JAXQSOFit:
         self._fit_fit_lines = bool(fit_lines)
         self._fit_use_broad_lines = bool(use_broad_lines)
         self._fit_use_narrow_lines = bool(use_narrow_lines)
+        self._fit_pool_narrow_centroids = bool(pool_narrow_centroids)
         self._fit_fit_pl = bool(fit_pl)
         self._fit_fit_fe = bool(fit_fe)
         self._fit_fit_bc = bool(fit_bc)
@@ -1865,7 +2046,6 @@ class JAXQSOFit:
         self._fit_fsps_age_grid = tuple(fsps_age_grid)
         self._fit_fsps_logzsol_grid = tuple(fsps_logzsol_grid)
         self._fit_host_sfh_model = str(host_sfh_model)
-        self._fit_prior_config = prior_config
         self._fit_dsps_ssp_fn = str(dsps_ssp_fn)
         self._fit_use_psf_phot = bool(use_psf_phot)
         requested_custom_components = normalize_custom_components(custom_components)
@@ -1926,7 +2106,7 @@ class JAXQSOFit:
 
         self._rest_frame(self.lam, self.flux, self.err, self.z)
         self._calculate_sn(self.wave, self.flux)
-        self._orignial_spec(self.wave, self.flux, self.err)
+        self._original_spec(self.wave, self.flux, self.err)
         self._fe_uv_flux_on_wave = np.interp(
             self.wave,
             self.fe_uv_wave,
@@ -1989,11 +2169,18 @@ class JAXQSOFit:
             prior_config = _materialize_prior_config(_build_default_prior_config(self.flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
+        prior_config = append_optional_line_rows(
+            prior_config,
+            self.flux,
+            include_elg_narrow_lines=include_elg_narrow_lines,
+            include_high_ionization_lines=include_high_ionization_lines,
+        )
         prior_config["convolution_method"] = broadening_convolution
-        self._fit_prior_config = prior_config
+        prior_config["standardize_active_priors"] = standardize_active_priors
+        prior_config["line_block_dense_mass"] = line_block_dense_mass
+        prior_config["pool_narrow_centroids"] = pool_narrow_centroids
         prior_config["z_qso"] = float(self.z)
         prior_config["host_sfh_model"] = str(host_sfh_model)
-        self._fit_host_sfh_model = str(prior_config.get("host_sfh_model", "flexible"))
         prior_config = inject_default_custom_component_priors(
             prior_config=prior_config,
             flux=self.flux,
@@ -2011,7 +2198,6 @@ class JAXQSOFit:
         )
         out_params = prior_config.get('out_params', {})
         self.L_conti_wave = np.asarray(out_params.get('cont_loc', []), dtype=float)
-        self._fit_prior_config = prior_config
 
         pl_pivot = prior_config.get("PL_pivot", None)
         if pl_pivot is None:
@@ -2021,9 +2207,24 @@ class JAXQSOFit:
         if poly_pivot is None:
             poly_pivot = _spectrum_center_pivot(self.wave)
         prior_config["poly_pivot"] = float(np.asarray(poly_pivot, dtype=float))
+        if fit_poly:
+            prior_config["poly_basis"] = build_orthogonal_polynomial_basis_config(
+                self.wave,
+                self.err,
+                pivot=prior_config["poly_pivot"],
+                order=fit_poly_order,
+                include_reddening=fit_reddening,
+                reddening_uv_ref=float(prior_config.get("reddening_uv_ref", 2500.0)),
+                reddening_alpha=float(prior_config.get("reddening_alpha", 1.2)),
+            )
         prior_config["resolving_power"] = resolving_power
         prior_config["apply_instrumental_resolution"] = apply_instrumental_resolution
-        self._fit_prior_config = prior_config
+        finalized_prior_config = _materialize_prior_config(prior_config)
+        self._fit_prior_config = finalized_prior_config
+        self._fit_host_sfh_model = str(
+            finalized_prior_config.get("host_sfh_model", "flexible")
+        )
+        prior_config = finalized_prior_config
         psf_mags_use, psf_mag_errs_use, _psf_bands_use, psf_filter_curves_use, use_psf_phot_use = self._prepare_psf_photometry(
             wave_obs=self.lam,
             psf_mags=psf_mags,
@@ -2220,7 +2421,13 @@ class JAXQSOFit:
             )
 
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_meta_from_linelist(
+                line_table,
+                wave,
+                pool_narrow_centroids=bool(
+                    prior_config.get("pool_narrow_centroids", True)
+                ),
+            )
         else:
             tied_line_meta = {
                 'n_lines': 0,
@@ -2255,36 +2462,6 @@ class JAXQSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _line_std_init_values():
-            """Initialize non-centered tied-line latents at the line-table defaults."""
-            values = {}
-            if not use_lines or int(tied_line_meta.get("n_lines", 0)) <= 0:
-                return values
-
-            n_v = int(tied_line_meta.get("n_vgroups", 0))
-            n_w = int(tied_line_meta.get("n_wgroups", 0))
-            n_f = int(tied_line_meta.get("n_fgroups", 0))
-            if n_v > 0:
-                values["line_dmu_group_std"] = np.zeros(n_v, dtype=float)
-            if n_w > 0:
-                wgroup = np.asarray(tied_line_meta.get("wgroup", []), dtype=int)
-                broad_mask = np.asarray(
-                    [str(name).lower().endswith("_br") or ("_br" in str(name).lower()) for name in tied_line_meta.get("names", [])],
-                    dtype=float,
-                )
-                wgroup_is_broad = np.asarray(
-                    [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
-                    dtype=bool,
-                )
-                if np.any(wgroup_is_broad):
-                    values["line_log_broad_fwhm_std"] = np.array(0.0)
-                if np.any(~wgroup_is_broad):
-                    values["line_log_narrow_fwhm_std"] = np.array(0.0)
-                values["line_log_fwhm_delta_group_std"] = np.zeros(n_w, dtype=float)
-            if n_f > 0:
-                values["line_amp_group"] = np.asarray(tied_line_meta.get("amp_init_group", np.zeros(n_f)), dtype=float)
-            return values
-
         if init_values is None:
             init_vals = {
                 'gal_v_kms': 0.0,
@@ -2298,11 +2475,19 @@ class JAXQSOFit:
                 init_vals['cont_norm'] = np.exp(prior_config.get('log_cont_norm', {}).get('loc', np.log(max(np.nanmedian(np.abs(flux)), 1e-8))))
                 init_vals['log_frac_host'] = prior_config.get('log_frac_host', {}).get('loc', 0.0)
             if fit_reddening:
-                init_vals['log_reddening_a2500'] = prior_config.get('log_reddening_a2500', {}).get('loc', np.log(0.1))
-            init_vals.update(_line_std_init_values())
+                reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
+                if bool(prior_config.get("standardize_active_priors", False)):
+                    init_vals[f'{reddening_key}_std'] = 0.0
+                else:
+                    init_vals[reddening_key] = prior_config.get(reddening_key, {}).get('loc', np.log(0.1))
+            init_vals.update(
+                _build_line_init_values(tied_line_meta, prior_config, use_lines=use_lines)
+            )
         else:
             init_vals = dict(init_values)
-            for key, value in _line_std_init_values().items():
+            for key, value in _build_line_init_values(
+                tied_line_meta, prior_config, use_lines=use_lines
+            ).items():
                 init_vals.setdefault(key, value)
         init_strategy = init_to_value(values=init_vals)
         reparam_config = _numpyro_geometry_reparam_config(
@@ -2320,11 +2505,21 @@ class JAXQSOFit:
             if reparam_config
             else qso_fsps_joint_model
         )
+        if bool(prior_config.get("line_block_dense_mass", False)) and use_lines:
+            mass_matrix_structure = _line_complex_dense_mass_blocks(
+                tied_line_meta,
+                standardized_amplitudes=bool(
+                    prior_config.get("standardize_active_priors", False)
+                ),
+            )
+        else:
+            mass_matrix_structure = bool(dense_mass)
+        self.nuts_mass_matrix_structure = mass_matrix_structure
         kernel = NUTS(
             nuts_model,
             init_strategy=init_strategy,
             target_accept_prob=target_accept_prob,
-            dense_mass=bool(dense_mass),
+            dense_mass=mass_matrix_structure,
             max_tree_depth=int(max_tree_depth),
         )
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
@@ -2360,7 +2555,11 @@ class JAXQSOFit:
             emit_deterministics=False,
             custom_components=custom_components,
             custom_line_components=custom_line_components,
+            extra_fields=("num_steps", "accept_prob"),
         )
+        # Always expose convergence diagnostics in both terminal sessions and
+        # notebook cell output immediately after NumPyro sampling completes.
+        mcmc.print_summary()
         samples = mcmc.get_samples()
 
         pred = Predictive(
@@ -2608,7 +2807,13 @@ class JAXQSOFit:
             )
 
         if line_table is not None:
-            tied_line_meta = build_tied_line_meta_from_linelist(line_table, wave)
+            tied_line_meta = build_tied_line_meta_from_linelist(
+                line_table,
+                wave,
+                pool_narrow_centroids=bool(
+                    prior_config.get("pool_narrow_centroids", True)
+                ),
+            )
         else:
             tied_line_meta = {
                 'n_lines': 0,
@@ -2652,6 +2857,7 @@ class JAXQSOFit:
                 wave_in value.
             """
             line_windows = (
+                (2700.0, 2900.0),   # Mg II
                 (3700.0, 3755.0),   # [O II]
                 (3850.0, 3895.0),   # [Ne III]
                 (4070.0, 4135.0),   # Hdelta
@@ -2831,9 +3037,20 @@ class JAXQSOFit:
                 values['cont_norm'] = max(np.exp(_prior_field('log_cont_norm', 'loc', np.log(max(np.nanmedian(np.abs(flux)), 1e-8)))), 1e-8)
                 values['log_frac_host'] = _prior_field('log_frac_host', 'loc', 0.0)
             if fit_pl:
-                values['PL_norm'] = max(pl_init, 1e-8)
+                if fit_reddening and bool(prior_config.get("residualize_reddening_geometry", False)):
+                    values['PL_apparent_log_norm_std'] = np.array(0.0)
+                    values['PL_apparent_slope_std'] = np.array(0.0)
+                elif bool(prior_config.get("standardize_active_priors", False)):
+                    values['PL_norm_std'] = np.array(0.0)
+                    values['PL_slope_std'] = np.array(0.0)
+                else:
+                    values['PL_norm'] = max(pl_init, 1e-8)
                 if fit_reddening:
-                    values['log_reddening_a2500'] = _prior_field('log_reddening_a2500', 'loc', np.log(0.1))
+                    reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
+                    if bool(prior_config.get("standardize_active_priors", False)):
+                        values[f'{reddening_key}_std'] = np.array(0.0)
+                    else:
+                        values[reddening_key] = _prior_field(reddening_key, 'loc', np.log(0.1))
 
             if decompose_host and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
                 values['log_stellar_mass'] = _prior_field('log_stellar_mass', 'loc', 9.0)
@@ -2849,36 +3066,6 @@ class JAXQSOFit:
                 values['gal_lgmet'] = gal_lgmet
                 values['log_gal_lgmet_scatter'] = _prior_field('log_gal_lgmet_scatter', 'loc', np.log(0.15))
                 values['log_host_aperture_scale'] = _prior_field('log_host_aperture_scale', 'value', 0.0)
-            return values
-
-        def _line_std_init_values():
-            """Initialize non-centered tied-line latents at the line-table defaults."""
-            values = {}
-            if not use_lines or int(tied_line_meta.get("n_lines", 0)) <= 0:
-                return values
-
-            n_v = int(tied_line_meta.get("n_vgroups", 0))
-            n_w = int(tied_line_meta.get("n_wgroups", 0))
-            n_f = int(tied_line_meta.get("n_fgroups", 0))
-            if n_v > 0:
-                values["line_dmu_group_std"] = np.zeros(n_v, dtype=float)
-            if n_w > 0:
-                wgroup = np.asarray(tied_line_meta.get("wgroup", []), dtype=int)
-                broad_mask = np.asarray(
-                    [str(name).lower().endswith("_br") or ("_br" in str(name).lower()) for name in tied_line_meta.get("names", [])],
-                    dtype=float,
-                )
-                wgroup_is_broad = np.asarray(
-                    [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
-                    dtype=bool,
-                )
-                if np.any(wgroup_is_broad):
-                    values["line_log_broad_fwhm_std"] = np.array(0.0)
-                if np.any(~wgroup_is_broad):
-                    values["line_log_narrow_fwhm_std"] = np.array(0.0)
-                values["line_log_fwhm_delta_group_std"] = np.zeros(n_w, dtype=float)
-            if n_f > 0:
-                values["line_amp_group"] = np.asarray(tied_line_meta.get("amp_init_group", np.zeros(n_f)), dtype=float)
             return values
 
         # Stage 1: warm start on simpler landscape (continuum/host only).
@@ -2963,7 +3150,9 @@ class JAXQSOFit:
         # Stage 2: full model initialized from stage-1 MAP for overlapping parameters.
         n2 = max(100, int(num_steps - n1))
         stage2_init_values = dict(map1)
-        stage2_init_values.update(_line_std_init_values())
+        stage2_init_values.update(
+            _build_line_init_values(tied_line_meta, prior_config, use_lines=use_lines)
+        )
         guide2 = AutoDelta(
             qso_fsps_joint_model,
             init_loc_fn=init_to_value(values=stage2_init_values),
@@ -3190,6 +3379,10 @@ class JAXQSOFit:
         decompose_host : bool
             Whether host model was enabled.
         """
+        samples = dict(samples)
+        for physical_site in ("PL_norm", "PL_slope", "line_amp_group"):
+            if physical_site not in samples and physical_site in pred_out:
+                samples[physical_site] = np.asarray(pred_out[physical_site])
         flux = np.asarray(self.flux, dtype=float)
         self.numpyro_samples = samples
         self.fsps_grid = fsps_grid
@@ -3438,6 +3631,12 @@ class JAXQSOFit:
         else:
             reddening_a2500_med = np.nan
             reddening_a2500_err = np.nan
+        if 'ebv' in samples:
+            ebv_med = float(np.nanmedian(np.asarray(samples['ebv'])))
+            ebv_err = float(np.nanstd(np.asarray(samples['ebv'])))
+        else:
+            ebv_med = np.nan
+            ebv_err = np.nan
         conti_entries = [
             ('ra', self.ra, 'float'),
             ('dec', self.dec, 'float'),
@@ -3448,6 +3647,8 @@ class JAXQSOFit:
             ('PL_norm_err', float(np.nanstd(pl_norm_samp)), 'float'),
             ('PL_slope', pl_slope_med, 'float'),
             ('PL_slope_err', pl_slope_err, 'float'),
+            ('ebv', ebv_med, 'float'),
+            ('ebv_err', ebv_err, 'float'),
             ('reddening_a2500', reddening_a2500_med, 'float'),
             ('reddening_a2500_err', reddening_a2500_err, 'float'),
             ('pivot_wave', self.pivot_wave, 'float'),
@@ -3639,7 +3840,7 @@ class JAXQSOFit:
         self.err = err * (1 + z)
         return self.wave, self.flux, self.err
 
-    def _orignial_spec(self, wave, flux, err):
+    def _original_spec(self, wave, flux, err):
         """Cache the pre-modeling spectrum for plotting/debugging.
 
         Parameters

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Sequence, Tuple, TypedDict
 
 import numpy as np
 import extinction
@@ -31,6 +31,9 @@ from .custom_components import (
 from .config import ErrorScaledHalfNormalPrior
 
 C_KMS = 299792.458
+LINE_COVERAGE_NSIGMA = 3.0
+BROAD_LINE_COVERAGE_FWHM_KMS = 10000.0
+NARROW_LINE_COVERAGE_FWHM_KMS = 1200.0
 _SFD_QUERY_CACHE: Dict[str, Any] = {}
 _LUMINOSITY_H0 = 70.0
 _LUMINOSITY_OM0 = 0.3
@@ -38,6 +41,31 @@ MPC_TO_CM = 3.085677581491367e24
 W_PER_A_TO_CGS_PER_A = 1.0e7
 CGS_TO_JAXQSOFIT_FLUX = 1.0e17
 AMPLITUDE_FLOOR = 1e-32
+
+
+class TiedLineMetadata(TypedDict, total=False):
+    """Typed mapping produced by :func:`build_tied_line_meta_from_linelist`.
+
+    The runtime value deliberately remains a plain dictionary for compatibility
+    with saved results and downstream callers.
+    """
+
+    n_lines: int
+    n_vgroups: int
+    n_wgroups: int
+    n_fgroups: int
+    names: list[str]
+    compnames: list[str]
+    vgroup: np.ndarray
+    wgroup: np.ndarray
+    fgroup: np.ndarray
+    broad_mask: np.ndarray
+    broad_width_order_groups: list[np.ndarray]
+    broad_width_order_site_labels: list[str]
+    broad_centroid_hierarchy_groups: list[dict[str, Any]]
+    nlr_vgroup_families: dict[str, np.ndarray]
+    nlr_wgroup_families: dict[str, np.ndarray]
+    amp_complex_groups: list[dict[str, Any]]
 
 
 def extend_loglam_grid(wave: np.ndarray, pad_kms: float = 3000.0) -> np.ndarray:
@@ -514,29 +542,113 @@ def _bal_covering_fraction(params):
     return jnp.clip(jnp.asarray(params.get("covering", 1.0)), 0.0, 0.999)
 
 
-def _smc_like_reddening_jax(wave, a_uv, uv_ref=2500.0, alpha=1.2):
+def _smc_like_reddening_jax(wave, ebv, uv_ref=2500.0, alpha=1.2):
     """Return a smooth SMC-like attenuation curve.
 
-    The amplitude is normalized at ``uv_ref``: ``a_uv`` is
-    :math:`A(\\mathrm{uv\\_ref})` in magnitudes, not a literal
-    color excess.
+    The power law is normalized so that the amplitude is literal
+    :math:`E(B-V)=A_B-A_V`, using 4400 and 5500 Angstrom for B and V.
 
     Parameters
     ----------
     wave : object
         wave value.
-    a_uv : object
-        a_uv value.
+    ebv : object
+        Rest-frame E(B-V).
     uv_ref : object
         uv_ref value.
     alpha : object
         alpha value.
     """
-    a_uv = jnp.maximum(jnp.asarray(a_uv), 0.0)
+    ebv = jnp.maximum(jnp.asarray(ebv), 0.0)
     uv_ref = jnp.maximum(jnp.asarray(uv_ref), 1e-8)
     alpha = jnp.asarray(alpha)
     k_lambda = (jnp.clip(wave, 1e-8, None) / uv_ref) ** (-alpha)
-    return 10.0 ** (-0.4 * a_uv * k_lambda)
+    ebv_norm = (4400.0 / uv_ref) ** (-alpha) - (5500.0 / uv_ref) ** (-alpha)
+    a_lambda = ebv * k_lambda / jnp.maximum(ebv_norm, 1e-12)
+    return 10.0 ** (-0.4 * a_lambda)
+
+
+def build_orthogonal_polynomial_basis_config(
+    wave,
+    err,
+    *,
+    pivot,
+    order,
+    include_reddening=False,
+    reddening_uv_ref=2500.0,
+    reddening_alpha=1.2,
+):
+    """Build a weighted residual-curvature basis on the fitted pixel grid.
+
+    Degrees start at two.  Each direction is projected away from the constant
+    and power-law-slope directions, earlier curvature terms, and (when active)
+    the reddening direction.  Unit maximum amplitude makes the coefficient
+    prior directly interpretable as a fractional calibration correction.
+    """
+    wave = np.asarray(wave, dtype=float)
+    err = np.asarray(err, dtype=float)
+    pivot = max(float(pivot), 1.0)
+    x = (wave - pivot) / pivot
+    weights = 1.0 / np.square(np.clip(err, 1.0e-30, None))
+    weights = weights / max(float(np.nanmean(weights)), 1.0e-30)
+    nuisance = [np.ones_like(wave), np.log(np.clip(wave / pivot, 1.0e-12, None))]
+    if include_reddening:
+        nuisance.append(
+            (np.clip(wave, 1.0e-12, None) / float(reddening_uv_ref))
+            ** (-float(reddening_alpha))
+        )
+
+    previous = []
+    specs = []
+    for degree in range(2, max(int(order), 1) + 1):
+        design_columns = nuisance + previous
+        design = np.column_stack(design_columns)
+        weighted_design = design * np.sqrt(weights)[:, None]
+        weighted_target = np.power(x, degree) * np.sqrt(weights)
+        projection, *_ = np.linalg.lstsq(weighted_design, weighted_target, rcond=None)
+        residual = np.power(x, degree) - design @ projection
+        normalization = max(float(np.max(np.abs(residual))), 1.0e-12)
+        basis = residual / normalization
+        specs.append(
+            {
+                "degree": int(degree),
+                "projection": np.asarray(projection, dtype=float).tolist(),
+                "normalization": normalization,
+            }
+        )
+        previous.append(basis)
+    return {
+        "pivot": pivot,
+        "include_reddening": bool(include_reddening),
+        "reddening_uv_ref": float(reddening_uv_ref),
+        "reddening_alpha": float(reddening_alpha),
+        "specs": specs,
+    }
+
+
+def _orthogonal_polynomial_basis_jax(wave, basis_config):
+    """Evaluate a stored residual-curvature basis on any wavelength grid."""
+    pivot = jnp.asarray(basis_config["pivot"], dtype=jnp.float64)
+    x = (wave - pivot) / jnp.maximum(pivot, 1.0)
+    nuisance = [jnp.ones_like(wave), jnp.log(jnp.clip(wave / pivot, 1.0e-12, None))]
+    if bool(basis_config.get("include_reddening", False)):
+        nuisance.append(
+            (jnp.clip(wave, 1.0e-12, None) / float(basis_config["reddening_uv_ref"]))
+            ** (-float(basis_config["reddening_alpha"]))
+        )
+    previous = []
+    basis = []
+    for spec in basis_config.get("specs", []):
+        columns = nuisance + previous
+        projection = jnp.asarray(spec["projection"], dtype=jnp.float64)
+        design = jnp.stack(columns, axis=0)
+        residual = x ** int(spec["degree"]) - jnp.sum(projection[:, None] * design, axis=0)
+        value = residual / max(float(spec["normalization"]), 1.0e-12)
+        previous.append(value)
+        basis.append(value)
+    if not basis:
+        return jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+    return jnp.stack(basis, axis=0)
 
 
 def _many_gauss_lnlam(lnlam, amps, mus, sigs):
@@ -605,6 +717,32 @@ def _line_meta_array(meta, key, *, jax_key=None, dtype=jnp.float64):
     return jnp.asarray(meta[key], dtype=dtype)
 
 
+def _line_meta_numpy(meta, key, *, dtype=float, default=None):
+    """Return one metadata field as a NumPy array with a stable dtype."""
+    if key in meta:
+        value = meta[key]
+    elif default is not None:
+        value = default
+    else:
+        raise KeyError(key)
+    return np.asarray(value, dtype=dtype)
+
+
+def _line_meta_int(meta, key, *, default=None):
+    """Return one line-metadata index field as an integer NumPy array."""
+    return _line_meta_numpy(meta, key, dtype=int, default=default)
+
+
+def _line_indices(value):
+    """Normalize an index sequence used inside nested line metadata."""
+    return np.asarray(value, dtype=int)
+
+
+def _line_meta_broad_mask(meta):
+    """Return the required stored physical broad-line mask."""
+    return _line_meta_numpy(meta, "broad_mask", dtype=float)
+
+
 def _broad_line_mask(names):
     """Return a float mask identifying broad-line components by name.
 
@@ -631,6 +769,60 @@ def _prefixed_site(prefix: str, name: str) -> str:
         name value.
     """
     return f"{prefix}_{name}" if prefix else name
+
+
+def _line_amplitude_site(label: str, *, standardized: bool) -> str:
+    suffix = "_std" if standardized else ""
+    return f"line_amp_{label}{suffix}"
+
+
+def _ordered_width_site(label: str, *, standardized: bool) -> str:
+    suffix = "_std" if standardized else ""
+    return f"line_ordered_width_logits_{label}{suffix}"
+
+
+def _direct_width_site(label: str, *, standardized: bool) -> str:
+    suffix = "_std" if standardized else ""
+    return f"line_{label}_log_fwhm{suffix}"
+
+
+def _nlr_width_site(family: str, *, standardized: bool) -> str:
+    suffix = "_std" if standardized else ""
+    return f"line_{family}_ion_log_fwhm{suffix}"
+
+
+def _ordered_width_reference_log_fwhm(n_components: int, low: float, high: float):
+    """Choose stable interior reference locations for ordered broad widths."""
+    if n_components == 2:
+        reference_fwhm = np.asarray([4000.0, 10000.0])
+    elif n_components == 3:
+        reference_fwhm = np.asarray([4000.0, 8000.0, 14000.0])
+    else:
+        reference_fwhm = np.geomspace(4000.0, 14000.0, n_components)
+    span = high - low
+    interior_margin = max(0.08 * span, 1.0e-6)
+    interior_low = low + interior_margin
+    interior_high = high - interior_margin
+    target = np.clip(np.log(reference_fwhm), interior_low, interior_high)
+    minimum_gap = max(0.05 * span, 1.0e-6)
+    if interior_high <= interior_low or np.any(np.diff(target) < minimum_gap):
+        target = np.linspace(low, high, n_components + 2)[1:-1]
+    return target
+
+
+def _ordered_spacing_logit_location(target, low: float, high: float):
+    """Map ordered interior values to anchored softmax-spacing logits."""
+    gaps = np.diff(np.concatenate(([low], np.asarray(target), [high])))
+    gaps = np.clip(gaps, 1.0e-8, None)
+    return np.log(gaps[:-1] / gaps[-1])
+
+
+def _bounded_ordered_values(logits, low: float, high: float):
+    """Transform anchored spacing logits into strictly ordered values."""
+    spacings = jax.nn.softmax(
+        jnp.concatenate([logits, jnp.zeros((1,), dtype=jnp.float64)])
+    )
+    return low + (high - low) * jnp.cumsum(spacings[:-1])
 
 
 def _smooth_bounded_affine(eps, loc, scale, low, high):
@@ -697,42 +889,131 @@ def _sample_bounded_affine_std(site_name, loc, scale, low, high):
     return numpyro.deterministic(site_name, value)
 
 
-def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str = ""):
-    """Sample tied-line groups in geometry-friendly coordinates.
-
-    Velocity shifts use non-centered standardized offsets. Widths are sampled as
-    broad/narrow log-FWHM family scales plus per-width-group log offsets. Line
-    amplitudes use the direct bounded peak-amplitude prior. The returned arrays
-    preserve the historical physical group names.
-
-    Parameters
-    ----------
-    tied_line_meta : object
-        tied_line_meta value.
-    prior_config : object
-        prior_config value.
-    site_prefix : object
-        site_prefix value.
-    """
+def _sample_line_centroids(tied_line_meta, prior_config, *, site_prefix: str = ""):
+    """Sample independent, pooled-NLR, and hierarchical broad centroids."""
     n_v = int(tied_line_meta["n_vgroups"])
-    n_w = int(tied_line_meta["n_wgroups"])
-    n_f = int(tied_line_meta["n_fgroups"])
     dmu_scale_mult = float(prior_config["line_dmu_scale_mult"])
-    sig_scale_mult = float(prior_config["line_sig_scale_mult"])
-    amp_scale_mult = float(prior_config["line_amp_scale_mult"])
 
     dmu_group = jnp.zeros((0,), dtype=jnp.float64)
     if n_v > 0:
         dmu_min = _line_meta_array(tied_line_meta, "dmu_min_group", jax_key="dmu_min_group_jax")
         dmu_max = _line_meta_array(tied_line_meta, "dmu_max_group", jax_key="dmu_max_group_jax")
-        dmu_group = _sample_bounded_affine_std(
-            _prefixed_site(site_prefix, "line_dmu_group"),
-            _line_meta_array(tied_line_meta, "dmu_init_group", jax_key="dmu_init_group_jax"),
-            jnp.maximum(dmu_scale_mult * (dmu_max - dmu_min), 1.0e-6),
-            dmu_min,
-            dmu_max,
+        dmu_init = _line_meta_array(tied_line_meta, "dmu_init_group", jax_key="dmu_init_group_jax")
+        independent_ids = np.asarray(
+            tied_line_meta.get("independent_vgroup_ids", np.arange(n_v)), dtype=int
         )
+        dmu_group = jnp.asarray(dmu_init, dtype=jnp.float64)
+        if independent_ids.size:
+            independent_jax = jnp.asarray(independent_ids, dtype=jnp.int32)
+            independent_dmu = _sample_bounded_affine_std(
+                _prefixed_site(site_prefix, "line_dmu_independent_group"),
+                dmu_init[independent_jax],
+                jnp.maximum(
+                    dmu_scale_mult * (dmu_max[independent_jax] - dmu_min[independent_jax]),
+                    1.0e-6,
+                ),
+                dmu_min[independent_jax],
+                dmu_max[independent_jax],
+            )
+            dmu_group = dmu_group.at[independent_jax].set(independent_dmu)
 
+        nlr_families = tied_line_meta.get("nlr_vgroup_families", {})
+        family_centers = {}
+        low_ids = _line_meta_int(nlr_families, "low", default=[])
+        high_ids = _line_meta_int(nlr_families, "high", default=[])
+        coronal_ids = _line_meta_int(nlr_families, "coronal", default=[])
+
+        if low_ids.size:
+            low_std = numpyro.sample(
+                _prefixed_site(site_prefix, "line_nlr_center_std"),
+                dist.Normal(0.0, 1.0),
+            )
+            low_center = numpyro.deterministic(
+                _prefixed_site(site_prefix, "line_nlr_center"),
+                float(prior_config.get("line_nlr_center_scale_kms", 250.0))
+                / C_KMS
+                * low_std,
+            )
+            family_centers["low"] = low_center
+            dmu_group = dmu_group.at[jnp.asarray(low_ids, dtype=jnp.int32)].set(low_center)
+
+        if high_ids.size:
+            high_std = numpyro.sample(
+                _prefixed_site(site_prefix, "line_high_ion_offset_std"),
+                dist.Normal(0.0, 1.0),
+            )
+            high_reference = family_centers.get("low", jnp.asarray(0.0))
+            high_center = numpyro.deterministic(
+                _prefixed_site(site_prefix, "line_high_ion_center"),
+                high_reference
+                + float(prior_config.get("line_high_ion_offset_scale_kms", 150.0))
+                / C_KMS
+                * high_std,
+            )
+            family_centers["high"] = high_center
+            dmu_group = dmu_group.at[jnp.asarray(high_ids, dtype=jnp.int32)].set(high_center)
+
+        if coronal_ids.size:
+            coronal_std = numpyro.sample(
+                _prefixed_site(site_prefix, "line_coronal_offset_std"),
+                dist.Normal(0.0, 1.0),
+            )
+            coronal_reference = family_centers.get(
+                "high", family_centers.get("low", jnp.asarray(0.0))
+            )
+            coronal_center = numpyro.deterministic(
+                _prefixed_site(site_prefix, "line_coronal_center"),
+                coronal_reference
+                + float(prior_config.get("line_coronal_offset_scale_kms", 250.0))
+                / C_KMS
+                * coronal_std,
+            )
+            dmu_group = dmu_group.at[jnp.asarray(coronal_ids, dtype=jnp.int32)].set(
+                coronal_center
+            )
+
+        for hierarchy_index, hierarchy in enumerate(
+            tied_line_meta.get("broad_centroid_hierarchy_groups", [])
+        ):
+            component_ids = _line_meta_int(hierarchy, "component_groups")
+            component_jax = jnp.asarray(component_ids, dtype=jnp.int32)
+            n_components = len(component_ids)
+            broad_center_scale = float(
+                prior_config.get("line_broad_center_scale_kms", 250.0)
+            ) / C_KMS
+            broad_relative_scale = float(
+                prior_config.get("line_broad_relative_scale_kms", 125.0)
+            ) / C_KMS
+            shared_std = numpyro.sample(
+                _prefixed_site(site_prefix, f"line_broad_center_{hierarchy_index}_std"),
+                dist.Normal(0.0, 1.0),
+            )
+            shared_center = numpyro.deterministic(
+                _prefixed_site(site_prefix, f"line_broad_center_value_{hierarchy_index}"),
+                broad_center_scale * shared_std,
+            )
+            relative_std = numpyro.sample(
+                _prefixed_site(site_prefix, f"line_broad_relative_offsets_{hierarchy_index}_std"),
+                dist.Normal(jnp.zeros(n_components - 1), jnp.ones(n_components - 1)).to_event(1),
+            )
+            relative_offsets = broad_relative_scale * jnp.concatenate(
+                [relative_std, -jnp.sum(relative_std, keepdims=True)]
+            )
+            numpyro.deterministic(
+                _prefixed_site(site_prefix, f"line_broad_relative_offsets_{hierarchy_index}"),
+                relative_offsets,
+            )
+            dmu_group = dmu_group.at[component_jax].set(shared_center + relative_offsets)
+
+        numpyro.deterministic(_prefixed_site(site_prefix, "line_dmu_group"), dmu_group)
+
+    return dmu_group
+
+
+def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
+    """Sample pooled, direct, unordered, and ordered line-width groups."""
+    n_w = int(tied_line_meta["n_wgroups"])
+    sig_scale_mult = float(prior_config["line_sig_scale_mult"])
     sig_group = jnp.zeros((0,), dtype=jnp.float64)
     if n_w > 0:
         sig_init = np.clip(np.asarray(tied_line_meta["sig_init_group"], dtype=float), 1.0e-8, None)
@@ -741,8 +1022,8 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
         log_fwhm_init = np.log(C_KMS * 2.354820045 * sig_init)
         log_fwhm_min = np.log(C_KMS * 2.354820045 * sig_min)
         log_fwhm_max = np.log(C_KMS * 2.354820045 * sig_max)
-        wgroup = np.asarray(tied_line_meta["wgroup"], dtype=int)
-        broad_mask = np.asarray(tied_line_meta.get("broad_mask", _broad_line_mask(tied_line_meta.get("names", []))), dtype=float)
+        wgroup = _line_meta_int(tied_line_meta, "wgroup")
+        broad_mask = _line_meta_broad_mask(tied_line_meta)
         wgroup_is_broad = np.asarray(
             [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
             dtype=bool,
@@ -752,15 +1033,29 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
         broad_default = float(np.median(log_fwhm_init[broad_idx])) if broad_idx.size else np.log(3000.0)
         narrow_default = float(np.median(log_fwhm_init[narrow_idx])) if narrow_idx.size else np.log(500.0)
 
+        order_groups = [
+            _line_indices(group_ids)
+            for group_ids in tied_line_meta.get("broad_width_order_groups", [])
+        ]
+        order_site_labels = list(
+            tied_line_meta.get("broad_width_order_site_labels", [])
+        )
+        unordered_idx = np.asarray(
+            tied_line_meta.get("unordered_width_group_ids", np.arange(n_w)),
+            dtype=int,
+        )
+        unordered_broad_idx = unordered_idx[wgroup_is_broad[unordered_idx]]
+        unordered_narrow_idx = unordered_idx[~wgroup_is_broad[unordered_idx]]
+
         log_broad_fwhm = (
             _sample_bounded_affine_std(
                 _prefixed_site(site_prefix, "line_log_broad_fwhm"),
                 broad_default,
                 0.35,
-                float(np.min(log_fwhm_min[broad_idx])) if broad_idx.size else -jnp.inf,
-                float(np.max(log_fwhm_max[broad_idx])) if broad_idx.size else jnp.inf,
+                float(np.min(log_fwhm_min[unordered_broad_idx])) if unordered_broad_idx.size else -jnp.inf,
+                float(np.max(log_fwhm_max[unordered_broad_idx])) if unordered_broad_idx.size else jnp.inf,
             )
-            if broad_idx.size
+            if unordered_broad_idx.size
             else jnp.asarray(broad_default, dtype=jnp.float64)
         )
         log_narrow_fwhm = (
@@ -768,37 +1063,121 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
                 _prefixed_site(site_prefix, "line_log_narrow_fwhm"),
                 narrow_default,
                 0.25,
-                float(np.min(log_fwhm_min[narrow_idx])) if narrow_idx.size else -jnp.inf,
-                float(np.max(log_fwhm_max[narrow_idx])) if narrow_idx.size else jnp.inf,
+                float(np.min(log_fwhm_min[unordered_narrow_idx])) if unordered_narrow_idx.size else -jnp.inf,
+                float(np.max(log_fwhm_max[unordered_narrow_idx])) if unordered_narrow_idx.size else jnp.inf,
             )
-            if narrow_idx.size
+            if unordered_narrow_idx.size
             else jnp.asarray(narrow_default, dtype=jnp.float64)
         )
-        family_loc = np.where(wgroup_is_broad, broad_default, narrow_default)
-        family_base = jnp.where(
-            jnp.asarray(wgroup_is_broad, dtype=bool),
-            log_broad_fwhm,
-            log_narrow_fwhm,
-        )
-        delta_loc = jnp.asarray(log_fwhm_init - family_loc, dtype=jnp.float64)
-        delta_scale = jnp.maximum(
-            sig_scale_mult * jnp.asarray(log_fwhm_max - log_fwhm_min, dtype=jnp.float64),
-            1.0e-4,
-        )
-        delta = _sample_bounded_affine_std(
-            _prefixed_site(site_prefix, "line_log_fwhm_delta_group"),
-            delta_loc,
-            delta_scale,
-            jnp.asarray(log_fwhm_min, dtype=jnp.float64) - family_base,
-            jnp.asarray(log_fwhm_max, dtype=jnp.float64) - family_base,
-        )
-        log_fwhm_group = family_base + delta
+        log_fwhm_group = jnp.asarray(log_fwhm_init, dtype=jnp.float64)
+        if unordered_idx.size:
+            unordered_is_broad = wgroup_is_broad[unordered_idx]
+            family_loc = np.where(unordered_is_broad, broad_default, narrow_default)
+            family_base = jnp.where(
+                jnp.asarray(unordered_is_broad, dtype=bool),
+                log_broad_fwhm,
+                log_narrow_fwhm,
+            )
+            delta_loc = jnp.asarray(log_fwhm_init[unordered_idx] - family_loc, dtype=jnp.float64)
+            delta_scale = jnp.maximum(
+                sig_scale_mult
+                * jnp.asarray(log_fwhm_max[unordered_idx] - log_fwhm_min[unordered_idx], dtype=jnp.float64),
+                1.0e-4,
+            )
+            delta = _sample_bounded_affine_std(
+                _prefixed_site(site_prefix, "line_log_fwhm_delta_group"),
+                delta_loc,
+                delta_scale,
+                jnp.asarray(log_fwhm_min[unordered_idx], dtype=jnp.float64) - family_base,
+                jnp.asarray(log_fwhm_max[unordered_idx], dtype=jnp.float64) - family_base,
+            )
+            log_fwhm_group = log_fwhm_group.at[jnp.asarray(unordered_idx)].set(family_base + delta)
+
+        for direct_group in tied_line_meta.get("direct_width_groups", []):
+            group_id = int(direct_group["group_id"])
+            site_label = str(direct_group["site_label"])
+            direct_log_fwhm = _sample_bounded_affine_std(
+                _prefixed_site(
+                    site_prefix,
+                    _direct_width_site(site_label, standardized=False),
+                ),
+                float(log_fwhm_init[group_id]),
+                max(
+                    sig_scale_mult
+                    * float(log_fwhm_max[group_id] - log_fwhm_min[group_id]),
+                    1.0e-4,
+                ),
+                float(log_fwhm_min[group_id]),
+                float(log_fwhm_max[group_id]),
+            )
+            log_fwhm_group = log_fwhm_group.at[group_id].set(direct_log_fwhm)
+
+        for family, group_ids_value in tied_line_meta.get(
+            "nlr_wgroup_families", {}
+        ).items():
+            group_ids = _line_indices(group_ids_value)
+            if not group_ids.size:
+                continue
+            family_low = float(np.max(log_fwhm_min[group_ids]))
+            family_high = float(np.min(log_fwhm_max[group_ids]))
+            family_init = float(
+                np.clip(np.median(log_fwhm_init[group_ids]), family_low, family_high)
+            )
+            family_log_fwhm = _sample_bounded_affine_std(
+                _prefixed_site(
+                    site_prefix,
+                    _nlr_width_site(family, standardized=False),
+                ),
+                family_init,
+                0.25,
+                family_low,
+                family_high,
+            )
+            log_fwhm_group = log_fwhm_group.at[
+                jnp.asarray(group_ids, dtype=jnp.int32)
+            ].set(family_log_fwhm)
+
+        for order_index, group_ids in enumerate(order_groups):
+            order_label = (
+                str(order_site_labels[order_index])
+                if order_index < len(order_site_labels)
+                else str(order_index)
+            )
+            n_components = len(group_ids)
+            low = float(np.max(log_fwhm_min[group_ids]))
+            high = float(np.min(log_fwhm_max[group_ids]))
+            target = _ordered_width_reference_log_fwhm(n_components, low, high)
+            logit_loc = _ordered_spacing_logit_location(target, low, high)
+            logits_std = numpyro.sample(
+                _prefixed_site(
+                    site_prefix,
+                    _ordered_width_site(order_label, standardized=True),
+                ),
+                dist.Normal(jnp.zeros(n_components), jnp.ones(n_components)).to_event(1),
+            )
+            logits = numpyro.deterministic(
+                _prefixed_site(
+                    site_prefix,
+                    _ordered_width_site(order_label, standardized=False),
+                ),
+                jnp.asarray(logit_loc, dtype=jnp.float64) + 0.5 * logits_std,
+            )
+            ordered_log_fwhm = _bounded_ordered_values(logits, low, high)
+            log_fwhm_group = log_fwhm_group.at[jnp.asarray(group_ids)].set(ordered_log_fwhm)
+
         numpyro.deterministic(_prefixed_site(site_prefix, "line_log_fwhm_group"), log_fwhm_group)
         sig_group = numpyro.deterministic(
             _prefixed_site(site_prefix, "line_sig_group"),
             jnp.exp(log_fwhm_group) / (C_KMS * 2.354820045),
         )
 
+    return sig_group
+
+
+def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = ""):
+    """Sample bounded line amplitudes by named spectral complex."""
+    n_f = int(tied_line_meta["n_fgroups"])
+    amp_scale_mult = float(prior_config["line_amp_scale_mult"])
     amp_group = jnp.zeros((0,), dtype=jnp.float64)
     if n_f > 0:
         amp_min = jnp.clip(
@@ -813,16 +1192,66 @@ def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str =
             _line_meta_array(tied_line_meta, "amp_init_group", jax_key="amp_init_group_jax"),
             AMPLITUDE_FLOOR,
         )
-        amp_group = numpyro.sample(
-            _prefixed_site(site_prefix, "line_amp_group"),
-            dist.TruncatedNormal(
-                loc=amp_init,
-                scale=jnp.maximum(amp_scale_mult * (amp_max - amp_min), AMPLITUDE_FLOOR),
-                low=amp_min,
-                high=amp_max,
-            ),
+        amp_group = jnp.asarray(amp_init, dtype=jnp.float64)
+        complex_groups = tied_line_meta.get(
+            "amp_complex_groups",
+            [{"complex_index": 0, "name": "all", "fgroup_ids": list(range(n_f))}],
         )
+        for complex_group in complex_groups:
+            complex_index = int(complex_group["complex_index"])
+            complex_label = str(
+                complex_group.get("site_label", f"complex_{complex_index}")
+            )
+            group_ids = _line_meta_int(complex_group, "fgroup_ids")
+            if not group_ids.size:
+                continue
+            group_jax = jnp.asarray(group_ids, dtype=jnp.int32)
+            local_prior = dist.TruncatedNormal(
+                loc=amp_init[group_jax],
+                scale=jnp.maximum(
+                    amp_scale_mult * (amp_max[group_jax] - amp_min[group_jax]),
+                    AMPLITUDE_FLOOR,
+                ),
+                low=amp_min[group_jax],
+                high=amp_max[group_jax],
+            )
+            if bool(prior_config.get("standardize_active_priors", False)):
+                eps = numpyro.sample(
+                    _prefixed_site(
+                        site_prefix,
+                        _line_amplitude_site(complex_label, standardized=True),
+                    ),
+                    dist.Normal(jnp.zeros(group_ids.size), jnp.ones(group_ids.size)).to_event(1),
+                )
+                probability = jnp.clip(
+                    dist.Normal(0.0, 1.0).cdf(eps), 1.0e-8, 1.0 - 1.0e-8
+                )
+                local_amp = local_prior.icdf(probability)
+            else:
+                local_amp = numpyro.sample(
+                    _prefixed_site(
+                        site_prefix,
+                        _line_amplitude_site(complex_label, standardized=False),
+                    ),
+                    local_prior.to_event(1),
+                )
+            amp_group = amp_group.at[group_jax].set(local_amp)
+        numpyro.deterministic(_prefixed_site(site_prefix, "line_amp_group"), amp_group)
 
+    return amp_group
+
+
+def _sample_tied_line_groups(tied_line_meta, prior_config, *, site_prefix: str = ""):
+    """Sample tied centroids, widths, and amplitudes in stable coordinates."""
+    dmu_group = _sample_line_centroids(
+        tied_line_meta, prior_config, site_prefix=site_prefix
+    )
+    sig_group = _sample_line_widths(
+        tied_line_meta, prior_config, site_prefix=site_prefix
+    )
+    amp_group = _sample_line_amplitudes(
+        tied_line_meta, prior_config, site_prefix=site_prefix
+    )
     return dmu_group, sig_group, amp_group
 
 
@@ -1301,6 +1730,15 @@ def _halfnormal_prior(prior_config, key, default_scale, *, ref_scale=None):
     return _prior_distribution(prior_config, key, dist.HalfNormal(default_scale))
 
 
+def _sample_distribution(prior_config, key, prior):
+    """Sample ``prior`` directly or through a standard-normal CDF coordinate."""
+    if bool(prior_config.get("standardize_active_priors", False)):
+        eps = numpyro.sample(f"{key}_std", dist.Normal(0.0, 1.0))
+        probability = jnp.clip(dist.Normal(0.0, 1.0).cdf(eps), 1.0e-8, 1.0 - 1.0e-8)
+        return numpyro.deterministic(key, prior.icdf(probability))
+    return numpyro.sample(key, prior)
+
+
 def _sample_prior(prior_config, key, default_distribution):
     """Sample a scalar site from a configured distribution or a default.
 
@@ -1316,7 +1754,8 @@ def _sample_prior(prior_config, key, default_distribution):
     fixed = _fixed_prior_value(prior_config, key, None)
     if fixed is not None:
         return numpyro.deterministic(key, fixed)
-    return numpyro.sample(key, _prior_distribution(prior_config, key, default_distribution))
+    prior = _prior_distribution(prior_config, key, default_distribution)
+    return _sample_distribution(prior_config, key, prior)
 
 
 def _sample_log_positive_from_distribution(prior_config, *, value_key, log_key, default_distribution):
@@ -1337,7 +1776,7 @@ def _sample_log_positive_from_distribution(prior_config, *, value_key, log_key, 
     if fixed is not None:
         log_value = numpyro.deterministic(log_key, fixed)
     else:
-        log_value = numpyro.sample(log_key, _prior_distribution(prior_config, log_key, default_distribution))
+        log_value = _sample_prior(prior_config, log_key, default_distribution)
     return numpyro.deterministic(value_key, jnp.exp(log_value))
 
 
@@ -1373,7 +1812,11 @@ def _sample_positive_distribution(
             fixed = _fixed_prior_value(prior_config, log_key, None)
             if fixed is not None:
                 return numpyro.deterministic(value_key, fixed)
-            return numpyro.sample(value_key, _prior_distribution(prior_config, log_key, default_value_distribution))
+            return _sample_distribution(
+                prior_config,
+                value_key,
+                _prior_distribution(prior_config, log_key, default_value_distribution),
+            )
         return _sample_log_positive_from_distribution(
             prior_config,
             value_key=value_key,
@@ -1390,7 +1833,7 @@ def _sample_positive_distribution(
             log_key=log_key,
             default_distribution=default_log_distribution,
         )
-    return numpyro.sample(value_key, _prior_distribution(prior_config, value_key, default_value_distribution))
+    return _sample_prior(prior_config, value_key, default_value_distribution)
 
 
 def _template_grid_age_met_arrays(fsps_grid):
@@ -1985,13 +2428,21 @@ def reconstruct_posterior_components(
             "prior_config['PL_pivot'] from the fitted wavelength grid."
         )
     pl_pivot = float(np.asarray(_resolve_pl_pivot(wave_out, prior_config), dtype=float))
-    reddening_a2500 = np.asarray(samples.get('reddening_a2500', np.zeros(n_total)), dtype=float)[sl]
     reddening_uv_ref = float(prior_config.get('reddening_uv_ref', 2500.0))
     reddening_alpha = float(prior_config.get('reddening_alpha', 1.2))
-    if fit_poly and fit_poly_order > 0:
+    reddening_norm = ((4400.0 / reddening_uv_ref) ** (-reddening_alpha)
+                      - (5500.0 / reddening_uv_ref) ** (-reddening_alpha))
+    if 'ebv' in samples:
+        reddening_ebv = np.asarray(samples['ebv'], dtype=float)[sl]
+    else:
+        reddening_ebv = (
+            np.asarray(samples.get('reddening_a2500', np.zeros(n_total)), dtype=float)[sl]
+            * reddening_norm
+        )
+    if fit_poly and fit_poly_order > 1:
         poly_coeffs = np.column_stack([
             np.asarray(samples.get(f'poly_c{k}', np.zeros(n_total)), dtype=float)[sl]
-            for k in range(1, fit_poly_order + 1)
+            for k in range(2, fit_poly_order + 1)
         ])
     else:
         poly_coeffs = np.zeros((n_use, 0), dtype=float)
@@ -2004,13 +2455,11 @@ def reconstruct_posterior_components(
     fsps_weights_j = jnp.asarray(fsps_weights, dtype=jnp.float64)
     poly_coeffs_j = jnp.asarray(poly_coeffs, dtype=jnp.float64)
     poly_powers_j = None
-    if fit_poly and fit_poly_order > 0:
-        w0 = float(np.asarray(_resolve_poly_pivot(wave_out, prior_config, require_configured=True), dtype=float))
-        x = (wave_out - w0) / max(w0, 1.0)
-        poly_powers_j = jnp.asarray(
-            np.vstack([x ** k for k in range(1, fit_poly_order + 1)]),
-            dtype=jnp.float64,
-        )
+    if fit_poly and fit_poly_order > 1:
+        basis_config = prior_config.get("poly_basis", None)
+        if basis_config is None:
+            raise ValueError("Posterior reconstruction with polynomial tilt requires prior_config['poly_basis'].")
+        poly_powers_j = _orthogonal_polynomial_basis_jax(wave_j, basis_config)
 
     def _one_builtin_components(
         weights_i,
@@ -2163,7 +2612,7 @@ def reconstruct_posterior_components(
         jnp.asarray(balmer_norm, dtype=jnp.float64),
         jnp.asarray(balmer_tau, dtype=jnp.float64),
         jnp.asarray(balmer_vel, dtype=jnp.float64),
-        jnp.asarray(reddening_a2500, dtype=jnp.float64),
+        jnp.asarray(reddening_ebv, dtype=jnp.float64),
         poly_coeffs_j,
     )
 
@@ -2256,8 +2705,58 @@ def _compress_group_ids(ids: np.ndarray, labels: Sequence[str] | None = None) ->
     return out, mapping
 
 
-def build_tied_line_meta_from_linelist(linelist, wave):
+def _narrow_kinematic_family(name: str, compname: str) -> str | None:
+    """Classify a narrow core into a shared NLR kinematic family.
+
+    Broad components and explicitly named wings/outflows return ``None`` and
+    keep their existing independent or broad-hierarchy kinematics.
+    """
+    name_l = str(name).lower()
+    comp_l = str(compname).lower()
+    if bool(_broad_line_mask([name])[0]):
+        return None
+    base_name = name_l.rsplit("_", 1)[0]
+    if base_name.endswith("w") or "wing" in base_name or "outflow" in base_name:
+        return None
+    label = f"{comp_l} {name_l}".replace("_", "")
+    if any(token in label for token in ("nev", "fevii", "fex", "coronal")):
+        return "coronal"
+    if any(
+        token in label
+        for token in (
+            "oiii", "neiii", "heii", "civ", "ciii", "niv", "niii",
+            "siiv", "siiii", "aliii",
+        )
+    ):
+        return "high"
+    return "low"
+
+
+def _unique_site_labels(names: Sequence[str]) -> list[str]:
+    """Return readable, NumPyro-safe, unique labels for line complexes."""
+    labels = []
+    counts: Dict[str, int] = {}
+    for name in names:
+        label = "".join(ch if ch.isalnum() else "_" for ch in str(name)).strip("_")
+        label = label or "unnamed"
+        count = counts.get(label, 0)
+        counts[label] = count + 1
+        labels.append(label if count == 0 else f"{label}_{count + 1}")
+    return labels
+
+
+def build_tied_line_meta_from_linelist(
+    linelist, wave, *, pool_narrow_centroids=True
+) -> TiedLineMetadata:
     """Build tied-line metadata arrays used by the NumPyro line model.
+
+    With ``pool_narrow_centroids=True``, eligible narrow cores are split into
+    low-ionization, high-ionization, and coronal families. Lines within each
+    family share one exact centroid and one exact width. Complex-specific
+    offsets are deliberately not created. Broad groups, broad-component
+    hierarchies, and groups identified as wings or outflows are excluded.
+    Atomic ties within a family remain intact; legacy ties spanning ionization
+    families are split before family pooling.
 
     Parameters
     ----------
@@ -2265,6 +2764,10 @@ def build_tied_line_meta_from_linelist(linelist, wave):
         linelist value.
     wave : object
         wave value.
+    pool_narrow_centroids : bool, optional
+        If True (default), apply the exact shared NLR centroid behavior above.
+        If False, retain independent cross-complex centroid parameters while
+        preserving explicit line-table ties.
     """
     def _to_records(obj):
         """Normalize line table inputs to `list[dict]` records.
@@ -2291,13 +2794,19 @@ def build_tied_line_meta_from_linelist(linelist, wave):
     wmax = float(np.max(wave))
     ln_wmin = np.log(max(wmin, 1e-300))
     ln_wmax = np.log(max(wmax, 1e-300))
-    support_nsigma = 5.0
     for row in records:
         lam = float(row['lambda'])
         ln0 = np.log(max(lam, 1e-300))
         voff = abs(float(row.get('voff', 0.0)))
-        sig_max = max(float(row.get('maxsig', row.get('inisig', 1e-5))), 1e-5)
-        ln_support = voff + support_nsigma * sig_max
+        linename = str(row.get('linename', ''))
+        is_broad = bool(_broad_line_mask([linename])[0])
+        reference_fwhm_kms = (
+            BROAD_LINE_COVERAGE_FWHM_KMS
+            if is_broad
+            else NARROW_LINE_COVERAGE_FWHM_KMS
+        )
+        reference_sigma_ln = reference_fwhm_kms / (2.354820045 * C_KMS)
+        ln_support = voff + LINE_COVERAGE_NSIGMA * reference_sigma_ln
         if (ln0 + ln_support) >= ln_wmin and (ln0 - ln_support) <= ln_wmax:
             rows.append(row)
 
@@ -2317,11 +2826,14 @@ def build_tied_line_meta_from_linelist(linelist, wave):
     findex = []
     fvalue = []
     compnames = []
+    component_complex_names = []
+    broad_order_component_indices = []
 
     for row in rows:
         ngauss = int(row.get('ngauss', 1))
         linename = str(row.get('linename', f"line_{row['lambda']:.1f}"))
         base_compname = str(row.get('compname', linename))
+        row_component_indices = []
         for i in range(ngauss):
             ln0 = np.log(float(row['lambda']))
             voff = float(row['voff'])
@@ -2348,6 +2860,10 @@ def build_tied_line_meta_from_linelist(linelist, wave):
                 compnames.append(f"{base_compname}:{linename}:{i + 1}")
             else:
                 compnames.append(base_compname)
+            component_complex_names.append(base_compname)
+            row_component_indices.append(len(names) - 1)
+        if ngauss > 1 and bool(_broad_line_mask([linename])[0]):
+            broad_order_component_indices.append(row_component_indices)
 
     ln_lambda0 = np.asarray(ln_lambda0, dtype=float)
     amp_init = np.asarray(amp_init, dtype=float)
@@ -2365,21 +2881,139 @@ def build_tied_line_meta_from_linelist(linelist, wave):
 
     # Tie indices are local to each line complex in qsopar; include compname in the key
     # to avoid accidental cross-complex tying when index integers are reused.
-    vgroup, _ = _compress_group_ids(vindex, compnames)
+    narrow_family = [
+        _narrow_kinematic_family(name, compname)
+        for name, compname in zip(names, component_complex_names)
+    ]
+    # Legacy tables sometimes tie low- and high-ionization narrow lines within
+    # one complex (notably narrow H-beta and [O III]). Include the family in
+    # the local tie scope so atomic ties remain intact but cross-family ties
+    # are split before global family pooling.
+    kinematic_labels = (
+        [
+            f"{compname}:{family}" if family is not None else str(compname)
+            for compname, family in zip(compnames, narrow_family)
+        ]
+        if pool_narrow_centroids
+        else list(compnames)
+    )
+    vgroup, _ = _compress_group_ids(vindex, kinematic_labels)
     next_gid = np.max(vgroup) + 1 if len(vgroup) and np.any(vgroup >= 0) else 0
     for i in range(len(vgroup)):
         if vgroup[i] < 0:
             vgroup[i] = next_gid
             next_gid += 1
     n_vgroups = int(np.max(vgroup)) + 1 if len(vgroup) else 0
+    complex_names = []
+    for complex_name in component_complex_names:
+        if complex_name not in complex_names:
+            complex_names.append(complex_name)
+    complex_index_by_name = {
+        complex_name: index for index, complex_name in enumerate(complex_names)
+    }
+    complex_site_labels = _unique_site_labels(complex_names)
+    broad_centroid_hierarchy_groups = []
+    hierarchical_vgroup_ids = set()
+    for component_indices in broad_order_component_indices:
+        group_ids = [int(vgroup[idx]) for idx in component_indices]
+        if len(set(group_ids)) != len(group_ids):
+            continue
+        hierarchical_vgroup_ids.update(group_ids)
+        anchor_group = -1
+        broad_centroid_hierarchy_groups.append(
+            {
+                "component_groups": group_ids,
+                "anchor_group": anchor_group,
+                "complex_index": complex_index_by_name[
+                    component_complex_names[component_indices[0]]
+                ],
+            }
+        )
+    nlr_vgroup_ids = []
+    nlr_vgroup_families = {family: [] for family in ("low", "high", "coronal")}
+    for group_id in range(n_vgroups):
+        members = np.where(vgroup == group_id)[0]
+        if not members.size or group_id in hierarchical_vgroup_ids:
+            continue
+        families = {narrow_family[idx] for idx in members}
+        family = next(iter(families)) if len(families) == 1 else None
+        if pool_narrow_centroids and family is not None:
+            nlr_vgroup_ids.append(group_id)
+            nlr_vgroup_families[family].append(group_id)
+    independent_vgroup_ids = [
+        group_id
+        for group_id in range(n_vgroups)
+        if group_id not in hierarchical_vgroup_ids
+        and group_id not in set(nlr_vgroup_ids)
+    ]
 
-    wgroup, _ = _compress_group_ids(windex, compnames)
+    wgroup, _ = _compress_group_ids(windex, kinematic_labels)
     next_gid = np.max(wgroup) + 1 if len(wgroup) and np.any(wgroup >= 0) else 0
     for i in range(len(wgroup)):
         if wgroup[i] < 0:
             wgroup[i] = next_gid
             next_gid += 1
     n_wgroups = int(np.max(wgroup)) + 1 if len(wgroup) else 0
+    broad_width_order_groups = []
+    broad_width_order_complex_indices = []
+    broad_width_order_site_labels = []
+    for component_indices in broad_order_component_indices:
+        group_ids = [int(wgroup[idx]) for idx in component_indices]
+        if len(set(group_ids)) == len(group_ids):
+            broad_width_order_groups.append(group_ids)
+            broad_width_order_complex_indices.append(
+                complex_index_by_name[component_complex_names[component_indices[0]]]
+            )
+            broad_width_order_site_labels.append(
+                complex_site_labels[
+                    complex_index_by_name[component_complex_names[component_indices[0]]]
+                ]
+            )
+    ordered_width_group_ids = {
+        group_id for group_ids in broad_width_order_groups for group_id in group_ids
+    }
+    nlr_wgroup_families = {family: [] for family in ("low", "high", "coronal")}
+    if pool_narrow_centroids:
+        for group_id in range(n_wgroups):
+            members = np.where(wgroup == group_id)[0]
+            families = {narrow_family[idx] for idx in members}
+            family = next(iter(families)) if len(families) == 1 else None
+            if family is not None and group_id not in ordered_width_group_ids:
+                nlr_wgroup_families[family].append(group_id)
+    pooled_width_group_ids = {
+        group_id
+        for group_ids in nlr_wgroup_families.values()
+        for group_id in group_ids
+    }
+    direct_width_group_ids = []
+    direct_width_raw_labels = []
+    for group_id in range(n_wgroups):
+        if group_id in ordered_width_group_ids or group_id in pooled_width_group_ids:
+            continue
+        members = np.where(wgroup == group_id)[0]
+        member_names = [str(names[idx]).lower() for idx in members]
+        is_wing_or_outflow = any(
+            name.rsplit("_", 1)[0].endswith("w")
+            or "wing" in name
+            or "outflow" in name
+            for name in member_names
+        )
+        if not is_wing_or_outflow:
+            continue
+        direct_width_group_ids.append(group_id)
+        if any("oiii" in name for name in member_names):
+            direct_width_raw_labels.append("OIII_wing")
+        else:
+            complex_name = component_complex_names[members[0]]
+            direct_width_raw_labels.append(f"{complex_name}_wing")
+    direct_width_site_labels = _unique_site_labels(direct_width_raw_labels)
+    direct_width_group_set = set(direct_width_group_ids)
+    unordered_width_group_ids = [
+        group_id for group_id in range(n_wgroups)
+        if group_id not in ordered_width_group_ids
+        and group_id not in pooled_width_group_ids
+        and group_id not in direct_width_group_set
+    ]
 
     fgroup, _ = _compress_group_ids(findex, compnames)
     flux_ratio = np.ones(len(fgroup), dtype=float)
@@ -2396,6 +3030,19 @@ def build_tied_line_meta_from_linelist(linelist, wave):
             flux_ratio[i] = 1.0
             next_gid += 1
     n_fgroups = int(np.max(fgroup)) + 1 if len(fgroup) else 0
+    amp_complex_groups = []
+    component_complex_array = np.asarray(component_complex_names, dtype=object)
+    for complex_index, complex_name in enumerate(complex_names):
+        component_ids = np.where(component_complex_array == complex_name)[0]
+        fgroup_ids = sorted(set(int(fgroup[idx]) for idx in component_ids))
+        amp_complex_groups.append(
+            {
+                "complex_index": complex_index,
+                "name": complex_name,
+                "site_label": complex_site_labels[complex_index],
+                "fgroup_ids": fgroup_ids,
+            }
+        )
 
     amp_init_group = np.zeros(n_fgroups, dtype=float)
     amp_min_group = np.zeros(n_fgroups, dtype=float)
@@ -2439,17 +3086,43 @@ def build_tied_line_meta_from_linelist(linelist, wave):
     return {
         'n_lines': len(ln_lambda0),
         'n_vgroups': n_vgroups,
+        'n_independent_vgroups': len(independent_vgroup_ids),
         'n_wgroups': n_wgroups,
+        'n_unordered_wgroups': len(unordered_width_group_ids),
+        'n_direct_wgroups': len(direct_width_group_ids),
         'n_fgroups': n_fgroups,
+        'n_line_complexes': len(complex_names),
         'ln_lambda0': _np_to_jnp(ln_lambda0),
         'vgroup': np.asarray(vgroup, dtype=int),
         'vgroup_jax': jnp.asarray(vgroup, dtype=jnp.int32),
+        'broad_centroid_hierarchy_groups': broad_centroid_hierarchy_groups,
+        'nlr_vgroup_ids': np.asarray(nlr_vgroup_ids, dtype=int),
+        'nlr_vgroup_families': {
+            family: np.asarray(group_ids, dtype=int)
+            for family, group_ids in nlr_vgroup_families.items()
+        },
+        'independent_vgroup_ids': np.asarray(independent_vgroup_ids, dtype=int),
         'wgroup': np.asarray(wgroup, dtype=int),
         'wgroup_jax': jnp.asarray(wgroup, dtype=jnp.int32),
+        'broad_width_order_groups': broad_width_order_groups,
+        'broad_width_order_complex_indices': broad_width_order_complex_indices,
+        'broad_width_order_site_labels': broad_width_order_site_labels,
+        'unordered_width_group_ids': np.asarray(unordered_width_group_ids, dtype=int),
+        'direct_width_groups': [
+            {"group_id": int(group_id), "site_label": site_label}
+            for group_id, site_label in zip(
+                direct_width_group_ids, direct_width_site_labels
+            )
+        ],
+        'nlr_wgroup_families': {
+            family: np.asarray(group_ids, dtype=int)
+            for family, group_ids in nlr_wgroup_families.items()
+        },
         'fgroup': np.asarray(fgroup, dtype=int),
         'fgroup_jax': jnp.asarray(fgroup, dtype=jnp.int32),
         'flux_ratio': np.asarray(flux_ratio, dtype=float),
         'flux_ratio_jax': _np_to_jnp(flux_ratio),
+        'amp_complex_groups': amp_complex_groups,
         'dmu_init_group': np.asarray(dmu_init_group, dtype=float),
         'dmu_init_group_jax': _np_to_jnp(dmu_init_group),
         'dmu_min_group': np.asarray(dmu_min_group, dtype=float),
@@ -2468,11 +3141,337 @@ def build_tied_line_meta_from_linelist(linelist, wave):
         'amp_min_group_jax': _np_to_jnp(amp_min_group),
         'amp_max_group': np.asarray(amp_max_group, dtype=float),
         'amp_max_group_jax': _np_to_jnp(amp_max_group),
+        'broad_mask': np.asarray(broad_mask, dtype=float),
         'broad_mask_jax': _np_to_jnp(broad_mask),
         'names': names,
         'compnames': compnames,
         'line_lambda': np.asarray(line_lambda, dtype=float),
     }
+
+
+@dataclass(frozen=True)
+class _HostComponentState:
+    fsps_weights_frac: Any
+    fsps_weights: Any
+    intrinsic_total: Any
+    intrinsic: Any
+    sigma_effective_kms: Any
+    aperture_scale: Any
+
+
+@dataclass(frozen=True)
+class _PSFComponentState:
+    delta_m: Any
+    eta: Any
+    scale: Any
+    agn: Any
+    galaxy: Any
+    line_broad: Any
+    line_narrow: Any
+    line_profiles: Any
+    line: Any
+    model: Any
+
+
+@dataclass(frozen=True)
+class _LineComponentState:
+    custom_models: Mapping[str, Any]
+    intrinsic: Any
+    broad_intrinsic: Any
+    narrow_intrinsic: Any
+    profiles: Any
+    broad_mask: Any
+    components_are_split: bool
+
+
+def _build_host_component(
+    wave,
+    host_wave,
+    host_lnwave,
+    templates,
+    fsps_grid,
+    prior_config,
+    host_amp,
+    z_qso,
+    sigma_inst_kms,
+    convolution_method,
+    *,
+    decompose_host,
+    host_sfh_model,
+):
+    """Sample and synthesize the host component on the spectral grid."""
+    ntemp = fsps_grid.templates.shape[1]
+    aperture_scale = jnp.asarray(1.0, dtype=jnp.float64)
+    if not decompose_host:
+        return _HostComponentState(
+            fsps_weights_frac=jnp.zeros((ntemp,)),
+            fsps_weights=jnp.zeros((ntemp,)),
+            intrinsic_total=jnp.zeros_like(wave),
+            intrinsic=jnp.zeros_like(wave),
+            sigma_effective_kms=jnp.asarray(0.0, dtype=jnp.float64),
+            aperture_scale=aperture_scale,
+        )
+
+    log_aperture_scale = _sample_log_host_aperture_scale(prior_config)
+    aperture_scale = jnp.exp(log_aperture_scale)
+    if host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
+        intrinsic_total_ext, fsps_weights, fsps_weights_frac = (
+            _delayed_sfh_host_spectrum(fsps_grid, prior_config, host_amp, z_qso)
+        )
+    elif host_sfh_model in {"flexible", "free", "template_weights", "ssp_weights"}:
+        tau_host = _sample_prior(prior_config, "tau_host", dist.HalfNormal(1.0))
+        raw_w_loc = _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp)
+        raw_w = numpyro.sample(
+            "fsps_weights_raw",
+            dist.Normal(raw_w_loc, jnp.maximum(tau_host, 1.0e-6)),
+        )
+        fsps_weights_frac = jax.nn.softmax(raw_w)
+        weights_total = host_amp * fsps_weights_frac
+        fsps_weights = aperture_scale * weights_total
+        intrinsic_total_ext = jnp.dot(templates, weights_total)
+    else:
+        raise ValueError("host_sfh_model must be one of: 'flexible', 'delayed'.")
+
+    gal_v_kms = _sample_prior(prior_config, "gal_v_kms", dist.Normal(0.0, 150.0))
+    gal_sigma_kms = _sample_positive_distribution(
+        prior_config,
+        value_key="gal_sigma_kms",
+        log_key="log_gal_sigma_kms",
+        default_value_distribution=dist.LogNormal(np.log(150.0), 0.4),
+        default_log_distribution=dist.Normal(np.log(150.0), 0.4),
+        default_to_log=True,
+    )
+    sigma_effective_kms = combine_gaussian_sigma(gal_sigma_kms, sigma_inst_kms)
+    broadened_ext = _shift_and_broaden_single_spectrum_lnlam(
+        host_lnwave,
+        intrinsic_total_ext,
+        gal_v_kms,
+        sigma_effective_kms,
+        convolution_method=convolution_method,
+    )
+    intrinsic_total = jnp.interp(
+        wave, host_wave, broadened_ext, left=0.0, right=0.0
+    )
+    return _HostComponentState(
+        fsps_weights_frac=fsps_weights_frac,
+        fsps_weights=fsps_weights,
+        intrinsic_total=intrinsic_total,
+        intrinsic=aperture_scale * intrinsic_total,
+        sigma_effective_kms=sigma_effective_kms,
+        aperture_scale=aperture_scale,
+    )
+
+
+def _build_psf_component(
+    wave,
+    z_qso,
+    agn_model,
+    gal_model,
+    gal_model_total,
+    line_model_broad,
+    line_model_narrow,
+    line_component_profiles,
+    line_component_broad_mask,
+    psf_mags,
+    psf_mag_errs,
+    psf_filter_curves,
+    *,
+    use_psf_phot,
+    decompose_host,
+):
+    """Construct the PSF-aperture model and, when requested, observe its bands."""
+    delta_m = jnp.asarray(0.0)
+    eta = jnp.asarray(1.0)
+    scale = jnp.asarray(1.0)
+    agn = agn_model
+    galaxy = gal_model
+    line_broad = line_model_broad
+    line_narrow = line_model_narrow
+    line_profiles = line_component_profiles
+    line = line_broad + line_narrow
+    model = agn + galaxy + line
+    if use_psf_phot:
+        delta_m = numpyro.sample("delta_m_psf_raw", dist.Normal(0.0, 0.5))
+        if decompose_host:
+            eta = numpyro.sample("eta_psf_raw", dist.Beta(2.0, 2.0))
+        scale = 10.0 ** (-0.4 * delta_m)
+        agn = scale * agn_model
+        galaxy = scale * eta * gal_model_total
+        line_broad = scale * line_model_broad
+        line_narrow = scale * eta * line_model_narrow
+        line = line_broad + line_narrow
+        if line_component_profiles.shape[0] > 0:
+            line_profiles = line_component_profiles * scale * (
+                line_component_broad_mask[:, None]
+                + eta * (1.0 - line_component_broad_mask[:, None])
+            )
+        model = agn + galaxy + line
+
+        wave_obs = wave * (1.0 + z_qso)
+        flam_obs = model / jnp.maximum(1.0 + z_qso, 1.0e-8)
+        mags = _np_to_jnp(psf_mags)
+        mag_errs = _np_to_jnp(psf_mag_errs)
+        filter_trans = _np_to_jnp(psf_filter_curves["trans"])
+        sigma_extra = numpyro.sample("sigma_phot_extra", dist.HalfNormal(0.05))
+        for index in range(filter_trans.shape[0]):
+            synthetic_mag = _synth_ab_mag_from_grid(
+                wave_obs, flam_obs, filter_trans[index]
+            )
+            sigma = jnp.sqrt(mag_errs[index] ** 2 + sigma_extra**2)
+            numpyro.sample(
+                f"psf_mag_obs_{index}",
+                dist.Normal(synthetic_mag, sigma),
+                obs=mags[index],
+            )
+    return _PSFComponentState(
+        delta_m=delta_m,
+        eta=eta,
+        scale=scale,
+        agn=agn,
+        galaxy=galaxy,
+        line_broad=line_broad,
+        line_narrow=line_narrow,
+        line_profiles=line_profiles,
+        line=line,
+        model=model,
+    )
+
+
+def _build_line_component(
+    wave,
+    lnwave,
+    tied_line_meta,
+    prior_config,
+    custom_line_components,
+    sigma_inst_ln,
+    convolution_method,
+    *,
+    use_lines,
+    apply_instrumental_resolution,
+    return_line_components,
+    use_psf_phot,
+    fit_reddening,
+    emit_deterministics,
+):
+    """Sample and synthesize built-in and custom emission-line components."""
+    custom_models = {}
+    custom_broad = jnp.zeros_like(wave)
+    custom_narrow = jnp.zeros_like(wave)
+    profiles = jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+    broad_mask = jnp.zeros((0,), dtype=wave.dtype)
+    for component in custom_line_components:
+        def sample_value(sample_dict, key, default=0.0):
+            cfg = prior_config.get(key, None)
+            return default if cfg is None else _sample_from_prior_config(key, cfg)
+
+        component_model = _evaluate_custom_line_component_jax(
+            wave, prior_config, component, sample_value
+        )
+        if apply_instrumental_resolution:
+            component_model = _convolve_velocity_space(
+                lnwave,
+                component_model,
+                sigma_inst_ln,
+                method=convolution_method,
+            )
+        custom_models[component.output_name] = component_model
+        if component.line_kind == "broad":
+            custom_broad = custom_broad + component_model
+        else:
+            custom_narrow = custom_narrow + component_model
+
+    components_are_split = bool(
+        return_line_components or use_psf_phot or fit_reddening
+    )
+    if not (use_lines and tied_line_meta["n_lines"] > 0):
+        return _LineComponentState(
+            custom_models=custom_models,
+            intrinsic=custom_broad + custom_narrow,
+            broad_intrinsic=custom_broad,
+            narrow_intrinsic=custom_narrow,
+            profiles=profiles,
+            broad_mask=broad_mask,
+            components_are_split=components_are_split,
+        )
+
+    dmu_group, sig_group, amp_group = _sample_tied_line_groups(
+        tied_line_meta, prior_config
+    )
+    vgroup = _line_meta_array(
+        tied_line_meta, "vgroup", jax_key="vgroup_jax", dtype=jnp.int32
+    )
+    wgroup = _line_meta_array(
+        tied_line_meta, "wgroup", jax_key="wgroup_jax", dtype=jnp.int32
+    )
+    fgroup = _line_meta_array(
+        tied_line_meta, "fgroup", jax_key="fgroup_jax", dtype=jnp.int32
+    )
+    dmu = dmu_group[vgroup]
+    sigs = sig_group[wgroup]
+    amps = amp_group[fgroup] * _line_meta_array(
+        tied_line_meta, "flux_ratio", jax_key="flux_ratio_jax"
+    )
+    mus = tied_line_meta["ln_lambda0"] + dmu
+    broad_mask = _line_meta_array(
+        tied_line_meta, "broad_mask", jax_key="broad_mask_jax"
+    )
+    effective_sigs = combine_gaussian_sigma(sigs, sigma_inst_ln)
+    effective_amps = (
+        amps
+        * sigs
+        / jnp.maximum(effective_sigs, 1.0e-30)
+        * jnp.exp(0.5 * (jnp.square(sigs) - jnp.square(effective_sigs)))
+    )
+    if components_are_split:
+        intrinsic, broad, narrow, profiles = _split_many_gauss_lnlam(
+            lnwave,
+            effective_amps,
+            mus,
+            effective_sigs,
+            broad_mask,
+            return_profiles=bool(emit_deterministics),
+        )
+        if profiles is None:
+            profiles = jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+        broad = broad + custom_broad
+        narrow = narrow + custom_narrow
+        intrinsic = broad + narrow
+    else:
+        intrinsic = (
+            _many_gauss_lnlam(lnwave, effective_amps, mus, effective_sigs)
+            + custom_broad
+            + custom_narrow
+        )
+        broad = jnp.zeros_like(wave)
+        narrow = jnp.zeros_like(wave)
+        profiles = (
+            effective_amps[:, None]
+            * jnp.exp(
+                -0.5
+                * (
+                    (lnwave[None, :] - mus[:, None])
+                    / effective_sigs[:, None]
+                )
+                ** 2
+            )
+            if emit_deterministics
+            else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+        )
+    if emit_deterministics:
+        numpyro.deterministic("line_amp_per_component", amps)
+        numpyro.deterministic("line_mu_per_component", mus)
+        numpyro.deterministic("line_sig_per_component", sigs)
+        numpyro.deterministic("line_sig_effective_per_component", effective_sigs)
+        numpyro.deterministic("line_amp_effective_per_component", effective_amps)
+    return _LineComponentState(
+        custom_models=custom_models,
+        intrinsic=intrinsic,
+        broad_intrinsic=broad,
+        narrow_intrinsic=narrow,
+        profiles=profiles,
+        broad_mask=broad_mask,
+        components_are_split=components_are_split,
+    )
 
 
 def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_grid,
@@ -2488,6 +3487,16 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                          custom_components: Sequence[CustomComponentSpec] | None = None,
                          custom_line_components: Sequence[CustomLineComponentSpec] | None = None):
     """Joint AGN+host spectral forward model for NumPyro inference.
+
+    Intrinsic reddening behavior
+    ----------------------------
+    When ``fit_reddening=True``, a single fitted E(B-V) attenuation screen is
+    applied to the power-law continuum, Fe II templates, Balmer continuum,
+    custom nuclear continuum components, and broad emission lines. Narrow
+    emission lines and host-galaxy starlight are not attenuated by this screen.
+    This is distinct from the separately configured Milky Way foreground
+    correction. Because broad-line amplitudes are intrinsic (pre-attenuation),
+    they can be posterior-correlated with E(B-V).
 
     Parameters
     ----------
@@ -2527,8 +3536,8 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         fit_poly value.
     fit_poly_order : object
         fit_poly_order value.
-    fit_reddening : object
-        fit_reddening value.
+    fit_reddening : bool
+        Enable the intrinsic AGN E(B-V) screen described above.
     z_qso : object
         z_qso value.
     psf_mags : object
@@ -2664,22 +3673,104 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         frac_host_sample = jnp.asarray(jnp.nan)
     pl_pivot = _resolve_pl_pivot(wave, prior_config)
     if fit_pl:
-        pl_norm = _sample_prior(prior_config, 'PL_norm', dist.HalfNormal(1.0))
-        pl_slope = _sample_prior(prior_config, 'PL_slope', dist.Normal(0.0, 1.0))
-        reddening_a2500 = (
-            _sample_positive_distribution(
+        reddening_alpha = float(prior_config.get('reddening_alpha', 1.2))
+        reddening_uv_ref = float(prior_config.get('reddening_uv_ref', 2500.0))
+        reddening_norm = ((4400.0 / reddening_uv_ref) ** (-reddening_alpha)
+                          - (5500.0 / reddening_uv_ref) ** (-reddening_alpha))
+        if fit_reddening and ('ebv' in prior_config or 'log_ebv' in prior_config):
+            ebv = _sample_positive_distribution(
+                prior_config,
+                value_key='ebv',
+                log_key='log_ebv',
+                default_value_distribution=dist.LogNormal(np.log(0.1 * reddening_norm), 0.6),
+                default_log_distribution=dist.Normal(np.log(0.1 * reddening_norm), 0.6),
+                default_to_log=True,
+            )
+            reddening_a2500 = numpyro.deterministic('reddening_a2500', ebv / reddening_norm)
+        elif fit_reddening:
+            # Accept legacy prior dictionaries expressed in A(2500).
+            reddening_a2500 = _sample_positive_distribution(
                 prior_config,
                 value_key='reddening_a2500',
                 log_key='log_reddening_a2500',
-                default_value_distribution=dist.LogNormal(np.log(0.1), 1.0),
-                default_log_distribution=dist.Normal(np.log(0.1), 1.0),
+                default_value_distribution=dist.LogNormal(np.log(0.1), 0.6),
+                default_log_distribution=dist.Normal(np.log(0.1), 0.6),
                 default_to_log=True,
             )
-            if fit_reddening else jnp.asarray(0.0)
+            ebv = numpyro.deterministic('ebv', reddening_a2500 * reddening_norm)
+        else:
+            ebv = jnp.asarray(0.0)
+            reddening_a2500 = jnp.asarray(0.0)
+
+        residualize_reddening = bool(
+            fit_reddening
+            and prior_config.get('residualize_reddening_geometry', False)
+            and _fixed_prior_value(prior_config, 'PL_norm', None) is None
+            and _fixed_prior_value(prior_config, 'PL_slope', None) is None
         )
+        if residualize_reddening:
+            # Sample the attenuated power-law level and slope. Decomposing the
+            # fixed reddening curve into constant, linear, and residual pieces
+            # removes its exactly degenerate directions while preserving the
+            # original physical PL_norm/PL_slope priors below.
+            x = jnp.log(jnp.clip(wave / pl_pivot, 1.0e-12, None))
+            raw_curve = (jnp.clip(wave, 1.0e-12, None) / reddening_uv_ref) ** (-reddening_alpha)
+            k_ebv = raw_curve / reddening_norm
+            design = jnp.stack([jnp.ones_like(x), x], axis=1)
+            weight = 1.0 / jnp.maximum(err**2, 1.0e-24)
+            projection = jnp.linalg.solve(
+                design.T @ (weight[:, None] * design),
+                design.T @ (weight * k_ebv),
+            )
+            attenuation_coefficient = 0.4 * np.log(10.0)
+            norm_prior = _prior_distribution(prior_config, 'PL_norm', dist.HalfNormal(1.0))
+            slope_prior = _prior_distribution(prior_config, 'PL_slope', dist.Normal(0.0, 1.0))
+            probabilities = jnp.asarray([0.16, 0.5, 0.84])
+            norm_quantiles = norm_prior.icdf(probabilities)
+            slope_quantiles = slope_prior.icdf(probabilities)
+            log_norm_scale = jnp.maximum(
+                0.5 * (jnp.log(norm_quantiles[2]) - jnp.log(norm_quantiles[0])),
+                1.0e-3,
+            )
+            slope_scale = jnp.maximum(0.5 * (slope_quantiles[2] - slope_quantiles[0]), 1.0e-3)
+            ebv_reference = 0.1 * reddening_norm
+            apparent_log_norm_loc = (
+                jnp.log(norm_quantiles[1])
+                - attenuation_coefficient * ebv_reference * projection[0]
+            )
+            apparent_slope_loc = (
+                slope_quantiles[1]
+                - attenuation_coefficient * ebv_reference * projection[1]
+            )
+            apparent_log_norm_std = numpyro.sample(
+                'PL_apparent_log_norm_std', dist.Normal(0.0, 1.0)
+            )
+            apparent_slope_std = numpyro.sample(
+                'PL_apparent_slope_std', dist.Normal(0.0, 1.0)
+            )
+            apparent_log_norm = apparent_log_norm_loc + log_norm_scale * apparent_log_norm_std
+            apparent_slope = apparent_slope_loc + slope_scale * apparent_slope_std
+            pl_norm = jnp.exp(
+                apparent_log_norm + attenuation_coefficient * ebv * projection[0]
+            )
+            pl_slope = apparent_slope + attenuation_coefficient * ebv * projection[1]
+            numpyro.factor(
+                'PL_physical_prior',
+                norm_prior.log_prob(pl_norm)
+                + jnp.log(pl_norm)
+                + slope_prior.log_prob(pl_slope)
+                - dist.Normal(0.0, 1.0).log_prob(apparent_log_norm_std)
+                - dist.Normal(0.0, 1.0).log_prob(apparent_slope_std),
+            )
+            pl_norm = numpyro.deterministic('PL_norm', pl_norm)
+            pl_slope = numpyro.deterministic('PL_slope', pl_slope)
+        else:
+            pl_norm = _sample_prior(prior_config, 'PL_norm', dist.HalfNormal(1.0))
+            pl_slope = _sample_prior(prior_config, 'PL_slope', dist.Normal(0.0, 1.0))
     else:
         pl_norm = jnp.asarray(0.0)
         pl_slope = jnp.asarray(0.0)
+        ebv = jnp.asarray(0.0)
         reddening_a2500 = jnp.asarray(0.0)
 
     if fit_fe:
@@ -2757,7 +3848,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     reddening_atten = (
         _smc_like_reddening_jax(
             wave,
-            reddening_a2500,
+            ebv,
             uv_ref=float(prior_config.get('reddening_uv_ref', 2500.0)),
             alpha=float(prior_config.get('reddening_alpha', 1.2)),
         )
@@ -2834,20 +3925,26 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     if fit_poly:
         poly_order = int(max(fit_poly_order, 0))
         w0 = _resolve_poly_pivot(wave, prior_config)
-        x = (wave - w0) / jnp.maximum(w0, 1.0)
-        # Global low-order tilt
+        basis_config = prior_config.get("poly_basis", None)
+        if basis_config is not None:
+            poly_basis = _orthogonal_polynomial_basis_jax(wave, basis_config)
+        else:
+            x = (wave - w0) / jnp.maximum(w0, 1.0)
+            fallback = []
+            for k in range(2, poly_order + 1):
+                raw = x ** k
+                fallback.append(raw / jnp.maximum(jnp.max(jnp.abs(raw)), 1.0e-12))
+            poly_basis = (
+                jnp.stack(fallback, axis=0)
+                if fallback
+                else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
+            )
         poly_base = jnp.ones_like(wave)
-        for k in range(1, poly_order + 1):
-            ck = _sample_prior(prior_config, f'poly_c{k}', dist.Normal(0.0, 0.1))
-            poly_base = poly_base + ck * (x ** k)
+        for basis_idx, k in enumerate(range(2, poly_order + 1)):
+            ck = _sample_prior(prior_config, f'poly_c{k}', dist.Normal(0.0, 0.03))
+            poly_base = poly_base + ck * poly_basis[basis_idx]
 
         poly_model = jnp.clip(poly_base, 0.2, 5.0)
-        pl_model = pl_model * poly_model
-        fe_uv_model = fe_uv_model * poly_model
-        fe_op_model = fe_op_model * poly_model
-        bc_model = bc_model * poly_model
-        custom_models = {name: model * poly_model for name, model in custom_models.items()}
-        custom_total_model = custom_total_model * poly_model
     agn_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total_model
 
     log_lambda_llambda_agn = {}
@@ -2862,7 +3959,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             if fit_reddening:
                 pl_flux_lum = pl_flux_lum * _smc_like_reddening_jax(
                     jnp.asarray(wave_lum),
-                    reddening_a2500,
+                    ebv,
                     uv_ref=float(prior_config.get('reddening_uv_ref', 2500.0)),
                     alpha=float(prior_config.get('reddening_alpha', 1.2)),
                 )
@@ -2873,158 +3970,49 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             )
         else:
             log_lambda_llambda_agn[wave_lum] = jnp.asarray(jnp.nan)
-    ntemp = fsps_grid.templates.shape[1]
-    host_aperture_scale = jnp.asarray(1.0, dtype=jnp.float64)
-    if decompose_host:
-        log_host_aperture_scale = _sample_log_host_aperture_scale(prior_config)
-        host_aperture_scale = jnp.exp(log_host_aperture_scale)
-        if host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
-            gal_intrinsic_total_ext, fsps_weights, fsps_weights_frac = _delayed_sfh_host_spectrum(
-                fsps_grid,
-                prior_config,
-                host_amp,
-                z_qso,
-            )
-        elif host_sfh_model in {"flexible", "free", "template_weights", "ssp_weights"}:
-            tau_host = _sample_prior(prior_config, 'tau_host', dist.HalfNormal(1.0))
-            tau_host_eff = jnp.maximum(tau_host, 1e-6)
-            raw_w_loc = _flexible_host_raw_weight_locs(fsps_grid, prior_config, ntemp)
-            raw_w = numpyro.sample('fsps_weights_raw', dist.Normal(raw_w_loc, tau_host_eff))
-            fsps_weights_frac = jax.nn.softmax(raw_w)
-            fsps_weights_total = host_amp * fsps_weights_frac
-            fsps_weights = host_aperture_scale * fsps_weights_total
-            gal_intrinsic_total_ext = jnp.dot(templates, fsps_weights_total)
-        else:
-            raise ValueError("host_sfh_model must be one of: 'flexible', 'delayed'.")
-        gal_v_kms = _sample_prior(prior_config, 'gal_v_kms', dist.Normal(0.0, 150.0))
-        gal_sigma_kms = _sample_positive_distribution(
-            prior_config,
-            value_key='gal_sigma_kms',
-            log_key='log_gal_sigma_kms',
-            default_value_distribution=dist.LogNormal(np.log(150.0), 0.4),
-            default_log_distribution=dist.Normal(np.log(150.0), 0.4),
-            default_to_log=True,
-        )
-        gal_sigma_effective_kms = combine_gaussian_sigma(gal_sigma_kms, sigma_inst_kms)
-        gal_model_intrinsic_total_ext = _shift_and_broaden_single_spectrum_lnlam(
-            host_lnwave,
-            gal_intrinsic_total_ext,
-            gal_v_kms,
-            gal_sigma_effective_kms,
-            convolution_method=convolution_method,
-        )
-        gal_model_intrinsic_total = jnp.interp(
-            wave,
-            host_wave,
-            gal_model_intrinsic_total_ext,
-            left=0.0,
-            right=0.0,
-        )
-        gal_model_intrinsic = host_aperture_scale * gal_model_intrinsic_total
-    else:
-        fsps_weights_frac = jnp.zeros((ntemp,))
-        fsps_weights = jnp.zeros((ntemp,))
-        gal_model_intrinsic_total = jnp.zeros_like(wave)
-        gal_model_intrinsic = jnp.zeros_like(wave)
-        gal_sigma_effective_kms = jnp.asarray(0.0, dtype=jnp.float64)
+    host_state = _build_host_component(
+        wave,
+        host_wave,
+        host_lnwave,
+        templates,
+        fsps_grid,
+        prior_config,
+        host_amp,
+        z_qso,
+        sigma_inst_kms,
+        convolution_method,
+        decompose_host=decompose_host,
+        host_sfh_model=host_sfh_model,
+    )
+    fsps_weights_frac = host_state.fsps_weights_frac
+    fsps_weights = host_state.fsps_weights
+    gal_model_intrinsic_total = host_state.intrinsic_total
+    gal_model_intrinsic = host_state.intrinsic
+    gal_sigma_effective_kms = host_state.sigma_effective_kms
+    host_aperture_scale = host_state.aperture_scale
 
-    custom_line_models = {}
-    custom_line_broad_intrinsic = jnp.zeros_like(wave)
-    custom_line_narrow_intrinsic = jnp.zeros_like(wave)
-    line_component_profiles = jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
-    line_component_broad_mask = jnp.zeros((0,), dtype=wave.dtype)
-    for comp in custom_line_components:
-        def _sample_line_value(sample_dict, key, default=0.0):
-            """Sample one custom line-component parameter from prior config.
-
-            Parameters
-            ----------
-            sample_dict : object
-                sample_dict value.
-            key : object
-                key value.
-            default : object
-                default value.
-            """
-            cfg = prior_config.get(key, None)
-            if cfg is None:
-                return default
-            return _sample_from_prior_config(key, cfg)
-
-        custom_line_model = _evaluate_custom_line_component_jax(wave, prior_config, comp, _sample_line_value)
-        if apply_instrumental_resolution:
-            custom_line_model = _convolve_velocity_space(
-                lnwave,
-                custom_line_model,
-                sigma_inst_ln,
-                method=convolution_method,
-            )
-        custom_line_models[comp.output_name] = custom_line_model
-        if comp.line_kind == 'broad':
-            custom_line_broad_intrinsic = custom_line_broad_intrinsic + custom_line_model
-        else:
-            custom_line_narrow_intrinsic = custom_line_narrow_intrinsic + custom_line_model
-
-    line_components_are_split = return_line_components or use_psf_phot or fit_reddening
-    if use_lines and tied_line_meta['n_lines'] > 0:
-        dmu_group, sig_group, amp_group = _sample_tied_line_groups(
-            tied_line_meta,
-            prior_config,
-        )
-
-        vgroup = _line_meta_array(tied_line_meta, 'vgroup', jax_key='vgroup_jax', dtype=jnp.int32)
-        wgroup = _line_meta_array(tied_line_meta, 'wgroup', jax_key='wgroup_jax', dtype=jnp.int32)
-        fgroup = _line_meta_array(tied_line_meta, 'fgroup', jax_key='fgroup_jax', dtype=jnp.int32)
-        dmu = dmu_group[vgroup]
-        sigs = sig_group[wgroup]
-        amps = amp_group[fgroup] * _line_meta_array(tied_line_meta, 'flux_ratio', jax_key='flux_ratio_jax')
-        mus = tied_line_meta['ln_lambda0'] + dmu
-        line_component_broad_mask = _line_meta_array(tied_line_meta, 'broad_mask', jax_key='broad_mask_jax')
-        sigs_effective = combine_gaussian_sigma(sigs, sigma_inst_ln)
-        amps_effective = (
-            amps
-            * sigs / jnp.maximum(sigs_effective, 1.0e-30)
-            * jnp.exp(0.5 * (jnp.square(sigs) - jnp.square(sigs_effective)))
-        )
-
-        if line_components_are_split:
-            (
-                line_model_intrinsic,
-                line_model_broad_intrinsic,
-                line_model_narrow_intrinsic,
-                line_component_profiles,
-            ) = _split_many_gauss_lnlam(
-                lnwave,
-                amps_effective,
-                mus,
-                sigs_effective,
-                line_component_broad_mask,
-                return_profiles=bool(emit_deterministics),
-            )
-            if line_component_profiles is None:
-                line_component_profiles = jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
-            line_model_broad_intrinsic = line_model_broad_intrinsic + custom_line_broad_intrinsic
-            line_model_narrow_intrinsic = line_model_narrow_intrinsic + custom_line_narrow_intrinsic
-            line_model_intrinsic = line_model_broad_intrinsic + line_model_narrow_intrinsic
-        else:
-            line_model_intrinsic = _many_gauss_lnlam(lnwave, amps_effective, mus, sigs_effective) + custom_line_broad_intrinsic + custom_line_narrow_intrinsic
-            line_model_broad_intrinsic = jnp.zeros_like(wave)
-            line_model_narrow_intrinsic = jnp.zeros_like(wave)
-            line_component_profiles = (
-                amps_effective[:, None] * jnp.exp(-0.5 * ((lnwave[None, :] - mus[:, None]) / sigs_effective[:, None]) ** 2)
-                if emit_deterministics
-                else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
-            )
-        if emit_deterministics:
-            numpyro.deterministic('line_amp_per_component', amps)
-            numpyro.deterministic('line_mu_per_component', mus)
-            numpyro.deterministic('line_sig_per_component', sigs)
-            numpyro.deterministic('line_sig_effective_per_component', sigs_effective)
-            numpyro.deterministic('line_amp_effective_per_component', amps_effective)
-    else:
-        line_model_broad_intrinsic = custom_line_broad_intrinsic
-        line_model_narrow_intrinsic = custom_line_narrow_intrinsic
-        line_model_intrinsic = custom_line_broad_intrinsic + custom_line_narrow_intrinsic
+    line_state = _build_line_component(
+        wave,
+        lnwave,
+        tied_line_meta,
+        prior_config,
+        custom_line_components,
+        sigma_inst_ln,
+        convolution_method,
+        use_lines=use_lines,
+        apply_instrumental_resolution=apply_instrumental_resolution,
+        return_line_components=return_line_components,
+        use_psf_phot=use_psf_phot,
+        fit_reddening=fit_reddening,
+        emit_deterministics=emit_deterministics,
+    )
+    custom_line_models = dict(line_state.custom_models)
+    line_model_intrinsic = line_state.intrinsic
+    line_model_broad_intrinsic = line_state.broad_intrinsic
+    line_model_narrow_intrinsic = line_state.narrow_intrinsic
+    line_component_profiles = line_state.profiles
+    line_component_broad_mask = line_state.broad_mask
+    line_components_are_split = line_state.components_are_split
 
     gal_model_total = gal_model_intrinsic_total
     gal_model = gal_model_intrinsic
@@ -3042,6 +4030,15 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         for comp in custom_line_components
     }
     if fit_poly:
+        # Residual flux calibration acts on the complete astrophysical model,
+        # including host light and emission lines.
+        agn_model = agn_model * poly_model
+        pl_model = pl_model * poly_model
+        fe_uv_model = fe_uv_model * poly_model
+        fe_op_model = fe_op_model * poly_model
+        bc_model = bc_model * poly_model
+        custom_models = {name: model * poly_model for name, model in custom_models.items()}
+        custom_total_model = custom_total_model * poly_model
         gal_model_total = gal_model_total * poly_model
         gal_model = gal_model * poly_model
         if line_components_are_split:
@@ -3125,50 +4122,50 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         host_amp_out = jnp.asarray(0.0)
 
     frac_jitter = _sample_prior(prior_config, 'frac_jitter', dist.HalfNormal(0.02))
-    add_jitter = numpyro.sample('add_jitter', _halfnormal_prior(prior_config, 'add_jitter', 0.1, ref_scale=jnp.mean(err)))
+    frac_fe_jitter = _sample_prior(prior_config, 'frac_fe_jitter', dist.Delta(0.20))
+    add_jitter = _sample_prior(
+        prior_config,
+        'add_jitter',
+        _halfnormal_prior(prior_config, 'add_jitter', 0.1, ref_scale=jnp.mean(err)),
+    )
 
     continuum_model = agn_model + gal_model
     model = continuum_model + line_model
-    sigma_tot = jnp.sqrt(err**2 + (frac_jitter * jnp.abs(model))**2 + add_jitter**2)
+    fe_model = fe_uv_model + fe_op_model
+    sigma_tot = jnp.sqrt(
+        err**2
+        + (frac_jitter * jnp.abs(model))**2
+        + (frac_fe_jitter * jnp.abs(fe_model))**2
+        + add_jitter**2
+    )
     fiber_model = model
 
-    delta_m_psf = jnp.asarray(0.0)
-    eta_psf = jnp.asarray(1.0)
-    scale_psf = jnp.asarray(1.0)
-    agn_model_psf = agn_model
-    gal_model_psf = gal_model
-    line_model_broad_psf = line_model_broad
-    line_model_narrow_psf = line_model_narrow
-    line_model_psf = line_model_broad_psf + line_model_narrow_psf
-    line_component_profiles_psf = line_component_profiles
-    psf_model = agn_model_psf + gal_model_psf + line_model_psf
-    if use_psf_phot:
-        delta_m_psf = numpyro.sample('delta_m_psf_raw', dist.Normal(0.0, 0.5))
-        if decompose_host:
-            eta_psf = numpyro.sample('eta_psf_raw', dist.Beta(2.0, 2.0))
-        scale_psf = 10.0 ** (-0.4 * delta_m_psf)
-        agn_model_psf = scale_psf * agn_model
-        gal_model_psf = scale_psf * eta_psf * gal_model_total
-        line_model_broad_psf = scale_psf * line_model_broad
-        line_model_narrow_psf = scale_psf * eta_psf * line_model_narrow
-        line_model_psf = line_model_broad_psf + line_model_narrow_psf
-        if line_component_profiles.shape[0] > 0:
-            line_component_profiles_psf = line_component_profiles * scale_psf * (
-                line_component_broad_mask[:, None]
-                + eta_psf * (1.0 - line_component_broad_mask[:, None])
-            )
-        psf_model = agn_model_psf + gal_model_psf + line_model_psf
-
-        wave_obs = wave * (1.0 + z_qso)
-        flam_psf_obs = psf_model / jnp.maximum(1.0 + z_qso, 1e-8)
-        psf_mags = _np_to_jnp(psf_mags)
-        psf_mag_errs = _np_to_jnp(psf_mag_errs)
-        psf_filter_trans = _np_to_jnp(psf_filter_curves['trans'])
-        sigma_phot_extra = numpyro.sample('sigma_phot_extra', dist.HalfNormal(0.05))
-        for i in range(psf_filter_trans.shape[0]):
-            m_syn = _synth_ab_mag_from_grid(wave_obs, flam_psf_obs, psf_filter_trans[i])
-            sig = jnp.sqrt(psf_mag_errs[i] ** 2 + sigma_phot_extra ** 2)
-            numpyro.sample(f'psf_mag_obs_{i}', dist.Normal(m_syn, sig), obs=psf_mags[i])
+    psf_state = _build_psf_component(
+        wave,
+        z_qso,
+        agn_model,
+        gal_model,
+        gal_model_total,
+        line_model_broad,
+        line_model_narrow,
+        line_component_profiles,
+        line_component_broad_mask,
+        psf_mags,
+        psf_mag_errs,
+        psf_filter_curves,
+        use_psf_phot=use_psf_phot,
+        decompose_host=decompose_host,
+    )
+    delta_m_psf = psf_state.delta_m
+    eta_psf = psf_state.eta
+    scale_psf = psf_state.scale
+    agn_model_psf = psf_state.agn
+    gal_model_psf = psf_state.galaxy
+    line_model_broad_psf = psf_state.line_broad
+    line_model_narrow_psf = psf_state.line_narrow
+    line_component_profiles_psf = psf_state.line_profiles
+    line_model_psf = psf_state.line
+    psf_model = psf_state.model
 
     if emit_deterministics:
         numpyro.deterministic('host_amp', host_amp_out)
@@ -3176,6 +4173,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
             numpyro.deterministic('log_frac_host', log_frac_host)
         numpyro.deterministic('frac_host', frac_host)
     if emit_deterministics and not (fit_pl and fit_reddening):
+        numpyro.deterministic('ebv', ebv)
         numpyro.deterministic('reddening_a2500', reddening_a2500)
     if emit_deterministics:
         numpyro.deterministic('f_pl_model', pl_model)
@@ -3203,6 +4201,7 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         numpyro.deterministic('line_model', line_model)
         numpyro.deterministic('continuum_model', continuum_model)
         numpyro.deterministic('model', model)
+        numpyro.deterministic('sigma_tot', sigma_tot)
         numpyro.deterministic('delta_m_psf', delta_m_psf)
         numpyro.deterministic('eta_psf', eta_psf)
         numpyro.deterministic('scale_psf', scale_psf)

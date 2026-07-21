@@ -7,7 +7,6 @@ from jaxqsofit.config import (
     BALConfig,
     ContinuumConfig,
     ContinuumPriorConfig,
-    ErrorScaledHalfNormalPrior,
     FeIIPriorConfig,
     FitConfig,
     HostConfig,
@@ -22,6 +21,7 @@ from jaxqsofit.defaults import (
     DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS,
     DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS,
     _build_default_prior_config as build_default_prior_config,
+    append_optional_line_rows,
     build_default_bal_components,
 )
 
@@ -42,6 +42,20 @@ def test_prior_config_object_exposes_model_mapping():
     assert mapping["line_dmu_scale_mult"] == 0.2
     assert float(mapping["log_Fe_uv_FWHM"].scale) == 0.2
     assert isinstance(mapping["PL_slope"], dist.Normal)
+
+
+def test_feii_fractional_error_maps_to_likelihood_site():
+    prior = PriorConfig(
+        feii=FeIIPriorConfig(
+            fractional_error=dist.TruncatedNormal(0.2, 0.05, low=0.0, high=0.5)
+        )
+    )
+
+    mapping = prior.to_mapping()
+
+    assert mapping["frac_fe_jitter"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert np.isclose(mapping["frac_fe_jitter"].base_dist.loc, 0.2)
+    assert np.isclose(mapping["frac_fe_jitter"].base_dist.scale, 0.05)
 
 
 def test_fit_config_to_dict_serializes_numpyro_priors():
@@ -115,14 +129,33 @@ def test_fit_config_coerces_agn_and_line_mappings():
     assert cfg.lines.use_broad_lines is False
 
 
+def test_line_config_owns_optional_builtin_line_switches():
+    lines = LineConfig(
+        include_elg_narrow_lines=True,
+        include_high_ionization_lines=True,
+    )
+    assert lines.include_elg_narrow_lines is True
+    assert lines.include_high_ionization_lines is True
+
+    prior = PriorConfig.from_spectrum(flux=np.array([1.0, 2.0, 3.0])).to_mapping()
+    append_optional_line_rows(
+        prior,
+        np.array([1.0, 2.0, 3.0]),
+        include_elg_narrow_lines=lines.include_elg_narrow_lines,
+        include_high_ionization_lines=lines.include_high_ionization_lines,
+    )
+    names = {row["linename"] for row in prior["line"]["table"]}
+    assert "OII3726" in names
+    assert "NeV3346" in names
+    assert "FeX6374" in names
+
+
 def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     flux = np.array([1.0, 2.0, 3.0], dtype=float)
 
     prior = PriorConfig.from_spectrum(
         flux=flux,
         redshift=1.0,
-        include_high_ionization_lines=False,
-        include_elg_narrow_lines=False,
     )
     prior.powerlaw.slope = dist.TruncatedNormal(loc=-1.5, scale=0.3, low=-3.5, high=0.5)
     prior.fe.uv_norm = dist.LogNormal(np.log(max(1.0e-3 * np.median(np.abs(flux)), 1.0e-10)), 0.04)
@@ -218,7 +251,7 @@ def test_build_default_prior_config_has_expected_keys():
         'PL_slope',
         'PL_pivot',
         'poly_pivot',
-        'log_reddening_a2500',
+        'log_ebv',
         'log_frac_host',
         'tau_host',
         'raw_w',
@@ -244,7 +277,7 @@ def test_build_default_prior_config_has_expected_keys():
     }
     assert isinstance(mapping["log_sfh_tau_over_age"], dist.Normal)
     assert mapping["log_gal_sigma_kms"].__class__.__name__ == "TwoSidedTruncatedDistribution"
-    assert isinstance(mapping["log_reddening_a2500"], dist.Normal)
+    assert isinstance(mapping["log_ebv"], dist.Normal)
 
 
 def test_build_default_prior_config_scales_with_flux_median():
@@ -260,6 +293,19 @@ def test_build_default_prior_config_scales_with_flux_median():
     assert isinstance(mapping['log_cont_norm'], dist.LogNormal)
     assert isinstance(mapping['PL_slope'], dist.Normal)
     assert isinstance(mapping['tau_host'], dist.HalfNormal)
+
+
+def test_default_line_initializations_are_interior_to_scaled_bounds():
+    mapping = build_default_prior_config(np.array([50.0, 75.0, 125.0], dtype=float)).to_mapping()
+    rows = mapping["line"]["table"]
+
+    for row in rows:
+        span = row["maxsca"] - row["minsca"]
+        expected_fraction = 0.05 if "_br" in row["linename"].lower() else 0.02
+        assert span > 0.0
+        assert row["inisca"] > row["minsca"]
+        assert row["inisca"] < row["maxsca"]
+        assert (row["inisca"] - row["minsca"]) / span >= expected_fraction - 1e-12
 
 
 def test_build_default_prior_config_accepts_manual_pl_pivot():
@@ -292,7 +338,8 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     assert isinstance(mapping["log_Fe_op_FWHM"], dist.LogNormal)
     assert isinstance(mapping["Fe_uv_shift"], dist.Normal)
     assert isinstance(mapping["frac_jitter"], dist.HalfNormal)
-    assert isinstance(mapping["add_jitter"], ErrorScaledHalfNormalPrior)
+    assert mapping["frac_fe_jitter"] == {"dist": "Delta", "value": 0.20}
+    assert mapping["add_jitter"] == {"dist": "Delta", "value": 0.0}
 
 
 def test_build_default_bal_components_exposes_common_bal_lines():

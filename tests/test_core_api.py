@@ -347,6 +347,33 @@ def test_fit_dispatch_nuts(monkeypatch):
     assert called['kwargs']['psf_filter_curves']['trans'].shape == (2, q.lam.size)
 
 
+def test_line_complex_dense_mass_blocks_group_local_latents():
+    tied_line_meta = {
+        "amp_complex_groups": [
+            {"complex_index": 0, "fgroup_ids": [0, 1, 2]},
+            {"complex_index": 1, "fgroup_ids": [3]},
+        ],
+        "broad_width_order_complex_indices": [0],
+        "broad_centroid_hierarchy_groups": [
+            {"complex_index": 0, "component_groups": [0, 1]}
+        ],
+    }
+
+    blocks = coremod._line_complex_dense_mass_blocks(
+        tied_line_meta, standardized_amplitudes=True
+    )
+
+    assert blocks == [
+        (
+            "line_amp_complex_0_std",
+            "line_ordered_width_logits_0_std",
+            "line_broad_center_0_std",
+            "line_broad_relative_offsets_0_std",
+        ),
+        ("line_amp_complex_1_std",),
+    ]
+
+
 def test_fit_dispatch_nuts_dereddens_psf_phot_when_enabled(monkeypatch):
     lam, flux, err = _make_wide_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1, ra=150.0, dec=2.0)
@@ -588,7 +615,9 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
 
 
 def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
-    lam, flux, err = _make_wide_spectrum()
+    lam = np.linspace(2500.0, 10000.0, 256)
+    flux = 40.0 + 0.0015 * (lam - 6000.0)
+    err = np.full_like(flux, 0.4)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
     q.wave = lam
     q.flux = flux
@@ -673,6 +702,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
 
     assert len(svi_calls) == 2
     stage1_keep = q.init_stage1_keep_mask
+    assert not stage1_keep[np.argmin(np.abs(q.wave - 2798.75))]
     assert svi_calls[0]["wave"].shape[0] == int(np.sum(stage1_keep))
     assert svi_calls[0]["psf_filter_curves"]["trans"].shape == (2, int(np.sum(stage1_keep)))
     assert svi_calls[1]["wave"].shape[0] == q.wave.size
@@ -756,11 +786,20 @@ def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeyp
 
     assert len(init_values_seen) == 2
     stage2_values = init_values_seen[1]
-    assert np.allclose(stage2_values["line_dmu_group_std"], 0.0)
+    assert np.allclose(stage2_values["line_dmu_independent_group_std"], 0.0)
     assert np.allclose(stage2_values["line_log_fwhm_delta_group_std"], 0.0)
-    assert np.all(stage2_values["line_amp_group"] > 0.0)
+    amp_sites = [
+        value
+        for key, value in stage2_values.items()
+        if key.startswith("line_amp_")
+        and key != "line_amp_group"
+        and not key.endswith("_std")
+    ]
+    assert amp_sites
+    assert all(np.all(value > 0.0) for value in amp_sites)
     assert np.isclose(stage2_values["line_log_broad_fwhm_std"], 0.0)
-    assert np.isclose(stage2_values["line_log_narrow_fwhm_std"], 0.0)
+    assert "line_log_narrow_fwhm_std" not in stage2_values
+    assert np.isclose(stage2_values["line_OIII_wing_log_fwhm_std"], 0.0)
 
 
 def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):

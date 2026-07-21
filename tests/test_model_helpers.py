@@ -27,6 +27,7 @@ from jaxqsofit.model import (
     _split_many_gauss_lnlam,
     build_host_template_grid,
     build_fsps_template_grid,
+    build_orthogonal_polynomial_basis_config,
     build_tied_line_metadata,
     build_tied_line_meta_from_linelist,
     gaussian_bal_optical_depth_component,
@@ -36,6 +37,34 @@ from jaxqsofit.model import (
     reconstruct_spectral_components,
     reconstruct_posterior_components,
 )
+
+
+def test_polynomial_basis_is_weighted_orthogonal_to_continuum_and_reddening():
+    wave = np.linspace(2000.0, 5500.0, 300)
+    err = 0.02 + 0.01 * (wave - wave.min()) / np.ptp(wave)
+    config = build_orthogonal_polynomial_basis_config(
+        wave,
+        err,
+        pivot=3300.0,
+        order=4,
+        include_reddening=True,
+    )
+    basis = np.asarray(model_mod._orthogonal_polynomial_basis_jax(jnp.asarray(wave), config))
+    weights = 1.0 / err**2
+    nuisance = np.vstack(
+        [
+            np.ones_like(wave),
+            np.log(wave / 3300.0),
+            (wave / 2500.0) ** -1.2,
+        ]
+    )
+
+    assert basis.shape == (3, wave.size)
+    np.testing.assert_allclose(np.max(np.abs(basis), axis=1), 1.0, atol=1e-10)
+    for row in basis:
+        np.testing.assert_allclose(nuisance @ (weights * row), 0.0, atol=2e-6)
+    for i in range(1, basis.shape[0]):
+        np.testing.assert_allclose(basis[:i] @ (weights * basis[i]), 0.0, atol=2e-6)
 
 
 def test_extract_line_table_from_prior_config_uses_canonical_layout():
@@ -190,6 +219,7 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
             "Fe_uv_shift": np.array(0.0),
             "Fe_op_shift": np.array(0.0),
             "frac_jitter": np.array(0.0),
+            "frac_fe_jitter": np.array(0.2),
             "add_jitter": np.array(0.0),
         },
     )
@@ -218,6 +248,9 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
     assert tr["log_Fe_uv_norm"]["type"] == "sample"
     assert tr["Fe_uv_norm"]["type"] == "deterministic"
     np.testing.assert_allclose(np.asarray(tr["Fe_uv_norm"]["value"]), 0.01)
+    fe_model = np.asarray(tr["f_fe_mgii_model"]["value"]) + np.asarray(tr["f_fe_balmer_model"]["value"])
+    expected_sigma = np.sqrt(err**2 + (0.2 * np.abs(fe_model))**2)
+    np.testing.assert_allclose(np.asarray(tr["sigma_tot"]["value"]), expected_sigma)
 
     cfg["log_Fe_uv_norm"] = {"dist": "LogNormal", "loc": np.log(0.01), "scale": 0.1}
     model = substitute(
@@ -261,7 +294,7 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
     assert tr["Fe_uv_norm"]["fn"].__class__.__name__ == "LogNormal"
 
 
-def test_reddening_a2500_is_sampled_in_log_space_and_exposed():
+def test_ebv_is_sampled_in_standardizable_log_space_and_a2500_is_exposed():
     wave = np.linspace(2000.0, 3000.0, 8)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
@@ -292,7 +325,8 @@ def test_reddening_a2500_is_sampled_in_log_space_and_exposed():
         fit_reddening=True,
     )
 
-    assert model_trace["log_reddening_a2500"]["type"] == "sample"
+    assert model_trace["log_ebv"]["type"] == "sample"
+    assert model_trace["ebv"]["type"] == "deterministic"
     assert model_trace["reddening_a2500"]["type"] == "deterministic"
 
 
@@ -461,10 +495,11 @@ def test_shift_and_broaden_uses_wide_kernel_for_broad_components():
     assert float(jnp.max(broadened)) < 0.003
 
 
-def test_smc_like_reddening_parameter_is_a2500_magnitude():
-    atten = _smc_like_reddening_jax(jnp.asarray([2500.0]), a_uv=1.0)
+def test_smc_like_reddening_parameter_is_literal_ebv():
+    atten = _smc_like_reddening_jax(jnp.asarray([4400.0, 5500.0]), ebv=0.1)
 
-    assert np.isclose(float(atten[0]), 10.0 ** -0.4)
+    a_b_minus_a_v = -2.5 * np.log10(float(atten[0] / atten[1]))
+    assert np.isclose(a_b_minus_a_v, 0.1)
 
 
 def test_build_fsps_template_grid_can_reuse_fit_template_norms(monkeypatch):
@@ -534,7 +569,7 @@ def test_reconstruct_requires_fit_grid_pivots_for_grid_dependent_terms():
 
     samples = {
         "PL_norm": np.array([0.0]),
-        "poly_c1": np.array([0.1]),
+        "poly_c2": np.array([0.1]),
         "fsps_weights": np.zeros((1, 1)),
     }
     try:
@@ -547,7 +582,7 @@ def test_reconstruct_requires_fit_grid_pivots_for_grid_dependent_terms():
             dsps_ssp_fn="unused.h5",
             prior_config={"PL_pivot": 2500.0},
             fit_poly=True,
-            fit_poly_order=1,
+            fit_poly_order=2,
             fit_reddening=False,
             fe_uv_wave=np.array([2000.0, 3600.0]),
             fe_uv_flux=np.zeros(2),
@@ -556,9 +591,9 @@ def test_reconstruct_requires_fit_grid_pivots_for_grid_dependent_terms():
             decompose_host=False,
         )
     except ValueError as exc:
-        assert "poly_pivot" in str(exc)
+        assert "poly_basis" in str(exc)
     else:
-        raise AssertionError("missing poly_pivot should fail reconstruction with polynomial samples")
+        raise AssertionError("missing poly_basis should fail reconstruction with polynomial samples")
 
 
 def test_reconstruct_reddening_applies_to_nuclear_continuum_components():
@@ -619,7 +654,10 @@ def test_reconstruct_reddening_applies_to_nuclear_continuum_components():
         decompose_host=False,
     )
     idx = int(np.argmin(np.abs(wave - 2500.0)))
-    expected = float(_smc_like_reddening_jax(jnp.asarray([wave[idx]]), a_uv=1.0)[0])
+    ebv_norm = (4400.0 / 2500.0) ** -1.2 - (5500.0 / 2500.0) ** -1.2
+    expected = float(
+        _smc_like_reddening_jax(jnp.asarray([wave[idx]]), ebv=ebv_norm)[0]
+    )
 
     for key in ("PL", "Fe_uv", "Fe_op", "Balmer_cont"):
         ratio = reddened["draws"][key][0, idx] / plain["draws"][key][0, idx]
@@ -675,6 +713,152 @@ def test_build_tied_line_meta_from_linelist_minimal():
     assert np.all(np.isfinite(meta['line_lambda']))
     for key in ("vgroup_jax", "wgroup_jax", "fgroup_jax", "flux_ratio_jax", "broad_mask_jax"):
         assert key in meta
+
+
+def test_multigaussian_broad_widths_are_ordered_with_independent_amplitudes():
+    wave = np.linspace(4500.0, 5100.0, 200)
+    line_table = [
+        {
+            "lambda": 4862.68,
+            "linename": "Hb_br",
+            "compname": "Hb",
+            "ngauss": 3,
+            "inisca": 1.0,
+            "minsca": 1.0e-4,
+            "maxsca": 10.0,
+            "inisig": 0.01,
+            "minsig": 0.002,
+            "maxsig": 0.04,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 1.0,
+        },
+        {
+            "lambda": 5008.24,
+            "linename": "OIII5007",
+            "compname": "Hb",
+            "ngauss": 1,
+            "inisca": 0.5,
+            "minsca": 1.0e-4,
+            "maxsca": 10.0,
+            "inisig": 0.001,
+            "minsig": 0.0002,
+            "maxsig": 0.004,
+            "voff": 0.003,
+            "vindex": 1,
+            "windex": 1,
+            "findex": 1,
+            "fvalue": 1.0,
+        },
+    ]
+    meta = build_tied_line_meta_from_linelist(line_table, wave)
+    prior = {
+        "line_dmu_scale_mult": 0.2,
+        "line_sig_scale_mult": 0.2,
+        "line_amp_scale_mult": 0.2,
+        "standardize_active_priors": False,
+    }
+
+    tr = trace(seed(model_mod._sample_tied_line_groups, jax.random.PRNGKey(11))).get_trace(
+        meta, prior
+    )
+    order_ids = np.asarray(meta["broad_width_order_groups"][0], dtype=int)
+    widths = np.asarray(tr["line_sig_group"]["value"])[order_ids]
+    width_low = np.asarray(meta["sig_min_group"])[order_ids]
+    width_high = np.asarray(meta["sig_max_group"])[order_ids]
+    log_bound_fraction = (
+        np.log(widths) - np.log(width_low)
+    ) / (
+        np.log(width_high) - np.log(width_low)
+    )
+
+    assert len(meta["broad_width_order_groups"]) == 1
+    assert meta["n_unordered_wgroups"] == 0
+    assert np.all(np.diff(widths) > 0.0)
+    assert np.all(log_bound_fraction > 0.05)
+    assert np.all(log_bound_fraction < 0.95)
+    assert np.asarray(tr["line_amp_group"]["value"]).shape == (4,)
+    assert "line_ordered_width_logits_Hb_std" in tr
+    assert "line_log_fwhm_delta_group_std" not in tr
+    assert "line_high_ion_log_fwhm_std" in tr
+    hierarchy = meta["broad_centroid_hierarchy_groups"][0]
+    component_vgroups = np.asarray(hierarchy["component_groups"], dtype=int)
+    relative_offsets = np.asarray(tr["line_broad_relative_offsets_0"]["value"])
+    component_centers = np.asarray(tr["line_dmu_group"]["value"])[component_vgroups]
+    assert hierarchy["anchor_group"] == -1
+    assert meta["n_independent_vgroups"] == 0
+    assert np.asarray(meta["nlr_vgroup_ids"]).size == 1
+    assert "line_high_ion_offset_std" in tr
+    assert relative_offsets.shape == (3,)
+    assert np.isclose(np.sum(relative_offsets), 0.0, atol=1e-12)
+    np.testing.assert_allclose(
+        component_centers - np.mean(component_centers), relative_offsets, atol=1e-12
+    )
+
+    unpooled = build_tied_line_meta_from_linelist(
+        line_table, wave, pool_narrow_centroids=False
+    )
+    assert np.asarray(unpooled["nlr_vgroup_ids"]).size == 0
+    assert unpooled["n_independent_vgroups"] == 1
+
+    second_narrow = dict(line_table[1])
+    second_narrow.update(
+        {"lambda": 4862.68, "linename": "Hg_na", "compname": "Hg"}
+    )
+    pooled = build_tied_line_meta_from_linelist(
+        [line_table[1], second_narrow], wave
+    )
+    pooled_trace = trace(
+        seed(model_mod._sample_tied_line_groups, jax.random.PRNGKey(12))
+    ).get_trace(pooled, prior)
+    assert np.asarray(pooled["nlr_vgroup_ids"]).shape == (2,)
+    assert pooled["n_independent_vgroups"] == 0
+    assert "line_nlr_center_std" in pooled_trace
+    assert "line_high_ion_offset_std" in pooled_trace
+    assert "line_nlr_offsets_std" not in pooled_trace
+    assert np.asarray(pooled["nlr_vgroup_families"]["low"]).size == 1
+    assert np.asarray(pooled["nlr_vgroup_families"]["high"]).size == 1
+    assert "line_low_ion_log_fwhm_std" in pooled_trace
+    assert "line_high_ion_log_fwhm_std" in pooled_trace
+    assert "line_broad_center_0_std" in tr
+    assert "line_broad_relative_offsets_0_std" in tr
+    assert len(meta["amp_complex_groups"]) == 1
+    np.testing.assert_array_equal(meta["amp_complex_groups"][0]["fgroup_ids"], [0, 1, 2, 3])
+
+
+def test_oiii_wing_width_uses_one_direct_standardized_coordinate():
+    wave = np.linspace(4800.0, 5100.0, 100)
+    base = {
+        "compname": "Hb", "ngauss": 1, "inisca": 0.2,
+        "minsca": 1.0e-4, "maxsca": 10.0, "inisig": 0.004,
+        "minsig": 0.0005, "maxsig": 0.015, "voff": 0.01,
+        "vindex": 2, "windex": 2, "findex": 4, "fvalue": 1.0,
+    }
+    rows = [
+        {**base, "lambda": 4960.30, "linename": "OIII4959w"},
+        {**base, "lambda": 5008.24, "linename": "OIII5007w"},
+    ]
+    meta = build_tied_line_meta_from_linelist(rows, wave)
+    prior = {
+        "line_dmu_scale_mult": 0.2,
+        "line_sig_scale_mult": 0.2,
+        "line_amp_scale_mult": 0.2,
+        "standardize_active_priors": True,
+    }
+    tr = trace(
+        seed(model_mod._sample_tied_line_groups, jax.random.PRNGKey(19))
+    ).get_trace(meta, prior)
+
+    assert meta["direct_width_groups"] == [
+        {"group_id": int(meta["wgroup"][0]), "site_label": "OIII_wing"}
+    ]
+    assert "line_OIII_wing_log_fwhm_std" in tr
+    assert "line_log_narrow_fwhm_std" not in tr
+    assert "line_log_fwhm_delta_group_std" not in tr
+    widths = np.asarray(tr["line_sig_group"]["value"])
+    assert np.isclose(widths[int(meta["wgroup"][0])], widths[int(meta["wgroup"][1])])
 
 
 def test_build_tied_line_meta_uses_fvalue_when_inisca_is_zero():
@@ -733,7 +917,7 @@ def test_build_tied_line_meta_moves_amp_init_off_lower_boundary():
     assert meta["amp_init_group"][0] < meta["amp_max_group"][0]
 
 
-def test_build_tied_line_meta_includes_lines_with_broad_wings_overlapping_window():
+def test_build_tied_line_meta_uses_reference_widths_for_coverage():
     base = {
         "compname": "edge",
         "ngauss": 1,
@@ -752,22 +936,49 @@ def test_build_tied_line_meta_includes_lines_with_broad_wings_overlapping_window
         {
             **base,
             "lambda": 1450.0,
-            "linename": "broad_edge",
-            "maxsig": 0.02,
+            "linename": "edge_br",
+            "maxsig": 0.05,
         },
         {
             **base,
             "lambda": 1450.0,
-            "linename": "narrow_edge",
-            "maxsig": 0.001,
+            "linename": "edge_na",
+            "maxsig": 0.05,
         },
     ]
     wave = np.linspace(1500.0, 1700.0, 200)
 
     meta = build_tied_line_meta_from_linelist(line_table, wave)
 
-    assert meta["names"] == ["broad_edge_1"]
+    assert meta["names"] == ["edge_br_1"]
     assert meta["n_lines"] == 1
+
+
+def test_build_tied_line_meta_excludes_halpha_wing_beyond_reference_support():
+    line_table = [
+        {
+            "lambda": 6564.61,
+            "linename": "Ha_br",
+            "compname": "Ha",
+            "ngauss": 2,
+            "inisca": 1.0,
+            "minsca": 0.0,
+            "maxsca": 1e3,
+            "inisig": 0.005,
+            "minsig": 0.004,
+            "maxsig": 0.05,
+            "voff": 0.01,
+            "vindex": 0,
+            "windex": 0,
+            "findex": 0,
+            "fvalue": 0.05,
+        }
+    ]
+    wave = np.linspace(2409.0, 5820.0, 500)
+
+    meta = build_tied_line_meta_from_linelist(line_table, wave)
+
+    assert meta["n_lines"] == 0
 
 
 def test_build_tied_line_meta_uses_voff_as_log_wavelength_offset():
@@ -1264,14 +1475,22 @@ def test_qso_fsps_joint_model_fast_line_path_matches_component_split():
 
     params = {
         "cont_norm": np.array(1.0),
-        "line_dmu_group_std": np.zeros(tied_line_meta["n_vgroups"]),
+        "line_dmu_independent_group_std": np.zeros(
+            tied_line_meta["n_independent_vgroups"]
+        ),
         "line_log_broad_fwhm_std": np.array(0.0),
         "line_log_narrow_fwhm_std": np.array(0.0),
-        "line_log_fwhm_delta_group_std": np.zeros(tied_line_meta["n_wgroups"]),
-        "line_amp_group": tied_line_meta["amp_init_group"],
+        "line_log_fwhm_delta_group_std": np.zeros(
+            tied_line_meta["n_unordered_wgroups"]
+        ),
         "frac_jitter": np.array(0.0),
         "add_jitter": np.array(0.0),
     }
+    for complex_group in tied_line_meta["amp_complex_groups"]:
+        group_ids = np.asarray(complex_group["fgroup_ids"], dtype=int)
+        params[f"line_amp_{complex_group['site_label']}"] = np.asarray(
+            tied_line_meta["amp_init_group"]
+        )[group_ids]
 
     def _trace(return_line_components, emit_deterministics=True):
         return trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
