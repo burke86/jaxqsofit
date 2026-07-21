@@ -30,7 +30,7 @@ def _fetch_sdss_spectrum() -> tuple[Any, float]:
     xid = SDSS.query_region(coord, spectro=True, radius=5 * u.arcsec)
     if xid is None or len(xid) == 0:
         raise RuntimeError("No SDSS spectrum found near benchmark coordinate.")
-    spectra = SDSS.get_spectra(matches=xid[:1])
+    spectra = SDSS.get_spectra(matches=xid[:1], timeout=300)
     if not spectra:
         raise RuntimeError("SDSS returned no spectra for benchmark coordinate.")
     z = float(xid[0]["z"]) if "z" in xid.colnames else 0.1
