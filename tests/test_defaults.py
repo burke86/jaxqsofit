@@ -31,7 +31,12 @@ def test_prior_config_object_exposes_model_mapping():
     prior = PriorConfig(
         continuum=ContinuumPriorConfig(power_law_pivot=3000.0, polynomial_pivot=2800.0),
         host=HostPriorConfig(redshift_weight_enabled=False),
-        lines=LinePriorConfig(dmu_scale_mult=0.2, sig_scale_mult=0.3, amp_scale_mult=0.4),
+        lines=LinePriorConfig(
+            dmu_scale_mult=0.2,
+            sig_scale_mult=0.3,
+            amp_scale_mult=0.4,
+            extra_amp_scale_mult=0.5,
+        ),
         feii=FeIIPriorConfig(
             fwhm=dist.Normal(loc=np.log(1000.0), scale=0.2),
             shift=dist.Normal(loc=0.0, scale=100.0),
@@ -44,6 +49,7 @@ def test_prior_config_object_exposes_model_mapping():
     assert mapping["poly_pivot"] == 2800.0
     assert mapping["host_redshift_prior"]["enabled"] is False
     assert mapping["line_dmu_scale_mult"] == 0.2
+    assert mapping["line_extra_amp_scale_mult"] == 0.5
     assert float(mapping["log_Fe_FWHM"].scale) == 0.2
     assert float(mapping["Fe_shift"].scale) == 100.0
     assert isinstance(mapping["PL_slope"], dist.Normal)

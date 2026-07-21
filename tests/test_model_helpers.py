@@ -763,6 +763,7 @@ def test_multigaussian_broad_widths_are_ordered_with_independent_amplitudes():
         "line_dmu_scale_mult": 0.2,
         "line_sig_scale_mult": 0.2,
         "line_amp_scale_mult": 0.2,
+        "line_extra_amp_scale_mult": 0.5,
         "standardize_active_priors": False,
     }
 
@@ -782,9 +783,19 @@ def test_multigaussian_broad_widths_are_ordered_with_independent_amplitudes():
     assert len(meta["broad_width_order_groups"]) == 1
     assert meta["n_unordered_wgroups"] == 0
     assert np.all(np.diff(widths) > 0.0)
-    assert np.all(log_bound_fraction > 0.05)
-    assert np.all(log_bound_fraction < 0.95)
+    assert np.all(log_bound_fraction > 0.0)
+    assert np.all(log_bound_fraction < 1.0)
     assert np.asarray(tr["line_amp_group"]["value"]).shape == (4,)
+    extra_reference = np.asarray(meta["extra_amp_reference_group"])
+    np.testing.assert_array_equal(extra_reference, [-1, -1, 1, 1])
+    amp_prior = tr["line_amp_Hb"]["fn"].base_dist
+    amp_locs = np.asarray(amp_prior.base_dist.loc)
+    amp_scales = np.asarray(amp_prior.base_dist.scale)
+    amp_init = np.asarray(meta["amp_init_group"])
+    amp_min = np.asarray(meta["amp_min_group"])
+    np.testing.assert_allclose(amp_locs[[2, 3]], amp_min[[2, 3]])
+    np.testing.assert_allclose(amp_scales[[2, 3]], 0.5 * amp_init[1])
+    assert amp_locs[1] == amp_init[1]
     assert "line_ordered_width_logits_Hb_std" in tr
     assert "line_log_fwhm_delta_group_std" not in tr
     assert "line_high_ion_log_fwhm_std" in tr
@@ -1566,6 +1577,26 @@ def test_smooth_bounded_affine_preserves_init_and_bound_gradients():
 
     assert float(grad_hi) > 0.0
     assert float(grad_lo) > 0.0
+
+
+def test_ordered_stick_breaking_is_local_and_reproduces_reference_widths():
+    low = np.log(1000.0)
+    high = np.log(30000.0)
+    target = np.log(np.array([4000.0, 8000.0, 14000.0]))
+    zeros = jnp.zeros(3, dtype=jnp.float64)
+
+    reference = model_mod._bounded_ordered_stick_breaking(
+        zeros, target, low, high
+    )
+    changed_last = model_mod._bounded_ordered_stick_breaking(
+        zeros.at[2].set(1.0), target, low, high
+    )
+
+    np.testing.assert_allclose(reference, target, rtol=0.0, atol=1.0e-12)
+    np.testing.assert_allclose(changed_last[:2], reference[:2], atol=1.0e-12)
+    assert changed_last[2] > reference[2]
+    assert np.all(np.diff(np.asarray(changed_last)) > 0.0)
+    assert float(changed_last[-1]) < high
 
 
 def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):

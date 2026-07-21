@@ -810,19 +810,32 @@ def _ordered_width_reference_log_fwhm(n_components: int, low: float, high: float
     return target
 
 
-def _ordered_spacing_logit_location(target, low: float, high: float):
-    """Map ordered interior values to anchored softmax-spacing logits."""
-    gaps = np.diff(np.concatenate(([low], np.asarray(target), [high])))
-    gaps = np.clip(gaps, 1.0e-8, None)
-    return np.log(gaps[:-1] / gaps[-1])
+def _bounded_ordered_stick_breaking(coords, target, low: float, high: float):
+    """Map independent coordinates to ordered widths by local stick breaking.
 
-
-def _bounded_ordered_values(logits, low: float, high: float):
-    """Transform anchored spacing logits into strictly ordered values."""
-    spacings = jax.nn.softmax(
-        jnp.concatenate([logits, jnp.zeros((1,), dtype=jnp.float64)])
-    )
-    return low + (high - low) * jnp.cumsum(spacings[:-1])
+    Each complex owns an independent coordinate vector.  Coordinate ``i``
+    places width ``i`` within the interval remaining above width ``i - 1``;
+    it therefore cannot move any earlier width.  Locations are calibrated so
+    zero coordinates reproduce ``target`` while retaining the full physical
+    interval for object-to-object variation.
+    """
+    target = np.asarray(target, dtype=float)
+    previous_target = float(low)
+    previous_width = jnp.asarray(low, dtype=jnp.float64)
+    ordered = []
+    for index, target_width in enumerate(target):
+        target_fraction = np.clip(
+            (float(target_width) - previous_target) / (high - previous_target),
+            1.0e-4,
+            1.0 - 1.0e-4,
+        )
+        logit_loc = np.log(target_fraction / (1.0 - target_fraction))
+        fraction = jax.nn.sigmoid(logit_loc + 0.5 * coords[index])
+        width = previous_width + (high - previous_width) * fraction
+        ordered.append(width)
+        previous_target = float(target_width)
+        previous_width = width
+    return jnp.stack(ordered)
 
 
 def _smooth_bounded_affine(eps, loc, scale, low, high):
@@ -1052,8 +1065,8 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
                 _prefixed_site(site_prefix, "line_log_broad_fwhm"),
                 broad_default,
                 0.35,
-                float(np.min(log_fwhm_min[unordered_broad_idx])) if unordered_broad_idx.size else -jnp.inf,
-                float(np.max(log_fwhm_max[unordered_broad_idx])) if unordered_broad_idx.size else jnp.inf,
+                float(np.min(log_fwhm_min[unordered_broad_idx])),
+                float(np.max(log_fwhm_max[unordered_broad_idx])),
             )
             if unordered_broad_idx.size
             else jnp.asarray(broad_default, dtype=jnp.float64)
@@ -1147,22 +1160,26 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
             low = float(np.max(log_fwhm_min[group_ids]))
             high = float(np.min(log_fwhm_max[group_ids]))
             target = _ordered_width_reference_log_fwhm(n_components, low, high)
-            logit_loc = _ordered_spacing_logit_location(target, low, high)
-            logits_std = numpyro.sample(
+            ordered_coords_std = numpyro.sample(
                 _prefixed_site(
                     site_prefix,
                     _ordered_width_site(order_label, standardized=True),
                 ),
                 dist.Normal(jnp.zeros(n_components), jnp.ones(n_components)).to_event(1),
             )
-            logits = numpyro.deterministic(
+            ordered_coords = numpyro.deterministic(
                 _prefixed_site(
                     site_prefix,
                     _ordered_width_site(order_label, standardized=False),
                 ),
-                jnp.asarray(logit_loc, dtype=jnp.float64) + 0.5 * logits_std,
+                ordered_coords_std,
             )
-            ordered_log_fwhm = _bounded_ordered_values(logits, low, high)
+            ordered_log_fwhm = _bounded_ordered_stick_breaking(
+                ordered_coords,
+                target,
+                low,
+                high,
+            )
             log_fwhm_group = log_fwhm_group.at[jnp.asarray(group_ids)].set(ordered_log_fwhm)
 
         numpyro.deterministic(_prefixed_site(site_prefix, "line_log_fwhm_group"), log_fwhm_group)
@@ -1175,7 +1192,14 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
 
 
 def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = ""):
-    """Sample bounded line amplitudes by named spectral complex."""
+    """Sample bounded line amplitudes by named spectral complex.
+
+    For a multi-Gaussian broad line, the first component retains the ordinary
+    amplitude prior.  Later components use a zero-attracting truncated-normal
+    prior whose scale is relative to the first component's initial amplitude.
+    This lets extra profile flexibility switch off when the spectrum does not
+    support it, reducing degeneracy with Fe emission and the continuum.
+    """
     n_f = int(tied_line_meta["n_fgroups"])
     amp_scale_mult = float(prior_config["line_amp_scale_mult"])
     amp_group = jnp.zeros((0,), dtype=jnp.float64)
@@ -1193,6 +1217,13 @@ def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = 
             AMPLITUDE_FLOOR,
         )
         amp_group = jnp.asarray(amp_init, dtype=jnp.float64)
+        extra_amp_scale_mult = float(
+            prior_config.get("line_extra_amp_scale_mult", 0.0)
+        )
+        extra_amp_reference = jnp.asarray(
+            tied_line_meta.get("extra_amp_reference_group", np.full(n_f, -1)),
+            dtype=jnp.int32,
+        )
         complex_groups = tied_line_meta.get(
             "amp_complex_groups",
             [{"complex_index": 0, "name": "all", "fgroup_ids": list(range(n_f))}],
@@ -1206,10 +1237,20 @@ def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = 
             if not group_ids.size:
                 continue
             group_jax = jnp.asarray(group_ids, dtype=jnp.int32)
+            is_extra = extra_amp_reference[group_jax] >= 0
+            reference_ids = jnp.maximum(extra_amp_reference[group_jax], 0)
+            regular_scale = amp_scale_mult * (
+                amp_max[group_jax] - amp_min[group_jax]
+            )
+            shrinkage_scale = extra_amp_scale_mult * amp_init[reference_ids]
             local_prior = dist.TruncatedNormal(
-                loc=amp_init[group_jax],
+                loc=jnp.where(is_extra, amp_min[group_jax], amp_init[group_jax]),
                 scale=jnp.maximum(
-                    amp_scale_mult * (amp_max[group_jax] - amp_min[group_jax]),
+                    jnp.where(
+                        is_extra & (extra_amp_scale_mult > 0.0),
+                        shrinkage_scale,
+                        regular_scale,
+                    ),
                     AMPLITUDE_FLOOR,
                 ),
                 low=amp_min[group_jax],
@@ -3044,6 +3085,14 @@ def build_tied_line_meta_from_linelist(
             flux_ratio[i] = 1.0
             next_gid += 1
     n_fgroups = int(np.max(fgroup)) + 1 if len(fgroup) else 0
+    extra_amp_reference_group = np.full(n_fgroups, -1, dtype=int)
+    for component_indices in broad_order_component_indices:
+        component_fgroups = [int(fgroup[idx]) for idx in component_indices]
+        if not component_fgroups:
+            continue
+        reference_group = component_fgroups[0]
+        for group_id in component_fgroups[1:]:
+            extra_amp_reference_group[group_id] = reference_group
     amp_complex_groups = []
     component_complex_array = np.asarray(component_complex_names, dtype=object)
     for complex_index, complex_name in enumerate(complex_names):
@@ -3137,6 +3186,7 @@ def build_tied_line_meta_from_linelist(
         'flux_ratio': np.asarray(flux_ratio, dtype=float),
         'flux_ratio_jax': _np_to_jnp(flux_ratio),
         'amp_complex_groups': amp_complex_groups,
+        'extra_amp_reference_group': extra_amp_reference_group,
         'dmu_init_group': np.asarray(dmu_init_group, dtype=float),
         'dmu_init_group_jax': _np_to_jnp(dmu_init_group),
         'dmu_min_group': np.asarray(dmu_min_group, dtype=float),

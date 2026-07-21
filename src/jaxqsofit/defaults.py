@@ -326,6 +326,9 @@ DEFAULT_LINE_CONFIG: Dict[str, Any] = {
     "line_dmu_scale_mult": 0.25,
     "line_sig_scale_mult": 0.25,
     "line_amp_scale_mult": 0.25,
+    # Suppress unsupported second-and-later Gaussians while allowing the data
+    # to retain them when a broad-line profile genuinely needs extra structure.
+    "line_extra_amp_scale_mult": 0.5,
     "line": {"table": DEFAULT_LINE_PRIOR_ROWS},
 }
 

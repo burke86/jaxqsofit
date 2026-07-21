@@ -466,12 +466,19 @@ class HostPriorConfig:
 
 @dataclass
 class LinePriorConfig:
-    """Semantic emission-line prior options."""
+    """Semantic emission-line prior options.
+
+    ``extra_amp_scale_mult`` regularizes redundant broad-line components.  The
+    first Gaussian in each multi-Gaussian broad line keeps the usual amplitude
+    prior; later Gaussians are pulled toward zero with a scale equal to this
+    multiplier times the first component's initial amplitude.
+    """
 
     table: Sequence[Mapping[str, Any]] | None = None
     dmu_scale_mult: float | None = None
     sig_scale_mult: float | None = None
     amp_scale_mult: float | None = None
+    extra_amp_scale_mult: float | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic emission-line prior settings into model-site keys."""
@@ -484,6 +491,8 @@ class LinePriorConfig:
             out["line_sig_scale_mult"] = float(self.sig_scale_mult)
         if self.amp_scale_mult is not None:
             out["line_amp_scale_mult"] = float(self.amp_scale_mult)
+        if self.extra_amp_scale_mult is not None:
+            out["line_extra_amp_scale_mult"] = float(self.extra_amp_scale_mult)
         return out
 
 
