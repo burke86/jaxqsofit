@@ -12,7 +12,8 @@ import numpyro.distributions as dist
 from .defaults import _build_default_prior_config
 from .model import (
     _balmer_continuum_jax,
-    _broad_line_mask,
+    _line_meta_array,
+    _line_meta_broad_mask,
     _fe_template_component,
     _np_to_jnp,
     _sample_tied_line_groups,
@@ -179,12 +180,18 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
         site_prefix=site_prefix,
     )
 
-    dmu = dmu_group[jnp.asarray(tied_line_meta["vgroup"], dtype=jnp.int32)]
-    sigs = sig_group[jnp.asarray(tied_line_meta["wgroup"], dtype=jnp.int32)]
-    amps = amp_group[jnp.asarray(tied_line_meta["fgroup"], dtype=jnp.int32)] * jnp.asarray(tied_line_meta["flux_ratio"], dtype=jnp.float64)
-    mus = jnp.asarray(tied_line_meta["ln_lambda0"], dtype=jnp.float64) + dmu
+    dmu = dmu_group[
+        _line_meta_array(tied_line_meta, "vgroup", jax_key="vgroup_jax", dtype=jnp.int32)
+    ]
+    sigs = sig_group[
+        _line_meta_array(tied_line_meta, "wgroup", jax_key="wgroup_jax", dtype=jnp.int32)
+    ]
+    amps = amp_group[
+        _line_meta_array(tied_line_meta, "fgroup", jax_key="fgroup_jax", dtype=jnp.int32)
+    ] * _line_meta_array(tied_line_meta, "flux_ratio", jax_key="flux_ratio_jax")
+    mus = _line_meta_array(tied_line_meta, "ln_lambda0") + dmu
 
-    broad_mask = jnp.asarray(_broad_line_mask(tied_line_meta.get("names", [])), dtype=jnp.float64)
+    broad_mask = jnp.asarray(_line_meta_broad_mask(tied_line_meta), dtype=jnp.float64)
     if cfg.fixed_narrow_fwhm_kms is not None:
         fixed_narrow_sig = jnp.maximum(
             jnp.asarray(cfg.fixed_narrow_fwhm_kms, dtype=jnp.float64),

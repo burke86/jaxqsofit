@@ -4,6 +4,7 @@ import copy
 from typing import Any, Dict, List
 
 import numpy as np
+import numpyro.distributions as dist
 
 from .config import PriorConfig
 from .custom_components import CustomComponentSpec, make_custom_component
@@ -238,14 +239,26 @@ For untied rows with ``findex=0``, ``fvalue`` is not a fixed flux ratio. It is
 only the initial/default amplitude scale used to seed that independent
 amplitude group's prior.
 
+Narrow-line centroid pooling
+----------------------------
+By default, narrow cores are pooled into low-ionization, high-ionization, and
+coronal kinematic families. All lines in a family share one exact centroid and
+one exact FWHM across complexes. No complex-specific offsets or wavelength-
+calibration error terms are added. Broad components and explicitly identified
+wings or outflows are excluded. Set
+``LineConfig.pool_narrow_centroids=False`` to restore the line-table centroid
+and width ties without cross-complex family pooling.
+
 Multiple Gaussians: ``ngauss``
 -----------------------------
 ``ngauss`` expands one row into multiple Gaussian components with names like
 ``CIV_br_1``, ``CIV_br_2``, etc. Each expanded Gaussian is intentionally given
-an independent internal tie label, so a broad-line row with ``ngauss > 1`` does
-not accidentally force all copies to have the same velocity, width, and
-amplitude. If a genuinely tied multi-component structure is needed, write the
-components as explicit rows with shared positive tie indices.
+an independent internal tie label. For broad-line rows with ``ngauss > 1``,
+their widths are sampled in strictly increasing order to remove equivalent
+label-switched posterior modes. Their centroids use a shared broad-line shift
+plus zero-sum relative offsets. Peak amplitudes remain independent. If a
+genuinely tied multi-component structure is needed, write the components as
+explicit rows with shared positive tie indices.
 
 Line naming and plotting
 ------------------------
@@ -407,10 +420,20 @@ def _apply_robust_line_scale_priors(
             max_cap = 1.2 * delta
         maxsca = min(maxsca, max_cap)
 
-        # Keep scales strictly positive and ordered.
+        # Keep scales strictly positive and ordered.  Default qsopar rows use
+        # ``inisca=0`` as a sentinel, but initializing a bounded amplitude at
+        # the resulting lower floor leaves its unconstrained coordinate deep
+        # in the transform tail.  Optax can then fail to move an otherwise
+        # strong line away from zero.  Put sentinel/non-finite starts safely
+        # inside the data-scaled interval while preserving explicit positive
+        # user initializations.
         mins_floor = max(minsca, 1e-4 * float(fscale), AMPLITUDE_FLOOR)
         maxsca = max(maxsca, 1.01 * mins_floor)
-        inisca = float(np.clip(inisca, mins_floor, maxsca))
+        init_fraction = 0.05 if is_broad else 0.02
+        if not np.isfinite(inisca) or inisca <= mins_floor:
+            inisca = mins_floor + init_fraction * (maxsca - mins_floor)
+        init_margin = max(1e-6 * (maxsca - mins_floor), AMPLITUDE_FLOOR)
+        inisca = float(np.clip(inisca, mins_floor + init_margin, maxsca - init_margin))
 
         row["minsca"] = mins_floor
         row["maxsca"] = maxsca
@@ -449,6 +472,50 @@ def _append_unique_by_wavelength(
         if not exists:
             out.append(row)
     return out
+
+
+def append_optional_line_rows(
+    prior_config: Dict[str, Any],
+    flux: np.ndarray,
+    *,
+    include_elg_narrow_lines: bool = False,
+    include_high_ionization_lines: bool = False,
+) -> Dict[str, Any]:
+    """Append optional built-in line sets selected by ``LineConfig``.
+
+    Existing rows win when an optional row has the same wavelength, so this
+    preserves user-provided line definitions and avoids duplicate components.
+    Newly appended rows receive the same data-scaled amplitude initialization
+    and bounds as rows constructed by the default-prior builder.
+    """
+    line_config = prior_config.get("line", {})
+    if not isinstance(line_config, dict):
+        return prior_config
+    table = line_config.get("table")
+    if not isinstance(table, list):
+        return prior_config
+
+    extras: List[Dict[str, Any]] = []
+    if include_elg_narrow_lines:
+        extras.extend(copy.deepcopy(DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS))
+    if include_high_ionization_lines:
+        extras.extend(copy.deepcopy(DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS))
+    if not extras:
+        return prior_config
+
+    f = np.asarray(flux, dtype=float)
+    finite = np.isfinite(f)
+    fscale = float(np.nanmedian(np.abs(f[finite]))) if np.any(finite) else 1.0
+    fmax = float(np.nanmax(np.abs(f[finite]))) if np.any(finite) else fscale
+    if not np.isfinite(fscale) or fscale <= 0:
+        fscale = 1.0
+    if not np.isfinite(fmax) or fmax <= 0:
+        fmax = fscale
+    extras = _apply_robust_line_scale_priors(extras, fscale=fscale, fmax=fmax)
+    line_config["table"] = _append_unique_by_wavelength(
+        list(table), extras, atol_angstrom=1.0
+    )
+    return prior_config
 
 
 def build_default_bal_components(
@@ -517,38 +584,23 @@ def build_default_bal_components(
         return make_custom_component(
             name=name,
             parameter_priors={
-                "tau_peak": {"dist": "HalfNormal", "scale": float(max(tau_scale, 1.0e-6))},
-                "covering": {
-                    "dist": "TruncatedNormal",
-                    "loc": float(covering_loc),
-                    "scale": float(max(covering_scale, 1.0e-6)),
-                    "low": 0.0,
-                    "high": float(covering_high),
-                },
-                "v_out": {
+                "tau_peak": dist.HalfNormal(float(max(tau_scale, 1.0e-6))),
+                "covering": dist.TruncatedNormal(
+                    float(covering_loc), float(max(covering_scale, 1.0e-6)),
+                    low=0.0, high=float(covering_high),
+                ),
+                "v_out": dist.TruncatedNormal(
                     # The center is computed as lambda0 * (1 - v_out / c), so
                     # positive v_out values force absorption blueward of the
                     # associated transition.
-                    "dist": "TruncatedNormal",
-                    "loc": float(v_out_loc),
-                    "scale": float(v_out_scale),
-                    "low": float(v_out_low),
-                    "high": float(v_out_high),
-                },
-                "fwhm_kms": {
-                    "dist": "TruncatedNormal",
-                    "loc": float(fwhm_kms_loc),
-                    "scale": float(max(fwhm_kms_scale, 1.0e-6)),
-                    "low": float(fwhm_kms_low),
-                    "high": float(fwhm_kms_high),
-                },
-                "shape_power": {
-                    "dist": "TruncatedNormal",
-                    "loc": 2.0,
-                    "scale": 1.5,
-                    "low": 2.0,
-                    "high": 12.0,
-                },
+                    float(v_out_loc), float(v_out_scale),
+                    low=float(v_out_low), high=float(v_out_high),
+                ),
+                "fwhm_kms": dist.TruncatedNormal(
+                    float(fwhm_kms_loc), float(max(fwhm_kms_scale, 1.0e-6)),
+                    low=float(fwhm_kms_low), high=float(fwhm_kms_high),
+                ),
+                "shape_power": dist.TruncatedNormal(2.0, 1.5, low=2.0, high=12.0),
             },
             evaluate=gaussian_bal_optical_depth_component,
             metadata={
@@ -611,11 +663,9 @@ def _build_default_prior_config(
 
     Notes
     -----
-    ``log_reddening_a2500`` controls the amplitude of the built-in SMC-like
-    attenuation curve in log space. Because the curve is normalized to unity
-    at ``reddening_uv_ref`` (2500 Angstrom by default), the transformed
-    ``reddening_a2500`` value is :math:`A(2500)` in magnitudes rather than
-    literal ``E(B-V)``.
+    ``log_ebv`` controls the amplitude of the built-in SMC-like attenuation
+    curve in log space and is literal :math:`E(B-V)=A_B-A_V`. Legacy
+    ``log_reddening_a2500`` prior dictionaries remain supported.
     """
     f = np.asarray(flux, dtype=float)
     finite = np.isfinite(f)
@@ -627,15 +677,17 @@ def _build_default_prior_config(
         fmax = fscale
 
     cfg: Dict[str, Any] = {
-        "log_cont_norm": {"dist": "LogNormal", "loc": np.log(max(fscale, AMPLITUDE_FLOOR)), "scale": 0.3},
-        "PL_norm": {"dist": "HalfNormal", "scale": max(0.5 * fscale, AMPLITUDE_FLOOR)},
-        "PL_slope": {"dist": "Normal", "loc": -1.5, "scale": 0.4},
+        "log_cont_norm": dist.LogNormal(np.log(max(fscale, AMPLITUDE_FLOOR)), 0.3),
+        "PL_norm": dist.HalfNormal(max(0.5 * fscale, AMPLITUDE_FLOOR)),
+        "PL_slope": dist.Normal(-1.5, 0.4),
         "PL_pivot": None if pl_pivot is None else float(pl_pivot),
         "poly_pivot": None,
-        "log_reddening_a2500": {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6},
+        # This corresponds to the historical median A(2500)=0.1 mag.
+        "log_ebv": dist.Normal(np.log(0.1 * ((4400.0 / 2500.0) ** -1.2 - (5500.0 / 2500.0) ** -1.2)), 0.6),
         "reddening_uv_ref": 2500.0,
         "reddening_alpha": 1.2,
-        "log_frac_host": {"dist": "StudentT", "loc": 0.0, "scale": 2.0, "df": 3.0},
+        "residualize_reddening_geometry": True,
+        "log_frac_host": dist.StudentT(df=3.0, loc=0.0, scale=2.0),
         "host_redshift_prior": {
             "enabled": False,
             "z_mid": 1.0,
@@ -647,8 +699,8 @@ def _build_default_prior_config(
             "lowz_df": 3.0,
             "highz_df": 20.0,
         },
-        "tau_host": {"dist": "HalfNormal", "scale": 1.0},
-        "raw_w": {"dist": "Normal", "loc": -0.5, "scale": 1.0},
+        "tau_host": dist.HalfNormal(1.0),
+        "raw_w": dist.Normal(-0.5, 1.0),
         "host_template_age_prior": {
             "type": "prefer_old",
             "pivot_gyr": 1.0,
@@ -656,12 +708,12 @@ def _build_default_prior_config(
             "min_logit": -3.0,
             "max_logit": 2.0,
         },
-        "log_stellar_mass": {"dist": "TruncatedNormal", "loc": 9.0, "scale": 0.75, "low": 7.0, "high": 12.0},
-        "log_host_aperture_scale": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
-        "log_sfh_age_gyr": {"dist": "Normal", "loc": np.log(3.0), "scale": 1.0},
-        "log_sfh_tau_over_age": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
-        "gal_lgmet": {"dist": "Normal", "loc": 0.0, "scale": 0.5},
-        "log_gal_lgmet_scatter": {"dist": "Normal", "loc": np.log(0.15), "scale": 0.7},
+        "log_stellar_mass": dist.TruncatedNormal(9.0, 0.75, low=7.0, high=12.0),
+        "log_host_aperture_scale": dist.Normal(0.0, 0.5),
+        "log_sfh_age_gyr": dist.Normal(np.log(3.0), 1.0),
+        "log_sfh_tau_over_age": dist.Normal(0.0, 0.5),
+        "gal_lgmet": dist.Normal(0.0, 0.5),
+        "log_gal_lgmet_scatter": dist.Normal(np.log(0.15), 0.7),
         "mass_metallicity_relation": {
             "enabled": False,
             "pivot_mass": 10.0,
@@ -671,37 +723,25 @@ def _build_default_prior_config(
             "min": -1.5,
             "max": 0.3,
         },
-        "gal_v_kms": {"dist": "Normal", "loc": 0.0, "scale": 120.0},
-        "log_gal_sigma_kms": {
-            "dist": "TruncatedNormal",
-            "loc": np.log(150.0),
-            "scale": 0.4,
-            "low": np.log(30.0),
-            "high": np.log(500.0),
-        },
-        "log_Fe_uv_norm": {"dist": "LogNormal", "loc": np.log(max(0.03 * fscale, 1e-12)), "scale": 1.0},
-        "log_Fe_op_over_uv": {"dist": "Normal", "loc": 0.0, "scale": 1.0},
-        "log_Fe_uv_FWHM": {"dist": "LogNormal", "loc": np.log(3000.0), "scale": 0.5},
-        "log_Fe_op_FWHM": {"dist": "LogNormal", "loc": np.log(3000.0), "scale": 0.5},
-        "Fe_uv_shift": {"dist": "Normal", "loc": 0.0, "scale": 1e-3},
-        "Fe_op_shift": {"dist": "Normal", "loc": 0.0, "scale": 1e-3},
-        "log_Balmer_norm": {"dist": "LogNormal", "loc": np.log(max(1e-3 * fscale, AMPLITUDE_FLOOR)), "scale": 0.5},
-        "log_Balmer_Tau": {"dist": "LogNormal", "loc": np.log(0.5), "scale": 0.25},
-        "log_Balmer_vel": {
-            "dist": "TruncatedNormal",
-            "loc": np.log(3000.0),
-            "scale": 0.3,
-            "low": np.log(1000.0),
-            "high": np.log(15000.0),
-        },
-        "poly_c1": {"dist": "Normal", "loc": 0.0, "scale": 0.1},
-        "poly_c2": {"dist": "Normal", "loc": 0.0, "scale": 0.1},
-        "poly_c3": {"dist": "Normal", "loc": 0.0, "scale": 0.05},
-        "poly_c4": {"dist": "Normal", "loc": 0.0, "scale": 0.05},
-        "poly_c5": {"dist": "Normal", "loc": 0.0, "scale": 0.03},
-        "poly_c6": {"dist": "Normal", "loc": 0.0, "scale": 0.03},
-        "frac_jitter": {"dist": "HalfNormal", "scale": 0.02},
-        "add_jitter": {"dist": "HalfNormal", "scale_mult_err": 0.3},
+        "gal_v_kms": dist.Normal(0.0, 120.0),
+        "log_gal_sigma_kms": dist.TruncatedNormal(np.log(150.0), 0.4, low=np.log(30.0), high=np.log(500.0)),
+        "log_Fe_uv_norm": dist.LogNormal(np.log(max(0.03 * fscale, 1e-12)), 1.0),
+        "log_Fe_op_over_uv": dist.Normal(0.0, 1.0),
+        "log_Fe_uv_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
+        "log_Fe_op_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
+        "Fe_uv_shift": dist.Normal(0.0, 1e-3),
+        "Fe_op_shift": dist.Normal(0.0, 1e-3),
+        "log_Balmer_norm": dist.LogNormal(np.log(max(1e-3 * fscale, AMPLITUDE_FLOOR)), 0.5),
+        "log_Balmer_Tau": dist.LogNormal(np.log(0.5), 0.25),
+        "log_Balmer_vel": dist.TruncatedNormal(np.log(3000.0), 0.3, low=np.log(1000.0), high=np.log(15000.0)),
+        "poly_c2": dist.Normal(0.0, 0.03),
+        "poly_c3": dist.Normal(0.0, 0.03),
+        "poly_c4": dist.Normal(0.0, 0.03),
+        "poly_c5": dist.Normal(0.0, 0.03),
+        "poly_c6": dist.Normal(0.0, 0.03),
+        "frac_jitter": dist.HalfNormal(0.02),
+        "frac_fe_jitter": {"dist": "Delta", "value": 0.20},
+        "add_jitter": {"dist": "Delta", "value": 0.0},
         "student_t_df": 3.0,
         "out_params": {
             "cont_loc": [1350.0, 2500.0, 3000.0, 4200.0, 5100.0],

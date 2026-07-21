@@ -128,8 +128,6 @@ def test_sdss_fit_wrms_below_threshold():
     prior_config = PriorConfig.from_spectrum(
         flux=flux,
         redshift=z,
-        include_elg_narrow_lines=False,
-        include_high_ionization_lines=False,
     )
     prior_config.powerlaw.slope = dist.TruncatedNormal(loc=-1.5, scale=0.3, low=-3.5, high=0.5)
     prior_config.fe.uv_norm = dist.LogNormal(np.log(max(1e-3 * np.median(np.abs(flux)), 1e-10)), 0.04)
@@ -172,7 +170,8 @@ def test_sdss_fit_wrms_below_threshold():
             ),
             lines=LineConfig(enabled=True),
             inference=InferenceConfig(
-                method="optax+nuts",
+                method="optax",
+                random_seed=0,
                 map_steps=int(os.getenv('JAXQSOFIT_WRMS_OPTAX_STEPS', '1200')),
                 learning_rate=float(os.getenv('JAXQSOFIT_WRMS_OPTAX_LR', '1e-2')),
                 num_warmup=int(os.getenv('JAXQSOFIT_WRMS_NUTS_WARMUP', '50')),

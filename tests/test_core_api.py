@@ -347,6 +347,33 @@ def test_fit_dispatch_nuts(monkeypatch):
     assert called['kwargs']['psf_filter_curves']['trans'].shape == (2, q.lam.size)
 
 
+def test_line_complex_dense_mass_blocks_group_local_latents():
+    tied_line_meta = {
+        "amp_complex_groups": [
+            {"complex_index": 0, "fgroup_ids": [0, 1, 2]},
+            {"complex_index": 1, "fgroup_ids": [3]},
+        ],
+        "broad_width_order_complex_indices": [0],
+        "broad_centroid_hierarchy_groups": [
+            {"complex_index": 0, "component_groups": [0, 1]}
+        ],
+    }
+
+    blocks = coremod._line_complex_dense_mass_blocks(
+        tied_line_meta, standardized_amplitudes=True
+    )
+
+    assert blocks == [
+        (
+            "line_amp_complex_0_std",
+            "line_ordered_width_logits_0_std",
+            "line_broad_center_0_std",
+            "line_broad_relative_offsets_0_std",
+        ),
+        ("line_amp_complex_1_std",),
+    ]
+
+
 def test_fit_dispatch_nuts_dereddens_psf_phot_when_enabled(monkeypatch):
     lam, flux, err = _make_wide_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1, ra=150.0, dec=2.0)
@@ -398,6 +425,7 @@ def test_fit_dispatch_optax(monkeypatch):
     monkeypatch.setattr(q, 'run_fsps_optax_fit', _stub_optax)
 
     q.config.inference.method = 'optax'
+    q.config.inference.random_seed = 73
     q.config.inference.plot_init = True
     q.config.observation.apply_mw_deredden = False
     q.config.output.plot_fig = False
@@ -407,6 +435,7 @@ def test_fit_dispatch_optax(monkeypatch):
 
     assert called['optax'] == 1
     assert called['kwargs']['plot_init'] is True
+    assert called['kwargs']['random_seed'] == 73
 
 
 def test_fit_dispatch_optax_accepts_output_plot_init(monkeypatch):
@@ -490,8 +519,8 @@ def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     expected_rest_fscale = np.nanmedian(np.abs(flux * (1.0 + z)))
     observed_fscale = np.nanmedian(np.abs(flux))
 
-    assert np.isclose(prior_config["log_cont_norm"]["loc"], np.log(expected_rest_fscale))
-    assert not np.isclose(prior_config["log_cont_norm"]["loc"], np.log(observed_fscale))
+    assert np.isclose(prior_config["log_cont_norm"].loc, np.log(expected_rest_fscale))
+    assert not np.isclose(prior_config["log_cont_norm"].loc, np.log(observed_fscale))
     assert np.allclose(q.flux, flux * (1.0 + z))
 
 
@@ -548,11 +577,11 @@ def test_fit_bal_appends_builtin_bal_components(monkeypatch):
     names = [comp.name for comp in components]
     assert names == ["bal_nv", "bal_siiv", "bal_civ"]
     for comp in components:
-        assert np.isclose(comp.parameter_priors["tau_peak"]["scale"], 0.5)
+        assert np.isclose(comp.parameter_priors["tau_peak"].scale, 0.5)
         covering_cfg = comp.parameter_priors["covering"]
-        assert np.isclose(covering_cfg["loc"], 0.35)
-        assert np.isclose(covering_cfg["scale"], 0.11)
-        assert np.isclose(covering_cfg["high"], 0.80)
+        assert np.isclose(covering_cfg.base_dist.loc, 0.35)
+        assert np.isclose(covering_cfg.base_dist.scale, 0.11)
+        assert np.isclose(covering_cfg.high, 0.80)
 
 
 def test_fit_dispatch_optax_nuts(monkeypatch):
@@ -568,6 +597,7 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
     monkeypatch.setattr(q, 'run_fsps_optax_nuts_fit', _stub_optax_nuts)
 
     q.config.inference.method = 'optax+nuts'
+    q.config.inference.random_seed = 41
     q.config.inference.plot_init = True
     q.config.inference.dense_mass = False
     q.config.inference.max_tree_depth = 7
@@ -581,10 +611,13 @@ def test_fit_dispatch_optax_nuts(monkeypatch):
     assert called['kwargs']['plot_init'] is True
     assert called['kwargs']['dense_mass'] is False
     assert called['kwargs']['max_tree_depth'] == 7
+    assert called['kwargs']['random_seed'] == 41
 
 
 def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
-    lam, flux, err = _make_wide_spectrum()
+    lam = np.linspace(2500.0, 10000.0, 256)
+    flux = 40.0 + 0.0015 * (lam - 6000.0)
+    err = np.full_like(flux, 0.4)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
     q.wave = lam
     q.flux = flux
@@ -608,6 +641,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
     monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
 
     svi_calls = []
+    svi_keys = []
 
     class FakeSVIResult:
         losses = np.array([0.0])
@@ -619,6 +653,7 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
             pass
 
         def run(self, key, steps, **kwargs):
+            svi_keys.append(np.asarray(key))
             svi_calls.append(kwargs)
             return FakeSVIResult()
 
@@ -662,15 +697,19 @@ def test_optax_warm_start_subsets_psf_filters_for_stage1(monkeypatch):
         psf_mag_errs=np.array([0.05, 0.06]),
         psf_filter_curves=psf_filter_curves,
         use_psf_phot=True,
+        random_seed=19,
     )
 
     assert len(svi_calls) == 2
     stage1_keep = q.init_stage1_keep_mask
+    assert not stage1_keep[np.argmin(np.abs(q.wave - 2798.75))]
     assert svi_calls[0]["wave"].shape[0] == int(np.sum(stage1_keep))
     assert svi_calls[0]["psf_filter_curves"]["trans"].shape == (2, int(np.sum(stage1_keep)))
     assert svi_calls[1]["wave"].shape[0] == q.wave.size
     assert svi_calls[1]["psf_filter_curves"]["trans"].shape == (2, q.wave.size)
     assert svi_calls[1]["psf_filter_curves"] is psf_filter_curves
+    expected_key = np.asarray(coremod.jax.random.PRNGKey(19))
+    assert all(np.array_equal(key, expected_key) for key in svi_keys)
 
 
 def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeypatch):
@@ -747,11 +786,108 @@ def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeyp
 
     assert len(init_values_seen) == 2
     stage2_values = init_values_seen[1]
-    assert np.allclose(stage2_values["line_dmu_group_std"], 0.0)
+    assert np.allclose(stage2_values["line_dmu_independent_group_std"], 0.0)
     assert np.allclose(stage2_values["line_log_fwhm_delta_group_std"], 0.0)
-    assert np.all(stage2_values["line_amp_group"] > 0.0)
+    amp_sites = [
+        value
+        for key, value in stage2_values.items()
+        if key.startswith("line_amp_")
+        and key != "line_amp_group"
+        and not key.endswith("_std")
+    ]
+    assert amp_sites
+    assert all(np.all(value > 0.0) for value in amp_sites)
     assert np.isclose(stage2_values["line_log_broad_fwhm_std"], 0.0)
-    assert np.isclose(stage2_values["line_log_narrow_fwhm_std"], 0.0)
+    assert "line_log_narrow_fwhm_std" not in stage2_values
+    assert np.isclose(stage2_values["line_OIII_wing_log_fwhm_std"], 0.0)
+
+
+def test_optax_reddening_warm_start_transfers_apparent_power_law_sites(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.flux = flux
+    q.err = err
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.zeros(2)
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.zeros(2)
+    q.verbose = False
+
+    fsps_grid = coremod.FSPSTemplateGrid(
+        wave=lam,
+        templates=np.zeros((lam.size, 1)),
+        template_meta=[{"norm": 1.0}],
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        host_basis_jax=None,
+        t_obs_gyr=None,
+    )
+    monkeypatch.setattr(q, "_build_fsps_grid_for_fit", lambda **kwargs: fsps_grid)
+    monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
+
+    svi_calls = []
+    init_values_seen = []
+
+    def fake_init_to_value(*, values):
+        init_values_seen.append(dict(values))
+        return object()
+
+    class FakeSVIResult:
+        losses = np.array([0.0])
+        params = {}
+        state = object()
+
+    class FakeSVI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            svi_calls.append(kwargs)
+            return FakeSVIResult()
+
+    class FakeAutoDelta:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def median(self, params):
+            return {
+                "PL_apparent_log_norm_std": np.array(0.2),
+                "PL_apparent_slope_std": np.array(-0.1),
+                "log_ebv": np.array(-4.0),
+            }
+
+    class FakePredictive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(coremod, "init_to_value", fake_init_to_value)
+    monkeypatch.setattr(coremod, "SVI", FakeSVI)
+    monkeypatch.setattr(coremod, "AutoDelta", FakeAutoDelta)
+    monkeypatch.setattr(coremod, "Predictive", FakePredictive)
+
+    q.run_fsps_optax_fit(
+        num_steps=300,
+        use_lines=False,
+        decompose_host=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=True,
+        fit_reddening=True,
+        prior_config=build_default_prior_config(flux),
+    )
+
+    assert svi_calls[0]["fit_reddening"] is True
+    assert svi_calls[1]["fit_reddening"] is True
+    assert "PL_apparent_log_norm_std" in init_values_seen[0]
+    assert "PL_apparent_slope_std" in init_values_seen[0]
+    assert "log_ebv" in init_values_seen[0]
+    assert np.isclose(init_values_seen[1]["PL_apparent_log_norm_std"], 0.2)
+    assert np.isclose(init_values_seen[1]["PL_apparent_slope_std"], -0.1)
+    assert np.isclose(init_values_seen[1]["log_ebv"], -4.0)
 
 
 def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):

@@ -27,7 +27,7 @@ dependencies = [
   "optax",
   "h5py",
   "dsps",
-  "jaxsedfit @ git+https://github.com/burke86/grahspj.git@main",
+  "jaxsedfit @ git+https://github.com/burke86/jaxsedfit.git@f3ae6328145fa4a39a5ff769951e45d60d6e22f1",
   "dustmaps",
 ]
 

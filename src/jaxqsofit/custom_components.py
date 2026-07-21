@@ -8,8 +8,9 @@ from typing import Any, Callable, Iterable, Mapping, Sequence
 
 import jax.numpy as jnp
 import numpy as np
+import numpyro.distributions as dist
 
-from .config import _numpyro_distribution_to_mapping
+from .config import _prior_to_mapping
 
 
 def _normalize_template_flux(flux: np.ndarray, target_amp: float = 1.0) -> np.ndarray:
@@ -106,23 +107,15 @@ def custom_component_param_site(comp: Any, param_name: str) -> str:
     return comp.site_name(param_name)
 
 
-def _normalize_parameter_prior(value: Any) -> dict[str, Any]:
-    """Normalize a public custom-component prior to the low-level prior schema.
+def _normalize_parameter_prior(value: Any) -> dist.Distribution:
+    """Normalize a custom-component prior to a NumPyro distribution.
 
     Parameters
     ----------
     value : object
         value value.
     """
-    prior = _numpyro_distribution_to_mapping(value)
-    if prior is not None:
-        return prior
-    if isinstance(value, Mapping):
-        return dict(value)
-    raise TypeError(
-        "Custom component parameter priors must be supported "
-        "numpyro.distributions objects or low-level prior mappings."
-    )
+    return _prior_to_mapping(value)
 
 
 @dataclass(frozen=True)
@@ -130,7 +123,7 @@ class CustomComponentSpec:
     """Generic additive continuum component.
 
     The component is fully defined by:
-    - ``parameter_priors``: local parameter names -> prior config dictionaries
+    - ``parameter_priors``: local parameter names -> NumPyro distributions
     - ``evaluate``: callable ``evaluate(wave, params, metadata)``
 
     The evaluator is responsible for any shifts, broadenings, template
@@ -138,7 +131,7 @@ class CustomComponentSpec:
     """
 
     name: str
-    parameter_priors: Mapping[str, Mapping[str, Any]]
+    parameter_priors: Mapping[str, Any]
     evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any]
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
@@ -210,7 +203,7 @@ class CustomLineComponentSpec:
     """Generic additive emission-line component."""
 
     name: str
-    parameter_priors: Mapping[str, Mapping[str, Any]]
+    parameter_priors: Mapping[str, Any]
     evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any]
     line_kind: str = "broad"
     metadata: Mapping[str, Any] = field(default_factory=dict)
@@ -286,7 +279,7 @@ class CustomLineComponentSpec:
 
 def make_custom_component(
     name: str,
-    parameter_priors: Mapping[str, Mapping[str, Any]],
+    parameter_priors: Mapping[str, Any],
     evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any],
     *,
     metadata: Mapping[str, Any] | None = None,
@@ -314,7 +307,7 @@ def make_custom_component(
 
 def make_custom_line_component(
     name: str,
-    parameter_priors: Mapping[str, Mapping[str, Any]],
+    parameter_priors: Mapping[str, Any],
     evaluate: Callable[[Any, Mapping[str, Any], Mapping[str, Any]], Any],
     *,
     line_kind: str = "broad",
@@ -418,13 +411,11 @@ def make_template_component(
     if np.any(np.diff(wave) <= 0):
         raise ValueError("Template custom component wavelength grid must be strictly increasing.")
 
-    priors: dict[str, dict[str, Any]] = {
-        "norm": {"dist": "LogNormal", "loc": np.log(1e-3), "scale": 0.5},
-    }
+    priors: dict[str, dist.Distribution] = {"norm": dist.LogNormal(np.log(1e-3), 0.5)}
     if fit_fwhm:
-        priors["fwhm"] = {"dist": "LogNormal", "loc": np.log(float(default_fwhm_kms)), "scale": 0.3}
+        priors["fwhm"] = dist.LogNormal(np.log(float(default_fwhm_kms)), 0.3)
     if fit_shift:
-        priors["shift"] = {"dist": "Normal", "loc": 0.0, "scale": 1e-3}
+        priors["shift"] = dist.Normal(0.0, 1e-3)
 
     flux_model = flux
     if bool(normalize_template):
@@ -520,17 +511,17 @@ def inject_default_custom_component_priors(
         fscale = 1.0
 
     for comp in comps:
-        for param_name, param_cfg in comp.parameter_priors.items():
-            out_cfg = dict(param_cfg)
-            scale = float(out_cfg.get("scale", 1.0))
-            loc = float(out_cfg.get("loc", 0.0))
-            if str(out_cfg.get("dist", "Normal")).lower() == "lognormal" and loc <= np.log(1e-8):
-                out_cfg["loc"] = np.log(max(1e-3 * fscale, 1e-10))
+        for param_name, prior in comp.parameter_priors.items():
+            out_prior = prior
+            scale = float(np.asarray(getattr(prior, "scale", 1.0)))
+            loc = float(np.asarray(getattr(prior, "loc", 0.0)))
+            if isinstance(prior, dist.LogNormal) and loc <= np.log(1e-8):
+                out_prior = dist.LogNormal(np.log(max(1e-3 * fscale, 1e-10)), scale)
             elif str(param_name) == "c0" and scale == 0.0:
-                out_cfg["scale"] = 0.2 * fscale
+                out_prior = dist.Normal(loc, 0.2 * fscale)
             elif str(param_name).startswith("c") and scale == 0.0:
-                out_cfg["scale"] = 0.05 * fscale
-            cfg.setdefault(custom_component_param_site(comp, param_name), out_cfg)
+                out_prior = dist.Normal(loc, 0.05 * fscale)
+            cfg.setdefault(custom_component_param_site(comp, param_name), out_prior)
     return cfg
 
 
@@ -562,15 +553,15 @@ def inject_default_custom_line_component_priors(
         fscale = 1.0
 
     for comp in comps:
-        for param_name, param_cfg in comp.parameter_priors.items():
-            out_cfg = dict(param_cfg)
-            scale = float(out_cfg.get("scale", 1.0))
-            loc = float(out_cfg.get("loc", 0.0))
-            if str(out_cfg.get("dist", "Normal")).lower() == "lognormal" and loc <= np.log(1e-8):
-                out_cfg["loc"] = np.log(max(1e-3 * fscale, 1e-10))
+        for param_name, prior in comp.parameter_priors.items():
+            out_prior = prior
+            scale = float(np.asarray(getattr(prior, "scale", 1.0)))
+            loc = float(np.asarray(getattr(prior, "loc", 0.0)))
+            if isinstance(prior, dist.LogNormal) and loc <= np.log(1e-8):
+                out_prior = dist.LogNormal(np.log(max(1e-3 * fscale, 1e-10)), scale)
             elif scale == 0.0:
-                out_cfg["scale"] = 0.05 * fscale
-            cfg.setdefault(comp.site_name(param_name), out_cfg)
+                out_prior = dist.Normal(loc, 0.05 * fscale)
+            cfg.setdefault(comp.site_name(param_name), out_prior)
     return cfg
 
 

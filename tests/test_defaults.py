@@ -21,6 +21,7 @@ from jaxqsofit.defaults import (
     DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS,
     DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS,
     _build_default_prior_config as build_default_prior_config,
+    append_optional_line_rows,
     build_default_bal_components,
 )
 
@@ -39,8 +40,22 @@ def test_prior_config_object_exposes_model_mapping():
     assert mapping["poly_pivot"] == 2800.0
     assert mapping["host_redshift_prior"]["enabled"] is False
     assert mapping["line_dmu_scale_mult"] == 0.2
-    assert mapping["log_Fe_uv_FWHM"]["scale"] == 0.2
-    assert mapping["PL_slope"] == {"dist": "Normal", "loc": -1.5, "scale": 0.3}
+    assert float(mapping["log_Fe_uv_FWHM"].scale) == 0.2
+    assert isinstance(mapping["PL_slope"], dist.Normal)
+
+
+def test_feii_fractional_error_maps_to_likelihood_site():
+    prior = PriorConfig(
+        feii=FeIIPriorConfig(
+            fractional_error=dist.TruncatedNormal(0.2, 0.05, low=0.0, high=0.5)
+        )
+    )
+
+    mapping = prior.to_mapping()
+
+    assert mapping["frac_fe_jitter"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert np.isclose(mapping["frac_fe_jitter"].base_dist.loc, 0.2)
+    assert np.isclose(mapping["frac_fe_jitter"].base_dist.scale, 0.05)
 
 
 def test_fit_config_to_dict_serializes_numpyro_priors():
@@ -114,14 +129,33 @@ def test_fit_config_coerces_agn_and_line_mappings():
     assert cfg.lines.use_broad_lines is False
 
 
+def test_line_config_owns_optional_builtin_line_switches():
+    lines = LineConfig(
+        include_elg_narrow_lines=True,
+        include_high_ionization_lines=True,
+    )
+    assert lines.include_elg_narrow_lines is True
+    assert lines.include_high_ionization_lines is True
+
+    prior = PriorConfig.from_spectrum(flux=np.array([1.0, 2.0, 3.0])).to_mapping()
+    append_optional_line_rows(
+        prior,
+        np.array([1.0, 2.0, 3.0]),
+        include_elg_narrow_lines=lines.include_elg_narrow_lines,
+        include_high_ionization_lines=lines.include_high_ionization_lines,
+    )
+    names = {row["linename"] for row in prior["line"]["table"]}
+    assert "OII3726" in names
+    assert "NeV3346" in names
+    assert "FeX6374" in names
+
+
 def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
     flux = np.array([1.0, 2.0, 3.0], dtype=float)
 
     prior = PriorConfig.from_spectrum(
         flux=flux,
         redshift=1.0,
-        include_high_ionization_lines=False,
-        include_elg_narrow_lines=False,
     )
     prior.powerlaw.slope = dist.TruncatedNormal(loc=-1.5, scale=0.3, low=-3.5, high=0.5)
     prior.fe.uv_norm = dist.LogNormal(np.log(max(1.0e-3 * np.median(np.abs(flux)), 1.0e-10)), 0.04)
@@ -140,25 +174,18 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
 
     mapping = prior.to_mapping()
 
-    assert mapping["PL_slope"] == {"dist": "TruncatedNormal", "loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.5}
-    assert mapping["log_Fe_uv_norm"] == {
-        "dist": "LogNormal",
-        "loc": np.log(max(1.0e-3 * np.median(np.abs(flux)), 1.0e-10)),
-        "scale": 0.04,
-    }
-    assert mapping["log_Fe_op_over_uv"] == {"dist": "Normal", "loc": 0.0, "scale": 0.4}
+    assert mapping["PL_slope"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert isinstance(mapping["log_Fe_uv_norm"], dist.LogNormal)
+    assert isinstance(mapping["log_Fe_op_over_uv"], dist.Normal)
     assert mapping["line_dmu_scale_mult"] == 0.25
     assert mapping["line_sig_scale_mult"] == 0.25
     assert mapping["line_amp_scale_mult"] == 0.20
-    assert mapping["log_stellar_mass"] == {"dist": "TruncatedNormal", "loc": 10.6, "scale": 0.4, "low": 9.5, "high": 12.0}
-    assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert mapping["log_sfh_age_gyr"] == {"dist": "Normal", "loc": np.log(7.0), "scale": 0.3}
-    assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": np.log(0.25), "scale": 0.3}
-    assert mapping["gal_lgmet"] == {"dist": "Normal", "loc": 0.0, "scale": 0.2}
-    assert mapping["log_gal_lgmet_scatter"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.3}
+    assert mapping["log_stellar_mass"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    for key in ("log_host_aperture_scale", "log_sfh_age_gyr", "log_sfh_tau_over_age", "gal_lgmet", "log_gal_lgmet_scatter"):
+        assert isinstance(mapping[key], dist.Normal)
     assert mapping["host_template_age_prior"] == {"type": "prefer_old", "pivot_gyr": 1.0, "strength": 2.0}
     assert mapping["host_sfh_model"] == "delayed"
-    assert np.isclose(mapping["log_cont_norm"]["loc"], np.log(2.0 * np.median(np.abs(flux))))
+    assert np.isclose(mapping["log_cont_norm"].loc, np.log(2.0 * np.median(np.abs(flux))))
 
 
 def test_prior_config_coerces_nested_semantic_sections():
@@ -170,13 +197,13 @@ def test_prior_config_coerces_nested_semantic_sections():
     )
     mapping = prior.to_mapping()
 
-    assert mapping["PL_slope"] == {"dist": "Normal", "loc": -1.2, "scale": 0.2}
-    assert mapping["log_Fe_uv_norm"] == {"dist": "Normal", "loc": -5.0, "scale": 0.1}
+    assert isinstance(mapping["PL_slope"], dist.Normal)
+    assert isinstance(mapping["log_Fe_uv_norm"], dist.Normal)
     assert mapping["line_dmu_scale_mult"] == 0.1
     assert mapping["line_sig_scale_mult"] == 0.2
     assert mapping["line_amp_scale_mult"] == 0.3
     assert mapping["host_sfh_model"] == "delayed"
-    assert mapping["log_stellar_mass"] == {"dist": "Normal", "loc": 10.5, "scale": 0.2}
+    assert isinstance(mapping["log_stellar_mass"], dist.Normal)
 
 
 def test_fit_config_coerces_bal_mapping():
@@ -224,7 +251,7 @@ def test_build_default_prior_config_has_expected_keys():
         'PL_slope',
         'PL_pivot',
         'poly_pivot',
-        'log_reddening_a2500',
+        'log_ebv',
         'log_frac_host',
         'tau_host',
         'raw_w',
@@ -238,21 +265,9 @@ def test_build_default_prior_config_has_expected_keys():
         assert k in mapping
     assert isinstance(cfg, PriorConfig)
     assert mapping["poly_pivot"] is None
-    assert mapping["log_stellar_mass"] == {
-        "dist": "TruncatedNormal",
-        "loc": 9.0,
-        "scale": 0.75,
-        "low": 7.0,
-        "high": 12.0,
-    }
-    assert mapping["log_Balmer_vel"] == {
-        "dist": "TruncatedNormal",
-        "loc": np.log(3000.0),
-        "scale": 0.3,
-        "low": np.log(1000.0),
-        "high": np.log(15000.0),
-    }
-    assert mapping["log_host_aperture_scale"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
+    assert mapping["log_stellar_mass"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert mapping["log_Balmer_vel"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert isinstance(mapping["log_host_aperture_scale"], dist.Normal)
     assert mapping["host_template_age_prior"] == {
         "type": "prefer_old",
         "pivot_gyr": 1.0,
@@ -260,15 +275,9 @@ def test_build_default_prior_config_has_expected_keys():
         "min_logit": -3.0,
         "max_logit": 2.0,
     }
-    assert mapping["log_sfh_tau_over_age"] == {"dist": "Normal", "loc": 0.0, "scale": 0.5}
-    assert mapping["log_gal_sigma_kms"] == {
-        "dist": "TruncatedNormal",
-        "loc": np.log(150.0),
-        "scale": 0.4,
-        "low": np.log(30.0),
-        "high": np.log(500.0),
-    }
-    assert mapping["log_reddening_a2500"] == {"dist": "Normal", "loc": np.log(0.1), "scale": 0.6}
+    assert isinstance(mapping["log_sfh_tau_over_age"], dist.Normal)
+    assert mapping["log_gal_sigma_kms"].__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert isinstance(mapping["log_ebv"], dist.Normal)
 
 
 def test_build_default_prior_config_scales_with_flux_median():
@@ -278,12 +287,25 @@ def test_build_default_prior_config_scales_with_flux_median():
     expected = np.log(np.median(np.abs(flux)))
     mapping = cfg.to_mapping()
 
-    got = float(mapping['log_cont_norm']['loc'])
+    got = float(mapping['log_cont_norm'].loc)
     assert np.isfinite(got)
     assert np.isclose(got, expected)
-    assert mapping['log_cont_norm']['dist'] == 'LogNormal'
-    assert mapping['PL_slope']['dist'] == 'Normal'
-    assert mapping['tau_host']['dist'] == 'HalfNormal'
+    assert isinstance(mapping['log_cont_norm'], dist.LogNormal)
+    assert isinstance(mapping['PL_slope'], dist.Normal)
+    assert isinstance(mapping['tau_host'], dist.HalfNormal)
+
+
+def test_default_line_initializations_are_interior_to_scaled_bounds():
+    mapping = build_default_prior_config(np.array([50.0, 75.0, 125.0], dtype=float)).to_mapping()
+    rows = mapping["line"]["table"]
+
+    for row in rows:
+        span = row["maxsca"] - row["minsca"]
+        expected_fraction = 0.05 if "_br" in row["linename"].lower() else 0.02
+        assert span > 0.0
+        assert row["inisca"] > row["minsca"]
+        assert row["inisca"] < row["maxsca"]
+        assert (row["inisca"] - row["minsca"]) / span >= expected_fraction - 1e-12
 
 
 def test_build_default_prior_config_accepts_manual_pl_pivot():
@@ -298,7 +320,7 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     cfg = build_default_prior_config(flux)
     mapping = cfg.to_mapping()
 
-    assert mapping["log_frac_host"]["dist"] == "StudentT"
+    assert isinstance(mapping["log_frac_host"], dist.StudentT)
     assert mapping["host_redshift_prior"]["enabled"] is False
     assert mapping["host_redshift_prior"]["z_mid"] == 1.0
     assert mapping["host_redshift_prior"]["width"] == 0.2
@@ -308,19 +330,16 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     assert mapping["host_redshift_prior"]["highz_scale_mult"] == 0.05
     assert mapping["host_redshift_prior"]["lowz_df"] == 3.0
     assert mapping["host_redshift_prior"]["highz_df"] == 20.0
-    assert mapping["log_Fe_uv_norm"]["dist"] == "LogNormal"
-    assert np.isclose(mapping["log_Fe_uv_norm"]["loc"], np.log(0.03 * 2.0))
-    assert mapping["log_Fe_uv_norm"]["scale"] == 1.0
-    assert mapping["log_Fe_op_over_uv"] == {"dist": "Normal", "loc": 0.0, "scale": 1.0}
-    assert mapping["log_Fe_uv_FWHM"]["dist"] == "LogNormal"
-    assert np.isclose(mapping["log_Fe_uv_FWHM"]["loc"], np.log(3000.0))
-    assert mapping["log_Fe_uv_FWHM"]["scale"] == 0.5
-    assert mapping["log_Fe_op_FWHM"]["dist"] == "LogNormal"
-    assert np.isclose(mapping["log_Fe_op_FWHM"]["loc"], np.log(3000.0))
-    assert mapping["log_Fe_op_FWHM"]["scale"] == 0.5
-    assert mapping["Fe_uv_shift"]["dist"] == "Normal"
-    assert mapping["frac_jitter"]["dist"] == "HalfNormal"
-    assert mapping["add_jitter"]["dist"] == "HalfNormal"
+    assert isinstance(mapping["log_Fe_uv_norm"], dist.LogNormal)
+    assert np.isclose(mapping["log_Fe_uv_norm"].loc, np.log(0.03 * 2.0))
+    assert float(mapping["log_Fe_uv_norm"].scale) == 1.0
+    assert isinstance(mapping["log_Fe_op_over_uv"], dist.Normal)
+    assert isinstance(mapping["log_Fe_uv_FWHM"], dist.LogNormal)
+    assert isinstance(mapping["log_Fe_op_FWHM"], dist.LogNormal)
+    assert isinstance(mapping["Fe_uv_shift"], dist.Normal)
+    assert isinstance(mapping["frac_jitter"], dist.HalfNormal)
+    assert mapping["frac_fe_jitter"] == {"dist": "Delta", "value": 0.20}
+    assert mapping["add_jitter"] == {"dist": "Delta", "value": 0.0}
 
 
 def test_build_default_bal_components_exposes_common_bal_lines():
@@ -334,34 +353,31 @@ def test_build_default_bal_components_exposes_common_bal_lines():
     assert comps[2].metadata["shared_parameter_sites"]["tau_peak"] == "custom_bal_tau_peak"
     assert comps[2].metadata["shared_parameter_sites"]["covering"] == "custom_bal_covering"
     assert comps[2].metadata["shared_parameter_sites"]["fwhm_kms"] == "custom_bal_fwhm_kms"
-    assert np.isclose(comps[0].parameter_priors["tau_peak"]["scale"], 0.25)
-    assert np.isclose(comps[1].parameter_priors["tau_peak"]["scale"], 0.25)
+    assert np.isclose(comps[0].parameter_priors["tau_peak"].scale, 0.25)
+    assert np.isclose(comps[1].parameter_priors["tau_peak"].scale, 0.25)
     tau_cfg = comps[2].parameter_priors["tau_peak"]
-    assert tau_cfg["dist"] == "HalfNormal"
-    assert np.isclose(tau_cfg["scale"], 0.25)
+    assert isinstance(tau_cfg, dist.HalfNormal)
+    assert np.isclose(tau_cfg.scale, 0.25)
     covering_cfg = comps[2].parameter_priors["covering"]
-    assert covering_cfg["dist"] == "TruncatedNormal"
-    assert covering_cfg["loc"] == 0.15
-    assert covering_cfg["scale"] == 0.12
-    assert covering_cfg["low"] == 0.0
-    assert covering_cfg["high"] == 0.70
+    assert covering_cfg.__class__.__name__ == "TwoSidedTruncatedDistribution"
+    assert covering_cfg.base_dist.loc == 0.15
+    assert covering_cfg.base_dist.scale == 0.12
+    assert covering_cfg.low == 0.0
+    assert covering_cfg.high == 0.70
     v_out_cfg = comps[2].parameter_priors["v_out"]
-    assert v_out_cfg["dist"] == "TruncatedNormal"
-    assert v_out_cfg["loc"] == 6000.0
-    assert v_out_cfg["scale"] == 2500.0
-    assert v_out_cfg["low"] == 3000.0
-    assert v_out_cfg["high"] == 12000.0
+    assert v_out_cfg.base_dist.loc == 6000.0
+    assert v_out_cfg.base_dist.scale == 2500.0
+    assert v_out_cfg.low == 3000.0
+    assert v_out_cfg.high == 12000.0
     fwhm_cfg = comps[2].parameter_priors["fwhm_kms"]
-    assert fwhm_cfg["dist"] == "TruncatedNormal"
-    assert fwhm_cfg["loc"] == 8000.0
-    assert fwhm_cfg["scale"] == 2500.0
-    assert fwhm_cfg["low"] == 2000.0
-    assert fwhm_cfg["high"] == 15000.0
+    assert fwhm_cfg.base_dist.loc == 8000.0
+    assert fwhm_cfg.base_dist.scale == 2500.0
+    assert fwhm_cfg.low == 2000.0
+    assert fwhm_cfg.high == 15000.0
     shape_cfg = comps[2].parameter_priors["shape_power"]
-    assert shape_cfg["dist"] == "TruncatedNormal"
-    assert shape_cfg["loc"] == 2.0
-    assert shape_cfg["low"] == 2.0
-    assert shape_cfg["high"] == 12.0
+    assert shape_cfg.base_dist.loc == 2.0
+    assert shape_cfg.low == 2.0
+    assert shape_cfg.high == 12.0
 
 
 def test_build_default_bal_components_accepts_prior_overrides():
@@ -378,16 +394,16 @@ def test_build_default_bal_components_accepts_prior_overrides():
     )
 
     for comp in comps:
-        assert np.isclose(comp.parameter_priors["tau_peak"]["scale"], 0.6)
+        assert np.isclose(comp.parameter_priors["tau_peak"].scale, 0.6)
         covering_cfg = comp.parameter_priors["covering"]
-        assert np.isclose(covering_cfg["loc"], 0.4)
-        assert np.isclose(covering_cfg["scale"], 0.1)
-        assert np.isclose(covering_cfg["high"], 0.85)
+        assert np.isclose(covering_cfg.base_dist.loc, 0.4)
+        assert np.isclose(covering_cfg.base_dist.scale, 0.1)
+        assert np.isclose(covering_cfg.high, 0.85)
         fwhm_cfg = comp.parameter_priors["fwhm_kms"]
-        assert np.isclose(fwhm_cfg["loc"], 6000.0)
-        assert np.isclose(fwhm_cfg["scale"], 1500.0)
-        assert np.isclose(fwhm_cfg["low"], 2500.0)
-        assert np.isclose(fwhm_cfg["high"], 12000.0)
+        assert np.isclose(fwhm_cfg.base_dist.loc, 6000.0)
+        assert np.isclose(fwhm_cfg.base_dist.scale, 1500.0)
+        assert np.isclose(fwhm_cfg.low, 2500.0)
+        assert np.isclose(fwhm_cfg.high, 12000.0)
 
 
 def test_default_line_table_contains_expanded_uv_complexes():

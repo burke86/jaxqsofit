@@ -67,12 +67,16 @@ def test_evaluate_joint_spectral_components_uses_default_tied_lines():
         ),
     )
 
-    assert "jqf_line_dmu_group_std" in tr
+    assert "jqf_line_dmu_independent_group_std" in tr
     assert "jqf_line_log_fwhm_delta_group_std" in tr
     assert "jqf_line_amp_group" in tr
     assert tr["jqf_line_dmu_group"]["type"] == "deterministic"
     assert tr["jqf_line_sig_group"]["type"] == "deterministic"
-    assert tr["jqf_line_amp_group"]["type"] == "sample"
+    assert tr["jqf_line_amp_group"]["type"] == "deterministic"
+    assert any(
+        name.startswith("jqf_line_amp_") and name != "jqf_line_amp_group"
+        for name in tr
+    )
     assert "jqf_line_amp_per_component" in tr
     assert "jqf_line_model_broad" in tr
     assert "jqf_line_model_narrow" in tr
@@ -160,7 +164,7 @@ def test_evaluate_joint_spectral_components_accepts_prior_config_object_as_line_
         ),
     )
 
-    assert "jqf_line_dmu_group_std" in tr
+    assert "jqf_line_dmu_independent_group_std" in tr
     assert tr["jqf_line_dmu_group"]["type"] == "deterministic"
     assert "jqf_line_amp_per_component" in tr
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape

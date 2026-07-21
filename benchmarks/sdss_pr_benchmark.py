@@ -30,7 +30,7 @@ def _fetch_sdss_spectrum() -> tuple[Any, float]:
     xid = SDSS.query_region(coord, spectro=True, radius=5 * u.arcsec)
     if xid is None or len(xid) == 0:
         raise RuntimeError("No SDSS spectrum found near benchmark coordinate.")
-    spectra = SDSS.get_spectra(matches=xid[:1])
+    spectra = SDSS.get_spectra(matches=xid[:1], timeout=300)
     if not spectra:
         raise RuntimeError("SDSS returned no spectra for benchmark coordinate.")
     z = float(xid[0]["z"]) if "z" in xid.colnames else 0.1
@@ -72,9 +72,17 @@ def _fit_once(
     optax_lr: float,
     dsps_ssp_fn: str,
 ) -> dict[str, Any]:
+    import numpyro.distributions as dist
+
     from jaxqsofit import JAXQSOFit, PriorConfig
 
     prior_config = PriorConfig.from_spectrum(flux=flux, redshift=z)
+    # The shared jaxsedfit host model interprets ``gal_lgmet`` as absolute
+    # log10(Z), bounded by the DSPS SSP grid (roughly -4.35 to -1.35 for the
+    # benchmark template).  Pin the benchmark prior inside that support so the
+    # historical base checkout and PR head are compared under the same valid
+    # initialization even when the installed jaxsedfit version has advanced.
+    prior_config.host.metallicity = dist.Normal(loc=-2.3, scale=0.3)
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=z, ra=184.0307, dec=-2.2383)
     q.config.observation.apply_mw_deredden = False
     q.config.lines.enabled = True
@@ -272,22 +280,66 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
 
 def _run_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
-    result = run_benchmark(
-        label=args.label,
-        sha=args.sha,
-        repeats=args.repeats,
-        optax_steps=args.optax_steps,
-        optax_lr=args.optax_lr,
-        dsps_ssp_fn=args.dsps_ssp_fn,
-    )
+    try:
+        result = run_benchmark(
+            label=args.label,
+            sha=args.sha,
+            repeats=args.repeats,
+            optax_steps=args.optax_steps,
+            optax_lr=args.optax_lr,
+            dsps_ssp_fn=args.dsps_ssp_fn,
+        )
+    except Exception as exc:
+        from astroquery.exceptions import TimeoutError as AstroqueryTimeoutError
+        from urllib.error import URLError
+
+        if not isinstance(exc, (AstroqueryTimeoutError, TimeoutError, URLError)):
+            raise
+        result = {
+            "label": args.label,
+            "sha": args.sha,
+            "skipped": True,
+            "skip_reason": f"SDSS spectrum unavailable: {exc}",
+        }
     (args.output_dir / "benchmark.json").write_text(json.dumps(result, indent=2) + "\n")
-    (args.output_dir / "output").write_text(render_markdown(result, workflow_url=_workflow_url()))
+    if result.get("skipped"):
+        output = "\n".join([
+            "<!-- jaxqsofit benchmark -->",
+            "### jaxqsofit PR benchmark",
+            "",
+            f"Benchmark skipped: {result['skip_reason']}",
+            "",
+        ])
+    else:
+        output = render_markdown(result, workflow_url=_workflow_url())
+    (args.output_dir / "output").write_text(output)
 
 
 def _compare_command(args: argparse.Namespace) -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     baseline = json.loads(args.baseline_json.read_text())
     candidate = json.loads(args.candidate_json.read_text())
+    if baseline.get("skipped") or candidate.get("skipped"):
+        skipped = baseline if baseline.get("skipped") else candidate
+        comparison = {
+            "baseline": baseline,
+            "candidate": candidate,
+            "skipped": True,
+            "skip_reason": skipped["skip_reason"],
+        }
+        (args.output_dir / "benchmark-comparison.json").write_text(
+            json.dumps(comparison, indent=2) + "\n"
+        )
+        (args.output_dir / "output").write_text(
+            "\n".join([
+                "<!-- jaxqsofit benchmark -->",
+                "### jaxqsofit PR benchmark",
+                "",
+                f"Benchmark skipped: {skipped['skip_reason']}",
+                "",
+            ])
+        )
+        return
     comparison = {
         "baseline": baseline,
         "candidate": candidate,
