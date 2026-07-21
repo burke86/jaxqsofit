@@ -326,6 +326,9 @@ DEFAULT_LINE_CONFIG: Dict[str, Any] = {
     "line_dmu_scale_mult": 0.25,
     "line_sig_scale_mult": 0.25,
     "line_amp_scale_mult": 0.25,
+    # Suppress unsupported second-and-later Gaussians while allowing the data
+    # to retain them when a broad-line profile genuinely needs extra structure.
+    "line_extra_amp_scale_mult": 0.5,
     "line": {"table": DEFAULT_LINE_PRIOR_ROWS},
 }
 
@@ -727,10 +730,8 @@ def _build_default_prior_config(
         "log_gal_sigma_kms": dist.TruncatedNormal(np.log(150.0), 0.4, low=np.log(30.0), high=np.log(500.0)),
         "log_Fe_uv_norm": dist.LogNormal(np.log(max(0.03 * fscale, 1e-12)), 1.0),
         "log_Fe_op_over_uv": dist.Normal(0.0, 1.0),
-        "log_Fe_uv_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
-        "log_Fe_op_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
-        "Fe_uv_shift": dist.Normal(0.0, 1e-3),
-        "Fe_op_shift": dist.Normal(0.0, 1e-3),
+        "log_Fe_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
+        "Fe_shift": dist.Normal(0.0, 1e-3),
         "log_Balmer_norm": dist.LogNormal(np.log(max(1e-3 * fscale, AMPLITUDE_FLOOR)), 0.5),
         "log_Balmer_Tau": dist.LogNormal(np.log(0.5), 0.25),
         "log_Balmer_vel": dist.TruncatedNormal(np.log(3000.0), 0.3, low=np.log(1000.0), high=np.log(15000.0)),

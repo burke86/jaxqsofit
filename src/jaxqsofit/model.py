@@ -810,19 +810,32 @@ def _ordered_width_reference_log_fwhm(n_components: int, low: float, high: float
     return target
 
 
-def _ordered_spacing_logit_location(target, low: float, high: float):
-    """Map ordered interior values to anchored softmax-spacing logits."""
-    gaps = np.diff(np.concatenate(([low], np.asarray(target), [high])))
-    gaps = np.clip(gaps, 1.0e-8, None)
-    return np.log(gaps[:-1] / gaps[-1])
+def _bounded_ordered_stick_breaking(coords, target, low: float, high: float):
+    """Map independent coordinates to ordered widths by local stick breaking.
 
-
-def _bounded_ordered_values(logits, low: float, high: float):
-    """Transform anchored spacing logits into strictly ordered values."""
-    spacings = jax.nn.softmax(
-        jnp.concatenate([logits, jnp.zeros((1,), dtype=jnp.float64)])
-    )
-    return low + (high - low) * jnp.cumsum(spacings[:-1])
+    Each complex owns an independent coordinate vector.  Coordinate ``i``
+    places width ``i`` within the interval remaining above width ``i - 1``;
+    it therefore cannot move any earlier width.  Locations are calibrated so
+    zero coordinates reproduce ``target`` while retaining the full physical
+    interval for object-to-object variation.
+    """
+    target = np.asarray(target, dtype=float)
+    previous_target = float(low)
+    previous_width = jnp.asarray(low, dtype=jnp.float64)
+    ordered = []
+    for index, target_width in enumerate(target):
+        target_fraction = np.clip(
+            (float(target_width) - previous_target) / (high - previous_target),
+            1.0e-4,
+            1.0 - 1.0e-4,
+        )
+        logit_loc = np.log(target_fraction / (1.0 - target_fraction))
+        fraction = jax.nn.sigmoid(logit_loc + 0.5 * coords[index])
+        width = previous_width + (high - previous_width) * fraction
+        ordered.append(width)
+        previous_target = float(target_width)
+        previous_width = width
+    return jnp.stack(ordered)
 
 
 def _smooth_bounded_affine(eps, loc, scale, low, high):
@@ -1052,8 +1065,8 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
                 _prefixed_site(site_prefix, "line_log_broad_fwhm"),
                 broad_default,
                 0.35,
-                float(np.min(log_fwhm_min[unordered_broad_idx])) if unordered_broad_idx.size else -jnp.inf,
-                float(np.max(log_fwhm_max[unordered_broad_idx])) if unordered_broad_idx.size else jnp.inf,
+                float(np.min(log_fwhm_min[unordered_broad_idx])),
+                float(np.max(log_fwhm_max[unordered_broad_idx])),
             )
             if unordered_broad_idx.size
             else jnp.asarray(broad_default, dtype=jnp.float64)
@@ -1147,22 +1160,26 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
             low = float(np.max(log_fwhm_min[group_ids]))
             high = float(np.min(log_fwhm_max[group_ids]))
             target = _ordered_width_reference_log_fwhm(n_components, low, high)
-            logit_loc = _ordered_spacing_logit_location(target, low, high)
-            logits_std = numpyro.sample(
+            ordered_coords_std = numpyro.sample(
                 _prefixed_site(
                     site_prefix,
                     _ordered_width_site(order_label, standardized=True),
                 ),
                 dist.Normal(jnp.zeros(n_components), jnp.ones(n_components)).to_event(1),
             )
-            logits = numpyro.deterministic(
+            ordered_coords = numpyro.deterministic(
                 _prefixed_site(
                     site_prefix,
                     _ordered_width_site(order_label, standardized=False),
                 ),
-                jnp.asarray(logit_loc, dtype=jnp.float64) + 0.5 * logits_std,
+                ordered_coords_std,
             )
-            ordered_log_fwhm = _bounded_ordered_values(logits, low, high)
+            ordered_log_fwhm = _bounded_ordered_stick_breaking(
+                ordered_coords,
+                target,
+                low,
+                high,
+            )
             log_fwhm_group = log_fwhm_group.at[jnp.asarray(group_ids)].set(ordered_log_fwhm)
 
         numpyro.deterministic(_prefixed_site(site_prefix, "line_log_fwhm_group"), log_fwhm_group)
@@ -1175,7 +1192,14 @@ def _sample_line_widths(tied_line_meta, prior_config, *, site_prefix: str = ""):
 
 
 def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = ""):
-    """Sample bounded line amplitudes by named spectral complex."""
+    """Sample bounded line amplitudes by named spectral complex.
+
+    For a multi-Gaussian broad line, the first component retains the ordinary
+    amplitude prior.  Later components use a zero-attracting truncated-normal
+    prior whose scale is relative to the first component's initial amplitude.
+    This lets extra profile flexibility switch off when the spectrum does not
+    support it, reducing degeneracy with Fe emission and the continuum.
+    """
     n_f = int(tied_line_meta["n_fgroups"])
     amp_scale_mult = float(prior_config["line_amp_scale_mult"])
     amp_group = jnp.zeros((0,), dtype=jnp.float64)
@@ -1193,6 +1217,13 @@ def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = 
             AMPLITUDE_FLOOR,
         )
         amp_group = jnp.asarray(amp_init, dtype=jnp.float64)
+        extra_amp_scale_mult = float(
+            prior_config.get("line_extra_amp_scale_mult", 0.0)
+        )
+        extra_amp_reference = jnp.asarray(
+            tied_line_meta.get("extra_amp_reference_group", np.full(n_f, -1)),
+            dtype=jnp.int32,
+        )
         complex_groups = tied_line_meta.get(
             "amp_complex_groups",
             [{"complex_index": 0, "name": "all", "fgroup_ids": list(range(n_f))}],
@@ -1206,10 +1237,20 @@ def _sample_line_amplitudes(tied_line_meta, prior_config, *, site_prefix: str = 
             if not group_ids.size:
                 continue
             group_jax = jnp.asarray(group_ids, dtype=jnp.int32)
+            is_extra = extra_amp_reference[group_jax] >= 0
+            reference_ids = jnp.maximum(extra_amp_reference[group_jax], 0)
+            regular_scale = amp_scale_mult * (
+                amp_max[group_jax] - amp_min[group_jax]
+            )
+            shrinkage_scale = extra_amp_scale_mult * amp_init[reference_ids]
             local_prior = dist.TruncatedNormal(
-                loc=amp_init[group_jax],
+                loc=jnp.where(is_extra, amp_min[group_jax], amp_init[group_jax]),
                 scale=jnp.maximum(
-                    amp_scale_mult * (amp_max[group_jax] - amp_min[group_jax]),
+                    jnp.where(
+                        is_extra & (extra_amp_scale_mult > 0.0),
+                        shrinkage_scale,
+                        regular_scale,
+                    ),
                     AMPLITUDE_FLOOR,
                 ),
                 low=amp_min[group_jax],
@@ -2414,10 +2455,24 @@ def reconstruct_posterior_components(
     fe_uv_norm = np.asarray(samples.get('Fe_uv_norm', np.zeros(n_total)), dtype=float)[sl]
     log_fe_op_over_uv = np.asarray(samples.get('log_Fe_op_over_uv', np.zeros(n_total)), dtype=float)[sl]
     fe_op_norm = fe_uv_norm * np.exp(log_fe_op_over_uv)
-    fe_uv_fwhm = np.asarray(samples.get('Fe_uv_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
-    fe_op_fwhm = np.asarray(samples.get('Fe_op_FWHM', np.full(n_total, 3000.0)), dtype=float)[sl]
-    fe_uv_shift = np.asarray(samples.get('Fe_uv_shift', np.zeros(n_total)), dtype=float)[sl]
-    fe_op_shift = np.asarray(samples.get('Fe_op_shift', np.zeros(n_total)), dtype=float)[sl]
+    shared_fe_fwhm = samples.get('Fe_FWHM', None)
+    fe_uv_fwhm = np.asarray(
+        shared_fe_fwhm if shared_fe_fwhm is not None else samples.get('Fe_uv_FWHM', np.full(n_total, 3000.0)),
+        dtype=float,
+    )[sl]
+    fe_op_fwhm = np.asarray(
+        shared_fe_fwhm if shared_fe_fwhm is not None else samples.get('Fe_op_FWHM', np.full(n_total, 3000.0)),
+        dtype=float,
+    )[sl]
+    shared_fe_shift = samples.get('Fe_shift', None)
+    fe_uv_shift = np.asarray(
+        shared_fe_shift if shared_fe_shift is not None else samples.get('Fe_uv_shift', np.zeros(n_total)),
+        dtype=float,
+    )[sl]
+    fe_op_shift = np.asarray(
+        shared_fe_shift if shared_fe_shift is not None else samples.get('Fe_op_shift', np.zeros(n_total)),
+        dtype=float,
+    )[sl]
     balmer_norm = np.asarray(samples.get('Balmer_norm', np.zeros(n_total)), dtype=float)[sl]
     balmer_tau = np.asarray(samples.get('Balmer_Tau', np.full(n_total, 0.5)), dtype=float)[sl]
     balmer_vel = np.asarray(samples.get('Balmer_vel', np.full(n_total, 3000.0)), dtype=float)[sl]
@@ -3030,6 +3085,14 @@ def build_tied_line_meta_from_linelist(
             flux_ratio[i] = 1.0
             next_gid += 1
     n_fgroups = int(np.max(fgroup)) + 1 if len(fgroup) else 0
+    extra_amp_reference_group = np.full(n_fgroups, -1, dtype=int)
+    for component_indices in broad_order_component_indices:
+        component_fgroups = [int(fgroup[idx]) for idx in component_indices]
+        if not component_fgroups:
+            continue
+        reference_group = component_fgroups[0]
+        for group_id in component_fgroups[1:]:
+            extra_amp_reference_group[group_id] = reference_group
     amp_complex_groups = []
     component_complex_array = np.asarray(component_complex_names, dtype=object)
     for complex_index, complex_name in enumerate(complex_names):
@@ -3123,6 +3186,7 @@ def build_tied_line_meta_from_linelist(
         'flux_ratio': np.asarray(flux_ratio, dtype=float),
         'flux_ratio_jax': _np_to_jnp(flux_ratio),
         'amp_complex_groups': amp_complex_groups,
+        'extra_amp_reference_group': extra_amp_reference_group,
         'dmu_init_group': np.asarray(dmu_init_group, dtype=float),
         'dmu_init_group_jax': _np_to_jnp(dmu_init_group),
         'dmu_min_group': np.asarray(dmu_min_group, dtype=float),
@@ -3781,22 +3845,46 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         )
         log_fe_op_over_uv = _sample_prior(prior_config, 'log_Fe_op_over_uv', dist.Normal(0.0, 1.0))
         fe_op_norm = fe_uv_norm * jnp.exp(log_fe_op_over_uv)
-        fe_uv_fwhm = _sample_positive_distribution(
+        fe_fwhm_value_key = next(
+            (key for key in ('Fe_FWHM', 'Fe_uv_FWHM', 'Fe_op_FWHM') if key in prior_config),
+            'Fe_FWHM',
+        )
+        fe_fwhm_log_key = next(
+            (key for key in ('log_Fe_FWHM', 'log_Fe_uv_FWHM', 'log_Fe_op_FWHM') if key in prior_config),
+            'log_Fe_FWHM',
+        )
+        fe_fwhm = _sample_positive_distribution(
             prior_config,
-            value_key='Fe_uv_FWHM',
-            log_key='log_Fe_uv_FWHM',
+            value_key=fe_fwhm_value_key,
+            log_key=fe_fwhm_log_key,
             default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
             default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
         )
-        fe_op_fwhm = _sample_positive_distribution(
-            prior_config,
-            value_key='Fe_op_FWHM',
-            log_key='log_Fe_op_FWHM',
-            default_value_distribution=dist.LogNormal(np.log(3000.0), 0.5),
-            default_log_distribution=dist.Normal(np.log(3000.0), 0.5),
+        if fe_fwhm_value_key != 'Fe_FWHM':
+            numpyro.deterministic('Fe_FWHM', fe_fwhm)
+        fe_uv_fwhm = (
+            fe_fwhm if fe_fwhm_value_key == 'Fe_uv_FWHM'
+            else numpyro.deterministic('Fe_uv_FWHM', fe_fwhm)
         )
-        fe_uv_shift = _sample_prior(prior_config, 'Fe_uv_shift', dist.Normal(0.0, 0.01))
-        fe_op_shift = _sample_prior(prior_config, 'Fe_op_shift', dist.Normal(0.0, 0.01))
+        fe_op_fwhm = (
+            fe_fwhm if fe_fwhm_value_key == 'Fe_op_FWHM'
+            else numpyro.deterministic('Fe_op_FWHM', fe_fwhm)
+        )
+        fe_shift_key = next(
+            (key for key in ('Fe_shift', 'Fe_uv_shift', 'Fe_op_shift') if key in prior_config),
+            'Fe_shift',
+        )
+        fe_shift = _sample_prior(prior_config, fe_shift_key, dist.Normal(0.0, 0.01))
+        if fe_shift_key != 'Fe_shift':
+            numpyro.deterministic('Fe_shift', fe_shift)
+        fe_uv_shift = (
+            fe_shift if fe_shift_key == 'Fe_uv_shift'
+            else numpyro.deterministic('Fe_uv_shift', fe_shift)
+        )
+        fe_op_shift = (
+            fe_shift if fe_shift_key == 'Fe_op_shift'
+            else numpyro.deterministic('Fe_op_shift', fe_shift)
+        )
     else:
         fe_uv_norm = jnp.asarray(0.0)
         fe_op_norm = jnp.asarray(0.0)
@@ -4110,7 +4198,11 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
         host_amp_out = jnp.asarray(0.0)
 
     frac_jitter = _sample_prior(prior_config, 'frac_jitter', dist.HalfNormal(0.02))
-    frac_fe_jitter = _sample_prior(prior_config, 'frac_fe_jitter', dist.Delta(0.20))
+    frac_fe_jitter = (
+        _sample_prior(prior_config, 'frac_fe_jitter', dist.Delta(0.20))
+        if fit_fe
+        else jnp.asarray(0.0)
+    )
     add_jitter = _sample_prior(
         prior_config,
         'add_jitter',

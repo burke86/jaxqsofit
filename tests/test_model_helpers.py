@@ -214,10 +214,8 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
             "PL_slope": np.array(-1.5),
             "log_Fe_uv_norm": np.array(np.log(0.01)),
             "log_Fe_op_over_uv": np.array(0.0),
-            "Fe_uv_FWHM": np.array(3000.0),
-            "Fe_op_FWHM": np.array(3000.0),
-            "Fe_uv_shift": np.array(0.0),
-            "Fe_op_shift": np.array(0.0),
+            "Fe_FWHM": np.array(3000.0),
+            "Fe_shift": np.array(0.0),
             "frac_jitter": np.array(0.0),
             "frac_fe_jitter": np.array(0.2),
             "add_jitter": np.array(0.0),
@@ -247,6 +245,14 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
     assert tr["PL_slope"]["fn"].__class__.__name__ in {"TruncatedNormal", "TwoSidedTruncatedDistribution"}
     assert tr["log_Fe_uv_norm"]["type"] == "sample"
     assert tr["Fe_uv_norm"]["type"] == "deterministic"
+    assert tr["Fe_FWHM"]["type"] == "sample"
+    assert tr["Fe_shift"]["type"] == "sample"
+    assert tr["Fe_uv_FWHM"]["type"] == "deterministic"
+    assert tr["Fe_op_FWHM"]["type"] == "deterministic"
+    assert tr["Fe_uv_shift"]["type"] == "deterministic"
+    assert tr["Fe_op_shift"]["type"] == "deterministic"
+    np.testing.assert_allclose(tr["Fe_uv_FWHM"]["value"], tr["Fe_op_FWHM"]["value"])
+    np.testing.assert_allclose(tr["Fe_uv_shift"]["value"], tr["Fe_op_shift"]["value"])
     np.testing.assert_allclose(np.asarray(tr["Fe_uv_norm"]["value"]), 0.01)
     fe_model = np.asarray(tr["f_fe_mgii_model"]["value"]) + np.asarray(tr["f_fe_balmer_model"]["value"])
     expected_sigma = np.sqrt(err**2 + (0.2 * np.abs(fe_model))**2)
@@ -260,10 +266,8 @@ def test_qso_model_honors_numpyro_prior_distribution_families():
             "PL_slope": np.array(-1.5),
             "Fe_uv_norm": np.array(0.01),
             "log_Fe_op_over_uv": np.array(0.0),
-            "Fe_uv_FWHM": np.array(3000.0),
-            "Fe_op_FWHM": np.array(3000.0),
-            "Fe_uv_shift": np.array(0.0),
-            "Fe_op_shift": np.array(0.0),
+            "Fe_FWHM": np.array(3000.0),
+            "Fe_shift": np.array(0.0),
             "frac_jitter": np.array(0.0),
             "add_jitter": np.array(0.0),
         },
@@ -328,6 +332,7 @@ def test_ebv_is_sampled_in_standardizable_log_space_and_a2500_is_exposed():
     assert model_trace["log_ebv"]["type"] == "sample"
     assert model_trace["ebv"]["type"] == "deterministic"
     assert model_trace["reddening_a2500"]["type"] == "deterministic"
+    assert "frac_fe_jitter" not in model_trace
 
 
 def test_fe_template_component_smoothly_bounds_fwhm_below_template_base():
@@ -758,6 +763,7 @@ def test_multigaussian_broad_widths_are_ordered_with_independent_amplitudes():
         "line_dmu_scale_mult": 0.2,
         "line_sig_scale_mult": 0.2,
         "line_amp_scale_mult": 0.2,
+        "line_extra_amp_scale_mult": 0.5,
         "standardize_active_priors": False,
     }
 
@@ -777,9 +783,19 @@ def test_multigaussian_broad_widths_are_ordered_with_independent_amplitudes():
     assert len(meta["broad_width_order_groups"]) == 1
     assert meta["n_unordered_wgroups"] == 0
     assert np.all(np.diff(widths) > 0.0)
-    assert np.all(log_bound_fraction > 0.05)
-    assert np.all(log_bound_fraction < 0.95)
+    assert np.all(log_bound_fraction > 0.0)
+    assert np.all(log_bound_fraction < 1.0)
     assert np.asarray(tr["line_amp_group"]["value"]).shape == (4,)
+    extra_reference = np.asarray(meta["extra_amp_reference_group"])
+    np.testing.assert_array_equal(extra_reference, [-1, -1, 1, 1])
+    amp_prior = tr["line_amp_Hb"]["fn"].base_dist
+    amp_locs = np.asarray(amp_prior.base_dist.loc)
+    amp_scales = np.asarray(amp_prior.base_dist.scale)
+    amp_init = np.asarray(meta["amp_init_group"])
+    amp_min = np.asarray(meta["amp_min_group"])
+    np.testing.assert_allclose(amp_locs[[2, 3]], amp_min[[2, 3]])
+    np.testing.assert_allclose(amp_scales[[2, 3]], 0.5 * amp_init[1])
+    assert amp_locs[1] == amp_init[1]
     assert "line_ordered_width_logits_Hb_std" in tr
     assert "line_log_fwhm_delta_group_std" not in tr
     assert "line_high_ion_log_fwhm_std" in tr
@@ -1561,6 +1577,26 @@ def test_smooth_bounded_affine_preserves_init_and_bound_gradients():
 
     assert float(grad_hi) > 0.0
     assert float(grad_lo) > 0.0
+
+
+def test_ordered_stick_breaking_is_local_and_reproduces_reference_widths():
+    low = np.log(1000.0)
+    high = np.log(30000.0)
+    target = np.log(np.array([4000.0, 8000.0, 14000.0]))
+    zeros = jnp.zeros(3, dtype=jnp.float64)
+
+    reference = model_mod._bounded_ordered_stick_breaking(
+        zeros, target, low, high
+    )
+    changed_last = model_mod._bounded_ordered_stick_breaking(
+        zeros.at[2].set(1.0), target, low, high
+    )
+
+    np.testing.assert_allclose(reference, target, rtol=0.0, atol=1.0e-12)
+    np.testing.assert_allclose(changed_last[:2], reference[:2], atol=1.0e-12)
+    assert changed_last[2] > reference[2]
+    assert np.all(np.diff(np.asarray(changed_last)) > 0.0)
+    assert float(changed_last[-1]) < high
 
 
 def test_qso_fsps_joint_model_skips_disabled_fe_and_balmer(monkeypatch):

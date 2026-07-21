@@ -233,7 +233,16 @@ def _numpyro_geometry_reparam_config(
 
 
 def _line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
-    """Return NumPyro dense-mass site blocks for individual line complexes."""
+    """Return dense blocks for line complexes and the width hierarchy.
+
+    Complexes without ordered broad components retain local amplitude/centroid
+    blocks.  Complexes with ordered broad components move as complete units
+    into the shared width block together with the global broad width and
+    unordered width offsets.  Keeping their amplitudes, centroids, and ordered
+    widths together captures the correlations induced by overlapping Gaussian
+    components.  Sites are assigned to exactly one block, as required by
+    NumPyro.
+    """
     blocks = []
     width_complexes = list(
         tied_line_meta.get("broad_width_order_complex_indices", [])
@@ -244,6 +253,8 @@ def _line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
     centroid_hierarchies = list(
         tied_line_meta.get("broad_centroid_hierarchy_groups", [])
     )
+    ordered_owner_indices = {int(index) for index in width_complexes}
+    ordered_complex_sites = {}
     for complex_group in tied_line_meta.get("amp_complex_groups", []):
         complex_index = int(complex_group["complex_index"])
         complex_label = str(
@@ -254,16 +265,6 @@ def _line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
                 complex_label, standardized=standardized_amplitudes
             )
         ]
-        for order_index, owner_index in enumerate(width_complexes):
-            if int(owner_index) == complex_index:
-                order_label = (
-                    str(width_labels[order_index])
-                    if order_index < len(width_labels)
-                    else str(order_index)
-                )
-                sites.append(
-                    _ordered_width_site(order_label, standardized=True)
-                )
         for hierarchy_index, hierarchy in enumerate(centroid_hierarchies):
             if int(hierarchy.get("complex_index", -1)) == complex_index:
                 sites.extend(
@@ -272,7 +273,43 @@ def _line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
                         f"line_broad_relative_offsets_{hierarchy_index}_std",
                     ]
                 )
-        blocks.append(tuple(sites))
+        if complex_index in ordered_owner_indices:
+            ordered_complex_sites[complex_index] = sites
+        else:
+            blocks.append(tuple(sites))
+
+    unordered_ids = _line_meta_int(
+        tied_line_meta,
+        "unordered_width_group_ids",
+        default=[],
+    )
+    width_sites = []
+    if unordered_ids.size:
+        n_w = int(tied_line_meta.get("n_wgroups", 0))
+        wgroup = _line_meta_int(tied_line_meta, "wgroup", default=[])
+        broad_mask = _line_meta_broad_mask(tied_line_meta)
+        if n_w > 0 and wgroup.size == broad_mask.size:
+            wgroup_is_broad = np.asarray(
+                [np.any(broad_mask[wgroup == gid] > 0.0) for gid in range(n_w)],
+                dtype=bool,
+            )
+            if np.any(wgroup_is_broad[unordered_ids]):
+                width_sites.append("line_log_broad_fwhm_std")
+        width_sites.append("line_log_fwhm_delta_group_std")
+    added_ordered_complexes = set()
+    for order_index, owner_index in enumerate(width_complexes):
+        owner_index = int(owner_index)
+        if owner_index not in added_ordered_complexes:
+            width_sites.extend(ordered_complex_sites.get(owner_index, ()))
+            added_ordered_complexes.add(owner_index)
+        order_label = (
+            str(width_labels[order_index])
+            if order_index < len(width_labels)
+            else str(order_index)
+        )
+        width_sites.append(_ordered_width_site(order_label, standardized=True))
+    if width_sites:
+        blocks.append(tuple(width_sites))
     return blocks
 
 
@@ -811,7 +848,12 @@ class JAXQSOFit:
         return "result"
 
     def _predictive_return_sites(self, custom_components=None, custom_line_components=None):
-        """Return posterior predictive sites needed for summaries and plots.
+        """Return only active posterior sites needed for summaries and plots.
+
+        Keeping inactive line-profile and PSF arrays out of ``Predictive`` lets
+        XLA eliminate those output branches from the post-sampling graph.  This
+        reduces compilation and transfer overhead without changing fitted
+        samples or the public summaries for enabled components.
 
         Parameters
         ----------
@@ -820,9 +862,15 @@ class JAXQSOFit:
         custom_line_components : object
             custom_line_components value.
         """
+        use_lines = bool(getattr(self, "_fit_fit_lines", True))
+        use_psf_phot = bool(
+            getattr(self, "_fit_use_psf_phot", getattr(self, "use_psf_phot", False))
+        )
         return_sites = [
             'PL_norm',
             'PL_slope',
+            'frac_jitter',
+            'add_jitter',
             'f_pl_model',
             'f_fe_mgii_model',
             'f_fe_balmer_model',
@@ -832,32 +880,40 @@ class JAXQSOFit:
             'reddening_a2500',
             'agn_model',
             'gal_model',
-            'line_model_broad',
-            'line_model_narrow',
-            'line_component_profiles',
             'line_model',
             'continuum_model',
             'model',
             'fsps_weights',
-            'line_amp_per_component',
-            'line_amp_group',
-            'line_mu_per_component',
-            'line_sig_per_component',
-            'line_sig_effective_per_component',
-            'line_amp_effective_per_component',
             'gal_sigma_effective_kms',
-            'delta_m_psf',
-            'eta_psf',
-            'scale_psf',
-            'agn_model_psf',
-            'gal_model_psf',
-            'line_model_broad_psf',
-            'line_model_narrow_psf',
-            'line_component_profiles_psf',
-            'line_model_psf',
-            'psf_model',
             'spectral_likelihood_weight',
         ]
+        if bool(getattr(self, "_fit_fit_fe", True)):
+            return_sites.append('frac_fe_jitter')
+        if use_lines:
+            return_sites += [
+                'line_model_broad',
+                'line_model_narrow',
+                'line_component_profiles',
+                'line_amp_per_component',
+                'line_amp_group',
+                'line_mu_per_component',
+                'line_sig_per_component',
+                'line_sig_effective_per_component',
+                'line_amp_effective_per_component',
+            ]
+        if use_psf_phot:
+            return_sites += [
+                'delta_m_psf',
+                'eta_psf',
+                'scale_psf',
+                'agn_model_psf',
+                'gal_model_psf',
+                'line_model_broad_psf',
+                'line_model_narrow_psf',
+                'line_component_profiles_psf',
+                'line_model_psf',
+                'psf_model',
+            ]
         for wave_lum in _continuum_output_waves_from_prior_config(
             getattr(self, "_fit_prior_config", None)
         ):
@@ -3382,7 +3438,14 @@ class JAXQSOFit:
             Whether host model was enabled.
         """
         samples = dict(samples)
-        for physical_site in ("PL_norm", "PL_slope", "line_amp_group"):
+        for physical_site in (
+            "PL_norm",
+            "PL_slope",
+            "frac_jitter",
+            "frac_fe_jitter",
+            "add_jitter",
+            "line_amp_group",
+        ):
             if physical_site not in samples and physical_site in pred_out:
                 samples[physical_site] = np.asarray(pred_out[physical_site])
         flux = np.asarray(self.flux, dtype=float)
@@ -3455,10 +3518,19 @@ class JAXQSOFit:
             eta_psf_draws = np.asarray(pred_out['eta_psf'], dtype=float)
         else:
             eta_psf_draws = np.array([np.nan], dtype=float)
-        self.delta_m_psf = float(np.nanmedian(delta_m_draws)) if delta_m_draws.size > 0 else np.nan
-        self.delta_m_psf_err = float(np.nanstd(delta_m_draws)) if delta_m_draws.size > 0 else np.nan
-        self.eta_psf = float(np.nanmedian(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
-        self.eta_psf_err = float(np.nanstd(eta_psf_draws)) if eta_psf_draws.size > 0 else np.nan
+        def _finite_draw_summary(draws):
+            """Return median/std without reducing empty or all-NaN draws."""
+            draws = np.asarray(draws, dtype=float)
+            finite = np.isfinite(draws)
+            if draws.size == 0 or not np.any(finite):
+                return np.nan, np.nan
+            finite_draws = draws[finite]
+            return float(np.median(finite_draws)), float(np.std(finite_draws))
+
+        self.delta_m_psf, self.delta_m_psf_err = _finite_draw_summary(
+            delta_m_draws
+        )
+        self.eta_psf, self.eta_psf_err = _finite_draw_summary(eta_psf_draws)
         self.scale_psf = 10.0 ** (-0.4 * self.delta_m_psf) if np.isfinite(self.delta_m_psf) else np.nan
         def _optional_draw_summary(key):
             """Return median/std for an optional predictive diagnostic.
@@ -3470,11 +3542,7 @@ class JAXQSOFit:
             """
             if key not in pred_out:
                 return np.nan, np.nan
-            draws = np.asarray(pred_out[key], dtype=float)
-            finite = np.isfinite(draws)
-            if draws.size == 0 or not np.any(finite):
-                return np.nan, np.nan
-            return float(np.nanmedian(draws)), float(np.nanstd(draws))
+            return _finite_draw_summary(pred_out[key])
 
         self.host_redshift_prior_weight, self.host_redshift_prior_weight_err = _optional_draw_summary('host_redshift_prior_weight')
         self.host_redshift_prior_loc_eff, self.host_redshift_prior_loc_eff_err = _optional_draw_summary('host_redshift_prior_loc_eff')

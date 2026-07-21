@@ -11,6 +11,7 @@ from jaxqsofit.config import (
     FitConfig,
     HostConfig,
     HostPriorConfig,
+    InferenceConfig,
     LineConfig,
     LinePriorConfig,
     Observation,
@@ -30,8 +31,16 @@ def test_prior_config_object_exposes_model_mapping():
     prior = PriorConfig(
         continuum=ContinuumPriorConfig(power_law_pivot=3000.0, polynomial_pivot=2800.0),
         host=HostPriorConfig(redshift_weight_enabled=False),
-        lines=LinePriorConfig(dmu_scale_mult=0.2, sig_scale_mult=0.3, amp_scale_mult=0.4),
-        feii=FeIIPriorConfig(uv_fwhm=dist.Normal(loc=np.log(1000.0), scale=0.2)),
+        lines=LinePriorConfig(
+            dmu_scale_mult=0.2,
+            sig_scale_mult=0.3,
+            amp_scale_mult=0.4,
+            extra_amp_scale_mult=0.5,
+        ),
+        feii=FeIIPriorConfig(
+            fwhm=dist.Normal(loc=np.log(1000.0), scale=0.2),
+            shift=dist.Normal(loc=0.0, scale=100.0),
+        ),
     )
     prior.powerlaw.slope = dist.Normal(loc=-1.5, scale=0.3)
     mapping = prior.to_mapping()
@@ -40,8 +49,19 @@ def test_prior_config_object_exposes_model_mapping():
     assert mapping["poly_pivot"] == 2800.0
     assert mapping["host_redshift_prior"]["enabled"] is False
     assert mapping["line_dmu_scale_mult"] == 0.2
-    assert float(mapping["log_Fe_uv_FWHM"].scale) == 0.2
+    assert mapping["line_extra_amp_scale_mult"] == 0.5
+    assert float(mapping["log_Fe_FWHM"].scale) == 0.2
+    assert float(mapping["Fe_shift"].scale) == 100.0
     assert isinstance(mapping["PL_slope"], dist.Normal)
+
+
+def test_inference_defaults_use_standardized_line_block_geometry():
+    inference = InferenceConfig()
+
+    assert inference.target_accept_prob == 0.85
+    assert inference.dense_mass is False
+    assert inference.line_block_dense_mass is True
+    assert inference.standardize_active_priors is True
 
 
 def test_feii_fractional_error_maps_to_likelihood_site():
@@ -334,9 +354,8 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     assert np.isclose(mapping["log_Fe_uv_norm"].loc, np.log(0.03 * 2.0))
     assert float(mapping["log_Fe_uv_norm"].scale) == 1.0
     assert isinstance(mapping["log_Fe_op_over_uv"], dist.Normal)
-    assert isinstance(mapping["log_Fe_uv_FWHM"], dist.LogNormal)
-    assert isinstance(mapping["log_Fe_op_FWHM"], dist.LogNormal)
-    assert isinstance(mapping["Fe_uv_shift"], dist.Normal)
+    assert isinstance(mapping["log_Fe_FWHM"], dist.LogNormal)
+    assert isinstance(mapping["Fe_shift"], dist.Normal)
     assert isinstance(mapping["frac_jitter"], dist.HalfNormal)
     assert mapping["frac_fe_jitter"] == {"dist": "Delta", "value": 0.20}
     assert mapping["add_jitter"] == {"dist": "Delta", "value": 0.0}

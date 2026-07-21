@@ -228,6 +228,15 @@ class InferenceConfig:
 
     ``random_seed`` controls stochastic inference and posterior prediction so
     repeated fits with the same configuration are reproducible.
+
+    NUTS standardizes active prior coordinates by default, which puts latent
+    parameters with different physical units on comparable scales.  It uses a
+    diagonal mass matrix globally and learns dense blocks only within emission-
+    line complexes.  Those complexes contain strongly correlated amplitudes,
+    widths, and centroids, while a fully dense matrix across the entire spectral
+    model is expensive and poorly estimated by typical warmup lengths.  This
+    block structure captures the important local correlations without coupling
+    unrelated continuum, host, and line parameters.
     """
 
     method: str = "optax+nuts"
@@ -237,10 +246,10 @@ class InferenceConfig:
     num_warmup: int = 50
     num_samples: int = 50
     num_chains: int = 1
-    target_accept_prob: float = 0.9
-    dense_mass: bool = True
-    line_block_dense_mass: bool = False
-    standardize_active_priors: bool = False
+    target_accept_prob: float = 0.85
+    dense_mass: bool = False
+    line_block_dense_mass: bool = True
+    standardize_active_priors: bool = True
     max_tree_depth: int = 8
     plot_init: bool = False
 
@@ -457,12 +466,19 @@ class HostPriorConfig:
 
 @dataclass
 class LinePriorConfig:
-    """Semantic emission-line prior options."""
+    """Semantic emission-line prior options.
+
+    ``extra_amp_scale_mult`` regularizes redundant broad-line components.  The
+    first Gaussian in each multi-Gaussian broad line keeps the usual amplitude
+    prior; later Gaussians are pulled toward zero with a scale equal to this
+    multiplier times the first component's initial amplitude.
+    """
 
     table: Sequence[Mapping[str, Any]] | None = None
     dmu_scale_mult: float | None = None
     sig_scale_mult: float | None = None
     amp_scale_mult: float | None = None
+    extra_amp_scale_mult: float | None = None
 
     def to_mapping(self) -> dict[str, Any]:
         """Convert semantic emission-line prior settings into model-site keys."""
@@ -475,15 +491,25 @@ class LinePriorConfig:
             out["line_sig_scale_mult"] = float(self.sig_scale_mult)
         if self.amp_scale_mult is not None:
             out["line_amp_scale_mult"] = float(self.amp_scale_mult)
+        if self.extra_amp_scale_mult is not None:
+            out["line_extra_amp_scale_mult"] = float(self.extra_amp_scale_mult)
         return out
 
 
 @dataclass
 class FeIIPriorConfig:
-    """Semantic Fe II prior options."""
+    """Semantic Fe II prior options.
+
+    The UV and optical templates have independent amplitudes but share their
+    velocity ``fwhm`` and ``shift``.  ``uv_fwhm`` and ``optical_fwhm`` remain
+    accepted as legacy aliases; when both are supplied, ``uv_fwhm`` defines
+    the shared-width prior.
+    """
 
     uv_norm: Any | None = None
     op_over_uv: Any | None = None
+    fwhm: Any | None = None
+    shift: Any | None = None
     uv_fwhm: Any | None = None
     optical_fwhm: Any | None = None
     fractional_error: Any | None = None
@@ -495,10 +521,15 @@ class FeIIPriorConfig:
             out["log_Fe_uv_norm"] = _prior_to_mapping(self.uv_norm)
         if self.op_over_uv is not None:
             out["log_Fe_op_over_uv"] = _prior_to_mapping(self.op_over_uv)
-        if self.uv_fwhm is not None:
-            out["log_Fe_uv_FWHM"] = _prior_to_mapping(self.uv_fwhm)
-        if self.optical_fwhm is not None:
-            out["log_Fe_op_FWHM"] = _prior_to_mapping(self.optical_fwhm)
+        shared_fwhm = self.fwhm
+        if shared_fwhm is None:
+            shared_fwhm = self.uv_fwhm
+        if shared_fwhm is None:
+            shared_fwhm = self.optical_fwhm
+        if shared_fwhm is not None:
+            out["log_Fe_FWHM"] = _prior_to_mapping(shared_fwhm)
+        if self.shift is not None:
+            out["Fe_shift"] = _prior_to_mapping(self.shift)
         if self.fractional_error is not None:
             out["frac_fe_jitter"] = _prior_to_mapping(self.fractional_error)
         return out

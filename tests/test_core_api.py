@@ -118,6 +118,30 @@ def test_predictive_return_sites_include_requested_continuum_luminosities():
     assert "log_lambda_Llambda_3000_agn" in sites
     assert "log_lambda_Llambda_5100_agn" in sites
     assert "spectral_likelihood_weight" in sites
+    assert "frac_jitter" in sites
+    assert "frac_fe_jitter" in sites
+    assert "add_jitter" in sites
+    assert "line_component_profiles" in sites
+    assert "psf_model" not in sites
+
+
+def test_predictive_return_sites_prune_inactive_line_and_psf_outputs():
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q._fit_fit_lines = False
+    q._fit_fit_fe = False
+    q._fit_use_psf_phot = False
+
+    sites = q._predictive_return_sites()
+
+    assert "line_model" in sites
+    assert "line_component_profiles" not in sites
+    assert "line_amp_per_component" not in sites
+    assert "psf_model" not in sites
+    assert "line_component_profiles_psf" not in sites
+    assert "frac_jitter" in sites
+    assert "frac_fe_jitter" not in sites
+    assert "add_jitter" in sites
 
 
 def test_numpyro_geometry_reparam_config_disabled_for_map_warm_starts():
@@ -354,6 +378,11 @@ def test_line_complex_dense_mass_blocks_group_local_latents():
             {"complex_index": 1, "fgroup_ids": [3]},
         ],
         "broad_width_order_complex_indices": [0],
+        "broad_width_order_site_labels": ["Hb"],
+        "n_wgroups": 2,
+        "wgroup": np.array([0, 1]),
+        "broad_mask": np.array([1.0, 0.0]),
+        "unordered_width_group_ids": np.array([0, 1]),
         "broad_centroid_hierarchy_groups": [
             {"complex_index": 0, "component_groups": [0, 1]}
         ],
@@ -364,13 +393,15 @@ def test_line_complex_dense_mass_blocks_group_local_latents():
     )
 
     assert blocks == [
+        ("line_amp_complex_1_std",),
         (
+            "line_log_broad_fwhm_std",
+            "line_log_fwhm_delta_group_std",
             "line_amp_complex_0_std",
-            "line_ordered_width_logits_0_std",
             "line_broad_center_0_std",
             "line_broad_relative_offsets_0_std",
+            "line_ordered_width_logits_Hb_std",
         ),
-        ("line_amp_complex_1_std",),
     ]
 
 
@@ -993,7 +1024,14 @@ def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     assert np.allclose(loaded.flux_in, flux)
     assert hasattr(loaded, "model_total")
     assert loaded.model_total.shape == lam.shape
-    assert set(loaded.numpyro_samples.keys()) == {"cont_norm", "log_frac_host", "PL_norm", "PL_slope"}
+    assert set(loaded.numpyro_samples.keys()) == {
+        "cont_norm",
+        "log_frac_host",
+        "PL_norm",
+        "PL_slope",
+        "frac_jitter",
+        "add_jitter",
+    }
     assert loaded.pred_out["fsps_weights"].shape == (3, 4)
     assert np.allclose(loaded.pred_out["fsps_weights"], 0.0)
     assert np.allclose(loaded._pred_host_draws, 0.0)
@@ -1014,7 +1052,14 @@ def test_load_result_wraps_loaded_qsofit(tmp_path, monkeypatch):
     assert isinstance(result, FitResult)
     assert isinstance(result.fitter, JAXQSOFit)
     assert os.fspath(result.path) == os.fspath(saved_path)
-    assert set(result.samples) == {"cont_norm", "log_frac_host", "PL_norm", "PL_slope"}
+    assert set(result.samples) == {
+        "cont_norm",
+        "log_frac_host",
+        "PL_norm",
+        "PL_slope",
+        "frac_jitter",
+        "add_jitter",
+    }
     assert np.isclose(result.median["PL_norm"], 1.0)
 
 
