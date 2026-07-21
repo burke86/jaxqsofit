@@ -3068,7 +3068,9 @@ class JAXQSOFit:
                 values['log_host_aperture_scale'] = _prior_field('log_host_aperture_scale', 'value', 0.0)
             return values
 
-        # Stage 1: warm start on simpler landscape (continuum/host only).
+        # Stage 1: warm start on the continuum/host landscape. Keep reddening
+        # active when requested so the stage-1 and stage-2 power-law latent
+        # parameterizations match and the continuum MAP transfers correctly.
         n1 = max(100, int(num_steps // 3))
         stage1_keep = _stage1_continuum_keep_mask(wave)
         self.init_stage1_keep_mask = stage1_keep
@@ -3086,7 +3088,7 @@ class JAXQSOFit:
             fit_fe_i=False,
             fit_bc_i=False,
             fit_poly_i=False,
-            fit_reddening_i=False,
+            fit_reddening_i=fit_reddening,
             fit_poly_order_i=2,
             decompose_host_i=decompose_host,
             wave_i=wave[stage1_keep],
@@ -3129,7 +3131,7 @@ class JAXQSOFit:
                 fit_fe=False,
                 fit_bc=False,
                 fit_poly=False,
-                fit_reddening=False,
+                fit_reddening=fit_reddening,
                 fit_poly_order=2,
                 z_qso=self.z,
                 psf_mags=psf_mags,

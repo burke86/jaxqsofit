@@ -802,6 +802,94 @@ def test_optax_stage2_initializes_reparameterized_line_sites_at_defaults(monkeyp
     assert np.isclose(stage2_values["line_OIII_wing_log_fwhm_std"], 0.0)
 
 
+def test_optax_reddening_warm_start_transfers_apparent_power_law_sites(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave = lam
+    q.flux = flux
+    q.err = err
+    q.fe_uv_wave = np.array([2000.0, 4000.0])
+    q.fe_uv_flux = np.zeros(2)
+    q.fe_op_wave = np.array([3500.0, 7000.0])
+    q.fe_op_flux = np.zeros(2)
+    q.verbose = False
+
+    fsps_grid = coremod.FSPSTemplateGrid(
+        wave=lam,
+        templates=np.zeros((lam.size, 1)),
+        template_meta=[{"norm": 1.0}],
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        host_basis_jax=None,
+        t_obs_gyr=None,
+    )
+    monkeypatch.setattr(q, "_build_fsps_grid_for_fit", lambda **kwargs: fsps_grid)
+    monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
+
+    svi_calls = []
+    init_values_seen = []
+
+    def fake_init_to_value(*, values):
+        init_values_seen.append(dict(values))
+        return object()
+
+    class FakeSVIResult:
+        losses = np.array([0.0])
+        params = {}
+        state = object()
+
+    class FakeSVI:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def run(self, *args, **kwargs):
+            svi_calls.append(kwargs)
+            return FakeSVIResult()
+
+    class FakeAutoDelta:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def median(self, params):
+            return {
+                "PL_apparent_log_norm_std": np.array(0.2),
+                "PL_apparent_slope_std": np.array(-0.1),
+                "log_ebv": np.array(-4.0),
+            }
+
+    class FakePredictive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(coremod, "init_to_value", fake_init_to_value)
+    monkeypatch.setattr(coremod, "SVI", FakeSVI)
+    monkeypatch.setattr(coremod, "AutoDelta", FakeAutoDelta)
+    monkeypatch.setattr(coremod, "Predictive", FakePredictive)
+
+    q.run_fsps_optax_fit(
+        num_steps=300,
+        use_lines=False,
+        decompose_host=False,
+        fit_fe=False,
+        fit_bc=False,
+        fit_poly=True,
+        fit_reddening=True,
+        prior_config=build_default_prior_config(flux),
+    )
+
+    assert svi_calls[0]["fit_reddening"] is True
+    assert svi_calls[1]["fit_reddening"] is True
+    assert "PL_apparent_log_norm_std" in init_values_seen[0]
+    assert "PL_apparent_slope_std" in init_values_seen[0]
+    assert "log_ebv" in init_values_seen[0]
+    assert np.isclose(init_values_seen[1]["PL_apparent_log_norm_std"], 0.2)
+    assert np.isclose(init_values_seen[1]["PL_apparent_slope_std"], -0.1)
+    assert np.isclose(init_values_seen[1]["log_ebv"], -4.0)
+
+
 def test_fit_materializes_default_pl_pivot_to_numeric(monkeypatch):
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)

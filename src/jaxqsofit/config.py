@@ -119,10 +119,10 @@ class ContinuumConfig:
     ---------
     Intrinsic AGN reddening is **enabled by default** (``fit_reddening=True``).
     One fitted E(B-V) screen attenuates the power-law continuum, UV/optical
-    Fe II, Balmer continuum, custom nuclear continuum components, and all
-    **broad emission lines**. It does not attenuate narrow emission lines or
-    host-galaxy starlight. Milky Way foreground dereddening is separate and is
-    controlled by :attr:`Observation.apply_mw_deredden`.
+    Fe II, Balmer continuum, and custom nuclear continuum components. It does
+    not attenuate emission lines or host-galaxy starlight. Milky Way foreground
+    dereddening is separate and is controlled by
+    :attr:`Observation.apply_mw_deredden`.
 
     For stable NUTS geometry, the power-law is sampled by default in apparent
     (post-attenuation) normalization and slope coordinates. The constant and

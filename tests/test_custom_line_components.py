@@ -51,7 +51,7 @@ def test_custom_line_component_accepts_numpyro_distribution_priors():
     assert cfg["custom_line_exp_wing_tau"].scale == 0.5
 
 
-def test_custom_line_components_add_to_broad_and_narrow_models():
+def test_reddening_does_not_affect_custom_line_components():
     wave = np.linspace(2000.0, 3000.0, 5)
     flux = np.zeros_like(wave)
     err = np.ones_like(wave)
@@ -78,6 +78,7 @@ def test_custom_line_components_add_to_broad_and_narrow_models():
         "PL_slope": {"dist": "Normal", "loc": 0.0, "scale": 0.1},
         "frac_jitter": {"dist": "HalfNormal", "scale": 0.1},
         "add_jitter": {"dist": "HalfNormal", "scale": 0.1},
+        "log_ebv": {"dist": "Normal", "loc": np.log(0.5), "scale": 1e-6},
         "custom_line_exp_broad_amp": {"dist": "Normal", "loc": 2.0, "scale": 1e-6},
         "custom_line_exp_narrow_amp": {"dist": "Normal", "loc": 3.0, "scale": 1e-6},
     }
@@ -134,7 +135,7 @@ def test_custom_line_components_add_to_broad_and_narrow_models():
         fit_fe=False,
         fit_bc=False,
         fit_poly=False,
-        fit_reddening=False,
+        fit_reddening=True,
         fit_poly_order=0,
         custom_components=(),
         custom_line_components=(broad_comp, narrow_comp),

@@ -3492,11 +3492,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
     ----------------------------
     When ``fit_reddening=True``, a single fitted E(B-V) attenuation screen is
     applied to the power-law continuum, Fe II templates, Balmer continuum,
-    custom nuclear continuum components, and broad emission lines. Narrow
-    emission lines and host-galaxy starlight are not attenuated by this screen.
-    This is distinct from the separately configured Milky Way foreground
-    correction. Because broad-line amplitudes are intrinsic (pre-attenuation),
-    they can be posterior-correlated with E(B-V).
+    and custom nuclear continuum components. Emission lines and host-galaxy
+    starlight are not attenuated by this screen. This is distinct from the
+    separately configured Milky Way foreground correction.
 
     Parameters
     ----------
@@ -4016,19 +4014,9 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
 
     gal_model_total = gal_model_intrinsic_total
     gal_model = gal_model_intrinsic
-    line_model_broad = line_model_broad_intrinsic * reddening_atten
+    line_model_broad = line_model_broad_intrinsic
     line_model_narrow = line_model_narrow_intrinsic
     line_model = line_model_broad + line_model_narrow if line_components_are_split else line_model_intrinsic
-    if line_component_profiles.shape[0] > 0:
-        line_component_profiles = line_component_profiles * (
-            line_component_broad_mask[:, None] * reddening_atten[None, :]
-            + (1.0 - line_component_broad_mask[:, None])
-        )
-    custom_line_models = {
-        comp.output_name: custom_line_models[comp.output_name]
-        * (reddening_atten if comp.line_kind == 'broad' else 1.0)
-        for comp in custom_line_components
-    }
     if fit_poly:
         # Residual flux calibration acts on the complete astrophysical model,
         # including host light and emission lines.
