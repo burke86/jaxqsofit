@@ -54,6 +54,58 @@ def test_evaluate_joint_spectral_components_adds_line_sites():
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
 
 
+def test_joint_feature_amplitudes_can_use_observed_spectrum_coordinates():
+    wave_obs = np.linspace(3000.0, 7000.0, 128)
+    template_wave = np.linspace(2000.0, 8000.0, 256)
+    template_flux = np.ones_like(template_wave)
+    cfg = SpectralComponentConfig(
+        use_lines=True,
+        use_tied_lines=False,
+        line_centers_rest=(4861.33,),
+        line_names=("Hbeta",),
+        broad_line_names=("Hbeta",),
+        use_feii=True,
+        use_balmer_continuum=True,
+        broadening_convolution="direct",
+    )
+    params = {
+        "jqf_line_amp_Hbeta": 0.2,
+        "jqf_line_fwhm_Hbeta": 3000.0,
+        "jqf_line_velocity_Hbeta": 0.0,
+        "jqf_feii_norm": 0.1,
+        "jqf_feii_fwhm": 1000.0,
+        "jqf_feii_shift": 0.0,
+        "jqf_balmer_norm": 0.1,
+        "jqf_balmer_tau": 1.0,
+        "jqf_balmer_vel": 3000.0,
+    }
+
+    def evaluate(scale):
+        fn = substitute(
+            seed(evaluate_joint_spectral_components, jax.random.PRNGKey(17)),
+            data=params,
+        )
+        return fn(
+            wave_obs=wave_obs,
+            redshift=0.0,
+            continuum_mjy=np.zeros_like(wave_obs),
+            config=cfg,
+            feii_template_wave_rest=template_wave,
+            feii_template_flux=template_flux,
+            feature_amplitude_scale=scale,
+        )
+
+    unit = evaluate(1.0)
+    doubled = evaluate(2.0)
+    for name in ("lines", "feii", "balmer"):
+        np.testing.assert_allclose(
+            np.asarray(doubled[name]),
+            0.5 * np.asarray(unit[name]),
+            rtol=1e-10,
+            atol=1e-12,
+        )
+
+
 def test_evaluate_joint_spectral_components_uses_default_tied_lines():
     wave_obs = np.linspace(4700.0, 5100.0, 96)
     continuum = np.full_like(wave_obs, 2.0)
