@@ -16,6 +16,7 @@ from .model import (
     _line_meta_broad_mask,
     _fe_template_component,
     _np_to_jnp,
+    _positive_multiplicative_calibration,
     _sample_tied_line_groups,
     _split_many_gauss_lnlam,
     build_tied_line_meta_from_linelist,
@@ -452,7 +453,7 @@ def evaluate_joint_spectral_components(
     if cfg.use_multiplicative_tilt:
         tilt = numpyro.sample(f"{site_prefix}_continuum_tilt", dist.Normal(0.0, 0.1))
         pivot = jnp.maximum(jnp.nanmedian(wave_obs), 1.0)
-        calibration = jnp.clip((wave_obs / pivot) ** tilt, 0.2, 5.0)
+        calibration = _positive_multiplicative_calibration(tilt * jnp.log(wave_obs / pivot))
 
     continuum_model = calibration * continuum_mjy
     line_model = jnp.zeros_like(wave_obs)

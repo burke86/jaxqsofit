@@ -426,6 +426,11 @@ def _powerlaw_jax(wave, pl_norm, pl_slope, pivot):
     return pl_norm * x ** pl_slope
 
 
+def _positive_multiplicative_calibration(log_correction):
+    """Map an unconstrained log-calibration curve to a positive smooth factor."""
+    return jnp.exp(jnp.asarray(log_correction, dtype=jnp.float64))
+
+
 def _host_redshift_prior_params(prior_config, z_qso):
     """Return smooth redshift-dependent host prior weight, loc shift, scale multiplier, and df.
 
@@ -2613,10 +2618,10 @@ def reconstruct_posterior_components(
 
         poly_model = jnp.ones_like(wave_j)
         if fit_poly:
-            poly_base = jnp.ones_like(wave_j)
+            log_poly = jnp.zeros_like(wave_j)
             if fit_poly_order > 0:
-                poly_base = poly_base + jnp.sum(poly_coeffs_i[:, None] * poly_powers_j, axis=0)
-            poly_model = jnp.clip(poly_base, 0.2, 5.0)
+                log_poly = jnp.sum(poly_coeffs_i[:, None] * poly_powers_j, axis=0)
+            poly_model = _positive_multiplicative_calibration(log_poly)
 
         host_model = host_model * poly_model
         pl_model = pl_model * poly_model
@@ -4008,12 +4013,12 @@ def qso_fsps_joint_model(wave, flux, err, conti_priors, tied_line_meta, fsps_gri
                 if fallback
                 else jnp.zeros((0, wave.shape[0]), dtype=wave.dtype)
             )
-        poly_base = jnp.ones_like(wave)
+        log_poly = jnp.zeros_like(wave)
         for basis_idx, k in enumerate(range(2, poly_order + 1)):
             ck = _sample_prior(prior_config, f'poly_c{k}', dist.Normal(0.0, 0.03))
-            poly_base = poly_base + ck * poly_basis[basis_idx]
+            log_poly = log_poly + ck * poly_basis[basis_idx]
 
-        poly_model = jnp.clip(poly_base, 0.2, 5.0)
+        poly_model = _positive_multiplicative_calibration(log_poly)
     agn_model = pl_model + fe_uv_model + fe_op_model + bc_model + custom_total_model
 
     log_lambda_llambda_agn = {}

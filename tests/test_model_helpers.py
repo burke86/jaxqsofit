@@ -23,6 +23,7 @@ from jaxqsofit.model import (
     _extract_line_table_from_prior_config,
     _luminosity_distance_cm_jax,
     _many_gauss_lnlam,
+    _positive_multiplicative_calibration,
     _shift_and_broaden_single_spectrum_lnlam,
     _split_many_gauss_lnlam,
     build_host_template_grid,
@@ -37,6 +38,16 @@ from jaxqsofit.model import (
     reconstruct_spectral_components,
     reconstruct_posterior_components,
 )
+
+
+def test_multiplicative_calibration_is_positive_and_smooth():
+    for value in (-10.0, 0.0, 10.0):
+        calibration = _positive_multiplicative_calibration(value)
+        gradient = jax.grad(_positive_multiplicative_calibration)(value)
+        curvature = jax.grad(jax.grad(_positive_multiplicative_calibration))(value)
+        assert float(calibration) > 0.0
+        assert np.isfinite(float(gradient))
+        assert np.isfinite(float(curvature))
 
 
 def test_polynomial_basis_is_weighted_orthogonal_to_continuum_and_reddening():
