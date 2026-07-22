@@ -58,8 +58,6 @@ def _line_row(
     *,
     lam: float,
     compname: str,
-    minwav: float,
-    maxwav: float,
     linename: str,
     ngauss: int = 1,
     inisca: float = 0.0,
@@ -86,10 +84,6 @@ def _line_row(
         lam value.
     compname : object
         compname value.
-    minwav : object
-        minwav value.
-    maxwav : object
-        maxwav value.
     linename : object
         linename value.
     ngauss : object
@@ -122,8 +116,6 @@ def _line_row(
     return {
         "lambda": lam,
         "compname": compname,
-        "minwav": minwav,
-        "maxwav": maxwav,
         "linename": linename,
         "ngauss": ngauss,
         "inisca": inisca,
@@ -273,53 +265,66 @@ display label.
 # Default line table in plain dict rows (same schema as notebook line config).
 DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     # Halpha complex
-    _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
-    _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=6549.85, compname='Ha', minwav=6400, maxwav=6800, linename='NII6549', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=1.0),
-    _line_row(lam=6585.28, compname='Ha', minwav=6400, maxwav=6800, linename='NII6585', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.0, 6585.28, 6549.85)),
-    _line_row(lam=6718.29, compname='Ha', minwav=6400, maxwav=6800, linename='SII6718', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
-    _line_row(lam=6732.67, compname='Ha', minwav=6400, maxwav=6800, linename='SII6732', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
+    _line_row(lam=6564.61, compname='Ha', linename='Ha_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=6564.61, compname='Ha', linename='Ha_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=6549.85, compname='Ha', linename='NII6549', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=1.0),
+    _line_row(lam=6585.28, compname='Ha', linename='NII6585', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.0, 6585.28, 6549.85)),
+    _line_row(lam=6718.29, compname='Ha', linename='SII6718', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
+    _line_row(lam=6732.67, compname='Ha', linename='SII6732', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
     # Hbeta / [OIII]
-    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
-    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=4960.30, compname='Hb', minwav=4640, maxwav=5100, linename='OIII4959c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=3, fvalue=1.0),
-    _line_row(lam=5008.24, compname='Hb', minwav=4640, maxwav=5100, linename='OIII5007c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=3, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
-    _line_row(lam=4960.30, compname='Hb', minwav=4640, maxwav=5100, linename='OIII4959w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=4, fvalue=1.0),
-    _line_row(lam=5008.24, compname='Hb', minwav=4640, maxwav=5100, linename='OIII5007w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=4, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
+    _line_row(lam=4862.68, compname='Hb', linename='Hb_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4862.68, compname='Hb', linename='Hb_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=4960.30, compname='Hb', linename='OIII4959c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=3, fvalue=1.0),
+    _line_row(lam=5008.24, compname='Hb', linename='OIII5007c', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=3, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
+    _line_row(lam=4960.30, compname='Hb', linename='OIII4959w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=4, fvalue=1.0),
+    _line_row(lam=5008.24, compname='Hb', linename='OIII5007w', inisig=inisig_oiii_wing, minsig=minsig_oiii_wing, maxsig=maxsig_oiii_wing, voff=voff_narrow, vindex=2, windex=2, findex=4, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
     # Higher-order Balmer
-    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4400, linename='Hg_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
-    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4400, linename='Hg_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
-    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=4341.68, compname='Hg', linename='Hg_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4341.68, compname='Hg', linename='Hg_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=4102.89, compname='Hd', linename='Hd_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=4102.89, compname='Hd', linename='Hd_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # Other optical/UV
-    _line_row(lam=3728.48, compname='OII', minwav=3650, maxwav=3800, linename='OII3728', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
-    _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=0, windex=0, findex=0, fvalue=0.001),
+    _line_row(lam=3728.48, compname='OII', linename='OII3728', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=3426.84, compname='NeV', linename='NeV3426', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=0, windex=0, findex=0, fvalue=0.001),
+    # Principal Paschen lines. Each row has findex=0 so the broad- and
+    # narrow-line amplitudes, and the amplitudes of different transitions,
+    # remain independent rather than imposing Case-B ratios on the AGN BLR.
+    _line_row(lam=9548.59, compname='Pae', linename='Pae_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=10052.13, compname='Pad', linename='Pad_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=10941.09, compname='Pag', linename='Pag_br', ngauss=1, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=10941.09, compname='Pag', linename='Pag_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=10833.31, compname='HeI10830', linename='HeI10830_br', ngauss=1, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=10833.31, compname='HeI10830', linename='HeI10830_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=12821.67, compname='Pab', linename='Pab_br', ngauss=1, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.02),
+    _line_row(lam=12821.67, compname='Pab', linename='Pab_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
+    _line_row(lam=18756.13, compname='Paa', linename='Paa_br', ngauss=1, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.02),
+    _line_row(lam=18756.13, compname='Paa', linename='Paa_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
     # Mg II complex
-    _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
-    _line_row(lam=2798.75, compname='MgII', minwav=2700, maxwav=2900, linename='MgII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=2798.75, compname='MgII', linename='MgII_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=2798.75, compname='MgII', linename='MgII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # CIII complex
-    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_br', ngauss=2, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=3, windex=0, findex=0, fvalue=0.01),
-    _line_row(lam=1908.73, compname='CIII', minwav=1700, maxwav=1970, linename='CIII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=4, windex=4, findex=0, fvalue=0.002),
-    _line_row(lam=1892.03, compname='CIII', minwav=1700, maxwav=1970, linename='SiIII1892', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
-    _line_row(lam=1857.40, compname='CIII', minwav=1700, maxwav=1970, linename='AlIII1857', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
-    _line_row(lam=1816.98, compname='CIII', minwav=1700, maxwav=1970, linename='SiII1816', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.0002),
-    _line_row(lam=1750.26, compname='CIII', minwav=1700, maxwav=1970, linename='NIII1750', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
-    _line_row(lam=1718.55, compname='CIII', minwav=1700, maxwav=1900, linename='NIV1718', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1908.73, compname='CIII', linename='CIII_br', ngauss=2, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=3, windex=0, findex=0, fvalue=0.01),
+    _line_row(lam=1908.73, compname='CIII', linename='CIII_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=4, windex=4, findex=0, fvalue=0.002),
+    _line_row(lam=1892.03, compname='CIII', linename='SiIII1892', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
+    _line_row(lam=1857.40, compname='CIII', linename='AlIII1857', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=0.003, vindex=1, windex=1, findex=0, fvalue=0.005),
+    _line_row(lam=1816.98, compname='CIII', linename='SiII1816', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.0002),
+    _line_row(lam=1750.26, compname='CIII', linename='NIII1750', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1718.55, compname='CIII', linename='NIV1718', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
     # CIV complex
-    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_br', ngauss=3, inisig=inisig_uv_broad, minsig=0.001, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
-    _line_row(lam=1549.06, compname='CIV', minwav=1500, maxwav=1700, linename='CIV_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=1663.48, compname='CIV', minwav=1500, maxwav=1700, linename='OIII1663', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=1663.48, compname='CIV', minwav=1500, maxwav=1700, linename='OIII1663_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
-    _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=1640.42, compname='CIV', minwav=1500, maxwav=1700, linename='HeII1640_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
+    _line_row(lam=1549.06, compname='CIV', linename='CIV_br', ngauss=3, inisig=inisig_uv_broad, minsig=0.001, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1549.06, compname='CIV', linename='CIV_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1663.48, compname='CIV', linename='OIII1663', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1663.48, compname='CIV', linename='OIII1663_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
+    _line_row(lam=1640.42, compname='CIV', linename='HeII1640', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=0.002, voff=voff_elg_red, vindex=1, windex=1, findex=0, fvalue=0.002),
+    _line_row(lam=1640.42, compname='CIV', linename='HeII1640_br', inisig=inisig_uv_broad, minsig=0.0025, maxsig=0.02, voff=voff_elg_red, vindex=2, windex=2, findex=0, fvalue=0.002),
     # SiIV complex
-    _line_row(lam=1402.06, compname='SiIV', minwav=1290, maxwav=1450, linename='SiIV_OIV1_br', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
-    _line_row(lam=1396.76, compname='SiIV', minwav=1290, maxwav=1450, linename='SiIV_OIV2_br', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
-    _line_row(lam=1335.30, compname='SiIV', minwav=1290, maxwav=1450, linename='CII1335', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
-    _line_row(lam=1304.35, compname='SiIV', minwav=1290, maxwav=1450, linename='OI1304', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1402.06, compname='SiIV', linename='SiIV_OIV1_br', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
+    _line_row(lam=1396.76, compname='SiIV', linename='SiIV_OIV2_br', inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_uv_broad, vindex=1, windex=1, findex=0, fvalue=0.05),
+    _line_row(lam=1335.30, compname='SiIV', linename='CII1335', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
+    _line_row(lam=1304.35, compname='SiIV', linename='OI1304', inisig=inisig_nv, minsig=minsig_nv, maxsig=0.015, voff=voff_narrow, vindex=2, windex=2, findex=0, fvalue=0.001),
     # Lya complex
-    _line_row(lam=1215.67, compname='Lya', minwav=1150, maxwav=1290, linename='Lya_br', ngauss=3, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_lya, vindex=0, windex=0, findex=0, fvalue=0.05),
-    _line_row(lam=1240.14, compname='Lya', minwav=1150, maxwav=1290, linename='NV1240_br', inisig=inisig_nv, minsig=minsig_nv, maxsig=maxsig_nv, voff=voff_nv, vindex=0, windex=0, findex=0, fvalue=0.002),
+    _line_row(lam=1215.67, compname='Lya', linename='Lya_br', ngauss=3, inisig=inisig_uv_broad, minsig=minsig_uv_broad, maxsig=maxsig_uv_broad, voff=voff_lya, vindex=0, windex=0, findex=0, fvalue=0.05),
+    _line_row(lam=1240.14, compname='Lya', linename='NV1240_br', inisig=inisig_nv, minsig=minsig_nv, maxsig=maxsig_nv, voff=voff_nv, vindex=0, windex=0, findex=0, fvalue=0.002),
 ]
 
 DEFAULT_LINE_CONFIG: Dict[str, Any] = {
@@ -336,53 +341,50 @@ DEFAULT_LINE_CONFIG: Dict[str, Any] = {
 # These can be appended to the default line list via
 # _build_default_prior_config(..., include_elg_narrow_lines=True).
 DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
-    _line_row(lam=3726.03, compname='OII', minwav=3650, maxwav=3800, linename='OII3726', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
-    _line_row(lam=3728.82, compname='OII', minwav=3650, maxwav=3800, linename='OII3729', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
-    _line_row(lam=3869.86, compname='NeIII', minwav=3800, maxwav=4020, linename='NeIII3869', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=3968.59, compname='NeIII', minwav=3900, maxwav=4100, linename='NeIII3968', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4341.68, compname='Hg', minwav=4200, maxwav=4450, linename='Hg_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4364.44, compname='OIII', minwav=4300, maxwav=4450, linename='OIII4363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4862.68, compname='Hb', minwav=4640, maxwav=5100, linename='Hb_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4687.02, compname='HeII', minwav=4620, maxwav=4760, linename='HeII4686', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=4960.30, compname='OIII', minwav=4870, maxwav=5050, linename='OIII4959', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=1.0),
-    _line_row(lam=5008.24, compname='OIII', minwav=4920, maxwav=5100, linename='OIII5007', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
-    _line_row(lam=5877.25, compname='HeI', minwav=5800, maxwav=5950, linename='HeI5876', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=6302.05, compname='OI', minwav=6200, maxwav=6420, linename='OI6300', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.05, 6302.05, 6365.54)),
-    _line_row(lam=6365.54, compname='OI', minwav=6280, maxwav=6460, linename='OI6363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=1.0),
-    _line_row(lam=6549.85, compname='NII', minwav=6460, maxwav=6640, linename='NII6548', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=1.0),
-    _line_row(lam=6564.61, compname='Ha', minwav=6480, maxwav=6660, linename='Ha_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=6585.28, compname='NII', minwav=6500, maxwav=6680, linename='NII6583', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.0, 6585.28, 6549.85)),
-    _line_row(lam=6718.29, compname='SII', minwav=6640, maxwav=6800, linename='SII6716', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
-    _line_row(lam=6732.67, compname='SII', minwav=6660, maxwav=6820, linename='SII6731', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
+    _line_row(lam=3726.03, compname='OII', linename='OII3726', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
+    _line_row(lam=3728.82, compname='OII', linename='OII3729', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=31, fvalue=1.0),
+    _line_row(lam=3869.86, compname='NeIII', linename='NeIII3869', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=3968.59, compname='NeIII', linename='NeIII3968', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4102.89, compname='Hd', linename='Hd_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4341.68, compname='Hg', linename='Hg_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4364.44, compname='OIII', linename='OIII4363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4862.68, compname='Hb', linename='Hb_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4687.02, compname='HeII', linename='HeII4686', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=4960.30, compname='OIII', linename='OIII4959', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=1.0),
+    _line_row(lam=5008.24, compname='OIII', linename='OIII5007', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=32, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.98, 5008.24, 4960.30)),
+    _line_row(lam=5877.25, compname='HeI', linename='HeI5876', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=6302.05, compname='OI', linename='OI6300', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.05, 6302.05, 6365.54)),
+    _line_row(lam=6365.54, compname='OI', linename='OI6363', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=33, fvalue=1.0),
+    _line_row(lam=6549.85, compname='NII', linename='NII6548', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=1.0),
+    _line_row(lam=6564.61, compname='Ha', linename='Ha_na_elg', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=6585.28, compname='NII', linename='NII6583', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=34, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.0, 6585.28, 6549.85)),
+    _line_row(lam=6718.29, compname='SII', linename='SII6716', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
+    _line_row(lam=6732.67, compname='SII', linename='SII6731', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=35, fvalue=1.0),
     # Red optical / far-red forbidden + He I
-    _line_row(lam=7067.17, compname='HeI', minwav=7000, maxwav=7125, linename='HeI7065', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=7137.77, compname='ArIII', minwav=7050, maxwav=7220, linename='ArIII7138', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
-    _line_row(lam=7322.19, compname='OII', minwav=7260, maxwav=7375, linename='OII7320', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
-    _line_row(lam=7332.97, compname='OII', minwav=7270, maxwav=7385, linename='OII7330', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
-    _line_row(lam=7753.19, compname='ArIII', minwav=7680, maxwav=7820, linename='ArIII7751', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
-    # Paschen series (vacuum wavelengths, narrow by default)
-    _line_row(lam=8752.87, compname='Paschen', minwav=8690, maxwav=8815, linename='Pa12', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=8865.22, compname='Paschen', minwav=8800, maxwav=8930, linename='Pa11', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=9017.38, compname='Paschen', minwav=8950, maxwav=9085, linename='Pa10', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=9231.55, compname='Paschen', minwav=9160, maxwav=9300, linename='Pa9', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=9548.59, compname='Paschen', minwav=9480, maxwav=9620, linename='Pae', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=10052.13, compname='Paschen', minwav=9980, maxwav=10130, linename='Pad', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=10941.09, compname='Paschen', minwav=10850, maxwav=11040, linename='Pag', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=12821.67, compname='Paschen', minwav=12700, maxwav=12950, linename='Pab', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=18756.13, compname='Paschen', minwav=18600, maxwav=18920, linename='Paa', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=7067.17, compname='HeI', linename='HeI7065', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=7137.77, compname='ArIII', linename='ArIII7138', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    _line_row(lam=7322.19, compname='OII', linename='OII7320', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
+    _line_row(lam=7332.97, compname='OII', linename='OII7330', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=22, fvalue=0.001),
+    _line_row(lam=7753.19, compname='ArIII', linename='ArIII7751', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=0, fvalue=0.001),
+    # Higher-order Paschen series (vacuum wavelengths, narrow by default).
+    # The stronger Pa-epsilon through Pa-alpha lines are part of the default
+    # AGN table above.
+    _line_row(lam=8752.87, compname='Paschen', linename='Pa12', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=8865.22, compname='Paschen', linename='Pa11', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=9017.38, compname='Paschen', linename='Pa10', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=9231.55, compname='Paschen', linename='Pa9', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
     # Strong red/NIR forbidden lines
-    _line_row(lam=9071.09, compname='SIII', minwav=9000, maxwav=9135, linename='SIII9069', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=1.0),
-    _line_row(lam=9533.20, compname='SIII', minwav=9460, maxwav=9605, linename='SIII9531', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.5, 9533.20, 9071.09)),
+    _line_row(lam=9071.09, compname='SIII', linename='SIII9069', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=1.0),
+    _line_row(lam=9533.20, compname='SIII', linename='SIII9531', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.5, 9533.20, 9071.09)),
 ]
 
 # Optional high-ionization/coronal narrow-line set.
 DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
-    _line_row(lam=3346.79, compname='NeV', minwav=3300, maxwav=3385, linename='NeV3346', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=1.0),
-    _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426_hi', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.7, 3426.84, 3346.79)),
-    _line_row(lam=5721.0, compname='FeVII', minwav=5660, maxwav=5785, linename='FeVII5721', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=6087.0, compname='FeVII', minwav=6030, maxwav=6145, linename='FeVII6087', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
-    _line_row(lam=6374.0, compname='FeX', minwav=6320, maxwav=6430, linename='FeX6374', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=3346.79, compname='NeV', linename='NeV3346', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=1.0),
+    _line_row(lam=3426.84, compname='NeV', linename='NeV3426_hi', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg, vindex=12, windex=12, findex=41, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.7, 3426.84, 3346.79)),
+    _line_row(lam=5721.0, compname='FeVII', linename='FeVII5721', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=6087.0, compname='FeVII', linename='FeVII6087', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
+    _line_row(lam=6374.0, compname='FeX', linename='FeX6374', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
 ]
 
 

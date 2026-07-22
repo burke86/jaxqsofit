@@ -129,10 +129,7 @@ def plot_filter_metadata(fitter, bands):
         [_filter_wave_to_angstrom_scalar(filt.effective_wavelength) for filt in filt_list],
         dtype=float,
     )
-    half_width_obs = np.asarray(
-        [fitter._filter_half_width_angstrom(filt) for filt in filt_list],
-        dtype=float,
-    )
+    half_width_obs = np.asarray([filter_half_width_angstrom(filt) for filt in filt_list], dtype=float)
     return valid, eff_wave_obs, half_width_obs
 
 def style_axis(ax, spine_lw=1.5):
@@ -399,7 +396,7 @@ def observed_photometry_for_plot(fitter):
 
     z = float(getattr(fitter, 'z', 0.0))
     c_ang_s = 2.99792458e18
-    filter_valid, eff_wave_obs, half_width_obs = fitter._plot_filter_metadata(bands)
+    filter_valid, eff_wave_obs, half_width_obs = plot_filter_metadata(fitter, bands)
     phot_valid = np.isfinite(mags) & np.isfinite(mag_errs) & (mag_errs > 0)
     valid = filter_valid & phot_valid
     if not np.any(valid):
@@ -451,7 +448,7 @@ def plot_trace(
         If True, display the figure interactively with ``plt.show()``.
         Defaults to False so diagnostics are safe to call in headless terminals.
     """
-    series = fitter._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
+    series = posterior_series(fitter, param_names=param_names, max_vector_elems=max_vector_elems)
     if len(series) == 0:
         return None
 
@@ -462,7 +459,7 @@ def plot_trace(
     for ax, (label, vals) in zip(axes, series):
         ax.plot(np.arange(len(vals)), vals, color='black', lw=0.7)
         ax.set_ylabel(label, fontsize=9)
-        fitter._style_axis(ax)
+        style_axis(ax)
     axes[-1].set_xlabel('Sample', fontsize=10)
     fig.tight_layout()
     if show_plot:
@@ -518,7 +515,7 @@ def plot_corner(
     Parameters containing non-finite values or no posterior variation are
     omitted because ``corner`` cannot construct meaningful ranges for them.
     """
-    series = fitter._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
+    series = posterior_series(fitter, param_names=param_names, max_vector_elems=max_vector_elems)
     if len(series) == 0:
         return None
     try:
@@ -570,7 +567,7 @@ def plot_corner(
     )
     for ax in fig.axes:
         ax.tick_params(axis='both', which='major', labelsize=8)
-        fitter._style_axis(ax)
+        style_axis(ax)
     fig.subplots_adjust(left=0.08, bottom=0.08, right=0.98, top=0.98, wspace=0.06, hspace=0.06)
     if show_plot:
         plt.show()
@@ -941,7 +938,7 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
                 rasterized=True,
             )
 
-    obs_phot_points = fitter._observed_photometry_for_plot()
+    obs_phot_points = observed_photometry_for_plot(fitter)
     if obs_phot_points is not None:
         phot_x, phot_xerr, phot_y, phot_yerr = obs_phot_points
         ax.errorbar(
@@ -962,7 +959,8 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
             label='PSF photometry',
         )
 
-    syn_phot_points = fitter._synthetic_photometry_for_plot(
+    syn_phot_points = synthetic_photometry_for_plot(
+        fitter,
         model_attr='psf_model' if use_psf_space else 'model_total'
     )
     if syn_phot_points is not None:
@@ -1142,14 +1140,14 @@ def plot_fig(fitter, save_fig_path=None, broad_fwhm=1200, plot_legend=True, ylim
             if np.isfinite(rlim) and rlim > 0:
                 ax_resid.set_ylim(-1.15 * rlim, 1.15 * rlim)
         ax_resid.set_ylabel('resid', fontsize=20)
-        fitter._style_axis(ax_resid)
+        style_axis(ax_resid)
 
     if residual_enabled and ax_resid is not None:
         ax_resid.set_xlabel('Rest Wavelength (Å)', fontsize=20)
     else:
         ax.set_xlabel('Rest Wavelength (Å)', fontsize=20)
     ax.set_ylabel(r'$f_{\lambda}$ (10$^{-17}$ erg s$^{-1}$ cm$^{-2}$ Å$^{-1}$)', fontsize=20)
-    fitter._style_axis(ax)
+    style_axis(ax)
     if plot_legend:
         ax.legend(loc="upper right", frameon=True, framealpha=0.9, fontsize=12, ncol=2)
     if show_plot:

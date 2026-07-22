@@ -499,6 +499,27 @@ def test_optional_line_tables_do_not_duplicate_hei7065():
     assert np.isclose(hei7065[0]["lambda"], 7067.17)
 
 
+def test_principal_paschen_lines_are_default_with_independent_amplitudes():
+    by_name = {row["linename"]: row for row in DEFAULT_LINE_PRIOR_ROWS}
+
+    expected = {
+        "Pae_na", "Pad_na", "Pag_br", "Pag_na", "Pab_br", "Pab_na",
+        "Paa_br", "Paa_na", "HeI10830_br", "HeI10830_na",
+    }
+    assert expected.issubset(by_name)
+    assert all(by_name[name]["findex"] == 0 for name in expected)
+    assert by_name["Pag_br"]["ngauss"] == 1
+    assert by_name["Pab_br"]["ngauss"] == 1
+    assert by_name["Paa_br"]["ngauss"] == 1
+
+
+def test_optional_elg_table_only_contains_higher_order_paschen_lines():
+    names = {row["linename"] for row in DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS}
+
+    assert {"Pa9", "Pa10", "Pa11", "Pa12"}.issubset(names)
+    assert names.isdisjoint({"Pae", "Pad", "Pag", "Pab", "Paa"})
+
+
 def test_optional_fixed_doublet_ratios_are_physical():
     elg_by_name = {row["linename"]: row for row in DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS}
     high_ion_by_name = {row["linename"]: row for row in DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS}

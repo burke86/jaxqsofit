@@ -121,36 +121,8 @@ def _line_table_from_prior_config(prior_config: Mapping[str, Any]):
     return None
 
 
-def _filter_line_table_to_rest_coverage(
-    line_table: Sequence[Mapping[str, Any]],
-    coverage_rest: tuple[float, float] | None,
-) -> list[Mapping[str, Any]]:
-    """Keep only line-table rows whose fitting window overlaps rest coverage.
-
-    Parameters
-    ----------
-    line_table : object
-        line_table value.
-    coverage_rest : object
-        coverage_rest value.
-    """
-    if coverage_rest is None:
-        return [dict(row) for row in line_table]
-    lo, hi = sorted((float(coverage_rest[0]), float(coverage_rest[1])))
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        return []
-    covered: list[Mapping[str, Any]] = []
-    for row in line_table:
-        lam = float(row.get("lambda", np.nan))
-        row_lo = float(row.get("minwav", lam))
-        row_hi = float(row.get("maxwav", lam))
-        if np.isfinite(row_lo) and np.isfinite(row_hi) and max(row_lo, lo) <= min(row_hi, hi):
-            covered.append(dict(row))
-    return covered
-
-
 def build_joint_tied_line_meta(config: SpectralComponentConfig | None = None):
-    """Build the static tied-line metadata used by an embedded joint model."""
+    """Build joint metadata using the standard line-coverage activation."""
     cfg = _as_config(config)
     if not cfg.use_lines or not cfg.use_tied_lines or cfg.line_centers_rest is not None:
         return None
@@ -158,10 +130,16 @@ def build_joint_tied_line_meta(config: SpectralComponentConfig | None = None):
     line_table = _line_table_from_prior_config(prior_config)
     if line_table is None:
         return None
-    line_table = _filter_line_table_to_rest_coverage(line_table, cfg.line_coverage_rest)
+    if cfg.line_coverage_rest is None:
+        activation_wave = np.asarray([1.0, 1.0e8], dtype=float)
+    else:
+        lo, hi = sorted(map(float, cfg.line_coverage_rest))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return None
+        activation_wave = np.asarray([lo, hi], dtype=float)
     tied_line_meta = build_tied_line_meta_from_linelist(
         line_table,
-        np.asarray([1.0, 1.0e8], dtype=float),
+        activation_wave,
     )
     return tied_line_meta if int(tied_line_meta["n_lines"]) > 0 else None
 

@@ -68,7 +68,3 @@ def line_complex_dense_mass_blocks(tied_line_meta, *, standardized_amplitudes):
     if width_sites:
         blocks.append(tuple(width_sites))
     return blocks
-
-
-# Backward-compatible private spelling used by older internal callers.
-_line_complex_dense_mass_blocks = line_complex_dense_mass_blocks
