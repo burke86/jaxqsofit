@@ -4573,6 +4573,7 @@ class JAXQSOFit:
             Output filename override.
         show_plot : bool, optional
             If True, display the figure interactively with ``plt.show()``.
+
         """
         from .plotting import plot_trace
 
@@ -4614,6 +4615,11 @@ class JAXQSOFit:
             Output filename override.
         show_plot : bool, optional
             If True, display the figure interactively with ``plt.show()``.
+
+        Notes
+        -----
+        Parameters containing non-finite values or no posterior variation are
+        omitted because they do not define meaningful corner-plot ranges.
         """
         from .plotting import plot_corner
 

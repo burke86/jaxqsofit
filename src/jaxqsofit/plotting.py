@@ -8,6 +8,7 @@ can continue to call ``fitter.plot_spectrum()`` and related methods.
 from __future__ import annotations
 
 import os
+import warnings
 
 import matplotlib
 import matplotlib.pyplot as plt
@@ -511,6 +512,11 @@ def plot_corner(
     show_plot : bool, optional
         If True, display the figure interactively with ``plt.show()``.
         Defaults to False so diagnostics are safe to call in headless terminals.
+
+    Notes
+    -----
+    Parameters containing non-finite values or no posterior variation are
+    omitted because ``corner`` cannot construct meaningful ranges for them.
     """
     series = fitter._posterior_series(param_names=param_names, max_vector_elems=max_vector_elems)
     if len(series) == 0:
@@ -525,6 +531,20 @@ def plot_corner(
     if data.shape[0] > int(max_points):
         idx = np.linspace(0, data.shape[0] - 1, int(max_points), dtype=int)
         data = data[idx]
+
+    valid = np.all(np.isfinite(data), axis=0) & (np.ptp(data, axis=0) > 0)
+    if not np.all(valid):
+        omitted = [label for label, keep in zip(labels, valid) if not keep]
+        warnings.warn(
+            "Omitting parameters with non-finite values or no posterior "
+            f"variation from corner plot: {', '.join(omitted)}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        data = data[:, valid]
+        labels = [label for label, keep in zip(labels, valid) if keep]
+    if data.shape[1] == 0:
+        return None
 
     fig = corner.corner(
         data,
