@@ -550,8 +550,8 @@ def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     expected_rest_fscale = np.nanmedian(np.abs(flux * (1.0 + z)))
     observed_fscale = np.nanmedian(np.abs(flux))
 
-    assert np.isclose(prior_config["log_cont_norm"].loc, np.log(expected_rest_fscale))
-    assert not np.isclose(prior_config["log_cont_norm"].loc, np.log(observed_fscale))
+    assert np.isclose(prior_config["cont_norm"].loc, np.log(expected_rest_fscale))
+    assert not np.isclose(prior_config["cont_norm"].loc, np.log(observed_fscale))
     assert np.allclose(q.flux, flux * (1.0 + z))
 
 
