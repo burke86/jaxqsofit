@@ -1218,6 +1218,33 @@ def test_plot_corner_show_plot_true_calls_plt_show(monkeypatch):
     assert called["show"] == 1
 
 
+def test_plot_corner_omits_constant_posterior_parameters(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.numpyro_samples = {
+        "PL_slope": np.array([-1.5, -1.4, -1.6]),
+        "constant": np.ones(3),
+    }
+    q.save_fig = False
+
+    called = {}
+
+    def _stub_corner(data, **kwargs):
+        called["data"] = data
+        called.update(kwargs)
+        fig, _ = plottingmod.plt.subplots()
+        return fig
+
+    monkeypatch.setattr("corner.corner", _stub_corner)
+
+    with pytest.warns(RuntimeWarning, match="constant"):
+        fig = q.plot_corner(param_names="all", show_plot=False)
+
+    assert fig is not None
+    assert called["data"].shape == (3, 1)
+    assert called["labels"] == ["PL_slope"]
+
+
 def test_plot_corner_reduces_tick_label_fontsize():
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)

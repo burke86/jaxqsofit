@@ -2,7 +2,11 @@ import numpy as np
 import jax
 from numpyro.handlers import seed, substitute, trace
 
-from jaxqsofit.components import SpectralComponentConfig, evaluate_joint_spectral_components
+from jaxqsofit.components import (
+    SpectralComponentConfig,
+    evaluate_joint_spectral_components,
+    render_joint_feature_state,
+)
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 
 
@@ -81,6 +85,29 @@ def test_evaluate_joint_spectral_components_uses_default_tied_lines():
     assert "jqf_line_model_broad" in tr
     assert "jqf_line_model_narrow" in tr
     assert np.asarray(tr["jqf_total_model"]["value"]).shape == wave_obs.shape
+
+
+def test_joint_feature_state_renders_same_tied_lines_on_another_grid():
+    wave_obs = np.linspace(4700.0, 5100.0, 96)
+    cfg = SpectralComponentConfig(
+        use_lines=True,
+        use_tied_lines=True,
+        use_feii=False,
+        use_balmer_continuum=False,
+        line_flux_scale_mjy=2.0,
+    )
+    fn = seed(evaluate_joint_spectral_components, jax.random.PRNGKey(15))
+    result = fn(
+        wave_obs=wave_obs,
+        redshift=0.0,
+        continuum_mjy=np.zeros_like(wave_obs),
+        config=cfg,
+    )
+
+    rendered = render_joint_feature_state(wave_obs, 0.0, result["state"], config=cfg)
+
+    np.testing.assert_allclose(np.asarray(rendered["lines"]), np.asarray(result["lines"]), rtol=1e-12, atol=1e-12)
+    assert set(("line_amp_per_component", "line_mu_per_component", "line_sig_per_component", "line_broad_mask_per_component")) <= set(result["state"])
 
 
 def test_evaluate_joint_spectral_components_filters_tied_lines_to_coverage():
@@ -226,3 +253,35 @@ def test_evaluate_joint_spectral_components_converts_feii_template_to_fnu_shape(
 
     assert feii[2] / feii[0] > 3.9
     assert np.isclose(feii[1] / feii[0], (3000.0 / 2000.0) ** 2, rtol=0.05)
+
+
+def test_feii_template_arrays_can_be_traced_under_jit():
+    wave_obs = np.linspace(2000.0, 4000.0, 32)
+    template_wave = np.linspace(1000.0, 5000.0, 64)
+    template_flux = np.ones_like(template_wave)
+    cfg = SpectralComponentConfig(
+        use_lines=False,
+        use_feii=True,
+        use_balmer_continuum=False,
+        broadening_convolution="direct",
+        feii_fnu_pivot_rest=3000.0,
+    )
+
+    def render(twave, tflux):
+        fn = substitute(
+            seed(evaluate_joint_spectral_components, jax.random.PRNGKey(21)),
+            data={"jqf_feii_norm": 1.0, "jqf_feii_fwhm": 1000.0, "jqf_feii_shift": 0.0},
+        )
+        return fn(
+            wave_obs=wave_obs,
+            redshift=0.0,
+            continuum_mjy=np.zeros_like(wave_obs),
+            config=cfg,
+            feii_template_wave_rest=twave,
+            feii_template_flux=tflux,
+        )["feii"]
+
+    result = jax.jit(render)(template_wave, template_flux)
+
+    assert np.asarray(result).shape == wave_obs.shape
+    assert np.all(np.isfinite(np.asarray(result)))

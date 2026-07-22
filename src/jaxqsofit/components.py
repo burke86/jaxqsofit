@@ -149,6 +149,23 @@ def _filter_line_table_to_rest_coverage(
     return covered
 
 
+def build_joint_tied_line_meta(config: SpectralComponentConfig | None = None):
+    """Build the static tied-line metadata used by an embedded joint model."""
+    cfg = _as_config(config)
+    if not cfg.use_lines or not cfg.use_tied_lines or cfg.line_centers_rest is not None:
+        return None
+    prior_config = _component_prior_config(cfg)
+    line_table = _line_table_from_prior_config(prior_config)
+    if line_table is None:
+        return None
+    line_table = _filter_line_table_to_rest_coverage(line_table, cfg.line_coverage_rest)
+    tied_line_meta = build_tied_line_meta_from_linelist(
+        line_table,
+        np.asarray([1.0, 1.0e8], dtype=float),
+    )
+    return tied_line_meta if int(tied_line_meta["n_lines"]) > 0 else None
+
+
 def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, site_prefix: str):
     """Evaluate jaxqsofit's grouped tied-line model on a rest-frame grid.
 
@@ -162,16 +179,8 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
         site_prefix value.
     """
     prior_config = _component_prior_config(cfg)
-    line_table = _line_table_from_prior_config(prior_config)
-    if line_table is None:
-        return jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), {}
-    line_table = _filter_line_table_to_rest_coverage(line_table, cfg.line_coverage_rest)
-
-    tied_line_meta = build_tied_line_meta_from_linelist(
-        line_table,
-        np.asarray([1.0, 1.0e8], dtype=float),
-    )
-    if int(tied_line_meta["n_lines"]) <= 0:
+    tied_line_meta = build_joint_tied_line_meta(cfg)
+    if tied_line_meta is None:
         return jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), jnp.zeros_like(wave_rest), {}
 
     dmu_group, sig_group, amp_group = _sample_tied_line_groups(
@@ -223,6 +232,7 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
         "line_amp_per_component": amps,
         "line_mu_per_component": mus,
         "line_sig_per_component": sigs,
+        "line_broad_mask_per_component": broad_mask,
         "line_narrow_fwhm_kms": narrow_fwhm_kms,
         "line_narrow_amp_scale": narrow_amp_scale,
     }
@@ -316,6 +326,76 @@ def _flambda_shape_to_fnu_mjy_shape(wave_rest, flambda_shape, pivot_rest):
     return flambda_shape * jnp.square(jnp.clip(wave_rest, 1.0e-8, None) / pivot)
 
 
+def render_joint_feature_state(
+    wave_obs,
+    redshift,
+    state,
+    *,
+    config: SpectralComponentConfig | None = None,
+    feii_template_wave_rest=None,
+    feii_template_flux=None,
+):
+    """Render an already sampled joint-feature state on any observed grid.
+
+    This function is pure: it creates no NumPyro sample or deterministic sites.
+    Joint SED/spectrum models can therefore sample the complicated line state
+    once and reuse it for spectroscopy and broadband-filter projection.
+    """
+    cfg = _as_config(config)
+    wave_obs = jnp.asarray(wave_obs, dtype=jnp.float64)
+    redshift = jnp.maximum(jnp.asarray(redshift, dtype=jnp.float64), 0.0)
+    wave_rest = wave_obs / jnp.maximum(1.0 + redshift, 1.0e-8)
+
+    line_broad = jnp.zeros_like(wave_obs)
+    line_narrow = jnp.zeros_like(wave_obs)
+    amps = jnp.asarray(state.get("line_amp_per_component", jnp.zeros(0)), dtype=jnp.float64)
+    if cfg.use_lines and amps.size:
+        mus = jnp.asarray(state["line_mu_per_component"], dtype=jnp.float64)
+        sigs = jnp.asarray(state["line_sig_per_component"], dtype=jnp.float64)
+        broad_mask = jnp.asarray(state["line_broad_mask_per_component"], dtype=jnp.float64)
+        _, line_broad, line_narrow, _ = _split_many_gauss_lnlam(
+            jnp.log(jnp.maximum(wave_rest, 1.0e-30)), amps, mus, sigs, broad_mask
+        )
+
+    feii = jnp.zeros_like(wave_obs)
+    if (
+        cfg.use_feii
+        and feii_template_wave_rest is not None
+        and feii_template_flux is not None
+        and "feii_norm" in state
+    ):
+        feii_flambda = _fe_template_component(
+            wave_rest,
+            jnp.asarray(feii_template_wave_rest, dtype=jnp.float64),
+            jnp.asarray(feii_template_flux, dtype=jnp.float64),
+            state["feii_norm"],
+            state["feii_fwhm"],
+            state["feii_shift"],
+            convolution_method=cfg.broadening_convolution,
+        )
+        feii = _flambda_shape_to_fnu_mjy_shape(wave_rest, feii_flambda, cfg.feii_fnu_pivot_rest)
+
+    balmer = jnp.zeros_like(wave_obs)
+    if cfg.use_balmer_continuum and "balmer_norm" in state:
+        balmer_flambda = _balmer_continuum_jax(
+            wave_rest,
+            state["balmer_norm"],
+            15000.0,
+            state["balmer_tau"],
+            state["balmer_vel"],
+            convolution_method=cfg.broadening_convolution,
+        )
+        balmer = _flambda_shape_to_fnu_mjy_shape(wave_rest, balmer_flambda, cfg.balmer_fnu_pivot_rest)
+
+    return {
+        "lines": line_broad + line_narrow,
+        "line_broad": line_broad,
+        "line_narrow": line_narrow,
+        "feii": feii,
+        "balmer": balmer,
+    }
+
+
 def evaluate_joint_spectral_components(
     wave_obs,
     redshift,
@@ -394,8 +474,8 @@ def evaluate_joint_spectral_components(
         feii_shift = numpyro.sample(f"{site_prefix}_feii_shift", dist.Normal(0.0, 0.01))
         feii_flambda_shape = _fe_template_component(
             wave_rest,
-            jnp.asarray(np.asarray(feii_template_wave_rest, dtype=float)),
-            jnp.asarray(np.asarray(feii_template_flux, dtype=float)),
+            jnp.asarray(feii_template_wave_rest, dtype=jnp.float64),
+            jnp.asarray(feii_template_flux, dtype=jnp.float64),
             feii_norm,
             feii_fwhm,
             feii_shift,
@@ -439,6 +519,11 @@ def evaluate_joint_spectral_components(
     numpyro.deterministic(f"{site_prefix}_feii_model", feii_model)
     numpyro.deterministic(f"{site_prefix}_balmer_model", balmer_model)
     numpyro.deterministic(f"{site_prefix}_total_model", total)
+    feature_state = dict(line_diagnostics)
+    if cfg.use_feii and feii_template_wave_rest is not None and feii_template_flux is not None:
+        feature_state.update(feii_norm=feii_norm, feii_fwhm=feii_fwhm, feii_shift=feii_shift)
+    if cfg.use_balmer_continuum:
+        feature_state.update(balmer_norm=balmer_norm, balmer_tau=balmer_tau, balmer_vel=balmer_vel)
     return {
         "total": total,
         "continuum": continuum_model,
@@ -447,4 +532,5 @@ def evaluate_joint_spectral_components(
         "line_narrow": line_narrow_model,
         "feii": feii_model,
         "balmer": balmer_model,
+        "state": feature_state,
     }
