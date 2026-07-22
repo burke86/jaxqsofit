@@ -21,6 +21,7 @@ from jaxqsofit.config import (
 from jaxqsofit.defaults import (
     DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS,
     DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS,
+    DEFAULT_LINE_PRIOR_ROWS,
     _build_default_prior_config as build_default_prior_config,
     append_optional_line_rows,
     build_default_bal_components,
@@ -58,6 +59,8 @@ def test_prior_config_object_exposes_model_mapping():
 def test_inference_defaults_use_standardized_line_block_geometry():
     inference = InferenceConfig()
 
+    assert inference.num_warmup == 250
+    assert inference.num_samples == 250
     assert inference.target_accept_prob == 0.85
     assert inference.dense_mass is False
     assert inference.line_block_dense_mass is True
@@ -205,7 +208,7 @@ def test_prior_config_from_spectrum_exposes_semantic_prior_sections():
         assert isinstance(mapping[key], dist.Normal)
     assert mapping["host_template_age_prior"] == {"type": "prefer_old", "pivot_gyr": 1.0, "strength": 2.0}
     assert mapping["host_sfh_model"] == "delayed"
-    assert np.isclose(mapping["log_cont_norm"].loc, np.log(2.0 * np.median(np.abs(flux))))
+    assert np.isclose(mapping["cont_norm"].loc, np.log(2.0 * np.median(np.abs(flux))))
 
 
 def test_prior_config_coerces_nested_semantic_sections():
@@ -266,7 +269,7 @@ def test_build_default_prior_config_has_expected_keys():
     mapping = cfg.to_mapping()
 
     required = [
-        'log_cont_norm',
+        'cont_norm',
         'PL_norm',
         'PL_slope',
         'PL_pivot',
@@ -307,10 +310,10 @@ def test_build_default_prior_config_scales_with_flux_median():
     expected = np.log(np.median(np.abs(flux)))
     mapping = cfg.to_mapping()
 
-    got = float(mapping['log_cont_norm'].loc)
+    got = float(mapping['cont_norm'].loc)
     assert np.isfinite(got)
     assert np.isclose(got, expected)
-    assert isinstance(mapping['log_cont_norm'], dist.LogNormal)
+    assert isinstance(mapping['cont_norm'], dist.LogNormal)
     assert isinstance(mapping['PL_slope'], dist.Normal)
     assert isinstance(mapping['tau_host'], dist.HalfNormal)
 
@@ -326,6 +329,32 @@ def test_default_line_initializations_are_interior_to_scaled_bounds():
         assert row["inisca"] > row["minsca"]
         assert row["inisca"] < row["maxsca"]
         assert (row["inisca"] - row["minsca"]) / span >= expected_fraction - 1e-12
+
+
+def test_fixed_atomic_doublet_ratios_are_integrated_flux_ratios():
+    def integrated_ratio(rows, numerator, denominator):
+        by_name = {row["linename"]: row for row in rows}
+        num = by_name[numerator]
+        den = by_name[denominator]
+        return (num["fvalue"] * num["lambda"]) / (den["fvalue"] * den["lambda"])
+
+    assert integrated_ratio(DEFAULT_LINE_PRIOR_ROWS, "NII6585", "NII6549") == pytest.approx(3.0)
+    assert integrated_ratio(DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS, "NII6583", "NII6548") == pytest.approx(3.0)
+    assert integrated_ratio(DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS, "SIII9531", "SIII9069") == pytest.approx(2.5)
+
+
+def test_default_line_scale_bounds_ignore_single_extreme_pixel():
+    baseline = np.ones(2000)
+    contaminated = baseline.copy()
+    contaminated[-1] = 1.0e9
+
+    baseline_rows = build_default_prior_config(baseline).to_mapping()["line"]["table"]
+    contaminated_rows = build_default_prior_config(contaminated).to_mapping()["line"]["table"]
+
+    np.testing.assert_allclose(
+        [row["maxsca"] for row in contaminated_rows],
+        [row["maxsca"] for row in baseline_rows],
+    )
 
 
 def test_build_default_prior_config_accepts_manual_pl_pivot():
@@ -350,11 +379,11 @@ def test_build_default_prior_config_uses_explicit_dist_fields():
     assert mapping["host_redshift_prior"]["highz_scale_mult"] == 0.05
     assert mapping["host_redshift_prior"]["lowz_df"] == 3.0
     assert mapping["host_redshift_prior"]["highz_df"] == 20.0
-    assert isinstance(mapping["log_Fe_uv_norm"], dist.LogNormal)
-    assert np.isclose(mapping["log_Fe_uv_norm"].loc, np.log(0.03 * 2.0))
-    assert float(mapping["log_Fe_uv_norm"].scale) == 1.0
+    assert isinstance(mapping["Fe_uv_norm"], dist.LogNormal)
+    assert np.isclose(mapping["Fe_uv_norm"].loc, np.log(0.03 * 2.0))
+    assert float(mapping["Fe_uv_norm"].scale) == 1.0
     assert isinstance(mapping["log_Fe_op_over_uv"], dist.Normal)
-    assert isinstance(mapping["log_Fe_FWHM"], dist.LogNormal)
+    assert isinstance(mapping["Fe_FWHM"], dist.LogNormal)
     assert isinstance(mapping["Fe_shift"], dist.Normal)
     assert isinstance(mapping["frac_jitter"], dist.HalfNormal)
     assert mapping["frac_fe_jitter"] == {"dist": "Delta", "value": 0.20}

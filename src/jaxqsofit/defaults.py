@@ -13,6 +13,7 @@ from .model import gaussian_bal_optical_depth_component
 MINSCA_DEFAULT = 0.0
 MAXSCA_DEFAULT = 1e10
 AMPLITUDE_FLOOR = 1e-32
+ROBUST_FLUX_HIGH_PERCENTILE = 99.5
 
 inisig_broad = 5e-3
 minsig_broad = 0.004
@@ -274,8 +275,8 @@ DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     # Halpha complex
     _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_br', ngauss=2, inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad, vindex=0, windex=0, findex=0, fvalue=0.05),
     _line_row(lam=6564.61, compname='Ha', minwav=6400, maxwav=6800, linename='Ha_na', inisig=inisig_narrow_relaxed, minsig=minsig_narrow_relaxed, maxsig=maxsig_narrow_relaxed, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
-    _line_row(lam=6549.85, compname='Ha', minwav=6400, maxwav=6800, linename='NII6549', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=0.001),
-    _line_row(lam=6585.28, compname='Ha', minwav=6400, maxwav=6800, linename='NII6585', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=0.003),
+    _line_row(lam=6549.85, compname='Ha', minwav=6400, maxwav=6800, linename='NII6549', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=1.0),
+    _line_row(lam=6585.28, compname='Ha', minwav=6400, maxwav=6800, linename='NII6585', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=1, fvalue=_lnlam_peak_ratio_for_flux_ratio(3.0, 6585.28, 6549.85)),
     _line_row(lam=6718.29, compname='Ha', minwav=6400, maxwav=6800, linename='SII6718', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
     _line_row(lam=6732.67, compname='Ha', minwav=6400, maxwav=6800, linename='SII6732', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow_tight, vindex=1, windex=1, findex=2, fvalue=0.001),
     # Hbeta / [OIII]
@@ -291,7 +292,6 @@ DEFAULT_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_br', inisig=inisig_broad, minsig=minsig_broad, maxsig=maxsig_broad, voff=voff_broad_balmer, vindex=0, windex=0, findex=0, fvalue=0.01),
     _line_row(lam=4102.89, compname='Hd', minwav=4000, maxwav=4150, linename='Hd_na', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.002),
     # Other optical/UV
-    # CaII3934
     _line_row(lam=3728.48, compname='OII', minwav=3650, maxwav=3800, linename='OII3728', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=1, windex=1, findex=0, fvalue=0.001),
     _line_row(lam=3426.84, compname='NeV', minwav=3380, maxwav=3480, linename='NeV3426', inisig=inisig_narrow_uv, minsig=minsig_narrow_uv, maxsig=maxsig_narrow_uv, voff=voff_narrow, vindex=0, windex=0, findex=0, fvalue=0.001),
     # Mg II complex
@@ -372,8 +372,8 @@ DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS: List[Dict[str, Any]] = [
     _line_row(lam=12821.67, compname='Paschen', minwav=12700, maxwav=12950, linename='Pab', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
     _line_row(lam=18756.13, compname='Paschen', minwav=18600, maxwav=18920, linename='Paa', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=12, windex=12, findex=0, fvalue=0.001),
     # Strong red/NIR forbidden lines
-    _line_row(lam=9071.09, compname='SIII', minwav=9000, maxwav=9135, linename='SIII9069', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=0.001),
-    _line_row(lam=9533.20, compname='SIII', minwav=9460, maxwav=9605, linename='SIII9531', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=0.0025),
+    _line_row(lam=9071.09, compname='SIII', minwav=9000, maxwav=9135, linename='SIII9069', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=1.0),
+    _line_row(lam=9533.20, compname='SIII', minwav=9460, maxwav=9605, linename='SIII9531', inisig=inisig_narrow, minsig=minsig_narrow, maxsig=maxsig_narrow, voff=voff_elg_red, vindex=11, windex=11, findex=23, fvalue=_lnlam_peak_ratio_for_flux_ratio(2.5, 9533.20, 9071.09)),
 ]
 
 # Optional high-ionization/coronal narrow-line set.
@@ -509,7 +509,11 @@ def append_optional_line_rows(
     f = np.asarray(flux, dtype=float)
     finite = np.isfinite(f)
     fscale = float(np.nanmedian(np.abs(f[finite]))) if np.any(finite) else 1.0
-    fmax = float(np.nanmax(np.abs(f[finite]))) if np.any(finite) else fscale
+    fmax = (
+        float(np.nanpercentile(np.abs(f[finite]), ROBUST_FLUX_HIGH_PERCENTILE))
+        if np.any(finite)
+        else fscale
+    )
     if not np.isfinite(fscale) or fscale <= 0:
         fscale = 1.0
     if not np.isfinite(fmax) or fmax <= 0:
@@ -673,14 +677,18 @@ def _build_default_prior_config(
     f = np.asarray(flux, dtype=float)
     finite = np.isfinite(f)
     fscale = float(np.nanmedian(np.abs(f[finite]))) if np.any(finite) else 1.0
-    fmax = float(np.nanmax(np.abs(f[finite]))) if np.any(finite) else fscale
+    fmax = (
+        float(np.nanpercentile(np.abs(f[finite]), ROBUST_FLUX_HIGH_PERCENTILE))
+        if np.any(finite)
+        else fscale
+    )
     if not np.isfinite(fscale) or fscale <= 0:
         fscale = 1.0
     if not np.isfinite(fmax) or fmax <= 0:
         fmax = fscale
 
     cfg: Dict[str, Any] = {
-        "log_cont_norm": dist.LogNormal(np.log(max(fscale, AMPLITUDE_FLOOR)), 0.3),
+        "cont_norm": dist.LogNormal(np.log(max(fscale, AMPLITUDE_FLOOR)), 0.3),
         "PL_norm": dist.HalfNormal(max(0.5 * fscale, AMPLITUDE_FLOOR)),
         "PL_slope": dist.Normal(-1.5, 0.4),
         "PL_pivot": None if pl_pivot is None else float(pl_pivot),
@@ -728,12 +736,12 @@ def _build_default_prior_config(
         },
         "gal_v_kms": dist.Normal(0.0, 120.0),
         "log_gal_sigma_kms": dist.TruncatedNormal(np.log(150.0), 0.4, low=np.log(30.0), high=np.log(500.0)),
-        "log_Fe_uv_norm": dist.LogNormal(np.log(max(0.03 * fscale, 1e-12)), 1.0),
+        "Fe_uv_norm": dist.LogNormal(np.log(max(0.03 * fscale, 1e-12)), 1.0),
         "log_Fe_op_over_uv": dist.Normal(0.0, 1.0),
-        "log_Fe_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
+        "Fe_FWHM": dist.LogNormal(np.log(3000.0), 0.5),
         "Fe_shift": dist.Normal(0.0, 1e-3),
-        "log_Balmer_norm": dist.LogNormal(np.log(max(1e-3 * fscale, AMPLITUDE_FLOOR)), 0.5),
-        "log_Balmer_Tau": dist.LogNormal(np.log(0.5), 0.25),
+        "Balmer_norm": dist.LogNormal(np.log(max(1e-3 * fscale, AMPLITUDE_FLOOR)), 0.5),
+        "Balmer_Tau": dist.LogNormal(np.log(0.5), 0.25),
         "log_Balmer_vel": dist.TruncatedNormal(np.log(3000.0), 0.3, low=np.log(1000.0), high=np.log(15000.0)),
         "poly_c2": dist.Normal(0.0, 0.03),
         "poly_c3": dist.Normal(0.0, 0.03),
