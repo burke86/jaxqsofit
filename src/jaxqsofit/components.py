@@ -121,36 +121,8 @@ def _line_table_from_prior_config(prior_config: Mapping[str, Any]):
     return None
 
 
-def _filter_line_table_to_rest_coverage(
-    line_table: Sequence[Mapping[str, Any]],
-    coverage_rest: tuple[float, float] | None,
-) -> list[Mapping[str, Any]]:
-    """Keep only line-table rows whose fitting window overlaps rest coverage.
-
-    Parameters
-    ----------
-    line_table : object
-        line_table value.
-    coverage_rest : object
-        coverage_rest value.
-    """
-    if coverage_rest is None:
-        return [dict(row) for row in line_table]
-    lo, hi = sorted((float(coverage_rest[0]), float(coverage_rest[1])))
-    if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
-        return []
-    covered: list[Mapping[str, Any]] = []
-    for row in line_table:
-        lam = float(row.get("lambda", np.nan))
-        row_lo = float(row.get("minwav", lam))
-        row_hi = float(row.get("maxwav", lam))
-        if np.isfinite(row_lo) and np.isfinite(row_hi) and max(row_lo, lo) <= min(row_hi, hi):
-            covered.append(dict(row))
-    return covered
-
-
 def build_joint_tied_line_meta(config: SpectralComponentConfig | None = None):
-    """Build the static tied-line metadata used by an embedded joint model."""
+    """Build joint metadata using the standard line-coverage activation."""
     cfg = _as_config(config)
     if not cfg.use_lines or not cfg.use_tied_lines or cfg.line_centers_rest is not None:
         return None
@@ -158,15 +130,27 @@ def build_joint_tied_line_meta(config: SpectralComponentConfig | None = None):
     line_table = _line_table_from_prior_config(prior_config)
     if line_table is None:
         return None
-    line_table = _filter_line_table_to_rest_coverage(line_table, cfg.line_coverage_rest)
+    if cfg.line_coverage_rest is None:
+        activation_wave = np.asarray([1.0, 1.0e8], dtype=float)
+    else:
+        lo, hi = sorted(map(float, cfg.line_coverage_rest))
+        if not np.isfinite(lo) or not np.isfinite(hi) or hi <= lo:
+            return None
+        activation_wave = np.asarray([lo, hi], dtype=float)
     tied_line_meta = build_tied_line_meta_from_linelist(
         line_table,
-        np.asarray([1.0, 1.0e8], dtype=float),
+        activation_wave,
     )
     return tied_line_meta if int(tied_line_meta["n_lines"]) > 0 else None
 
 
-def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, site_prefix: str):
+def _evaluate_tied_line_components(
+    wave_rest,
+    cfg: SpectralComponentConfig,
+    *,
+    site_prefix: str,
+    feature_amplitude_scale=1.0,
+):
     """Evaluate jaxqsofit's grouped tied-line model on a rest-frame grid.
 
     Parameters
@@ -198,6 +182,10 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
     amps = amp_group[
         _line_meta_array(tied_line_meta, "fgroup", jax_key="fgroup_jax", dtype=jnp.int32)
     ] * _line_meta_array(tied_line_meta, "flux_ratio", jax_key="flux_ratio_jax")
+    amps = amps / jnp.maximum(
+        jnp.asarray(feature_amplitude_scale, dtype=jnp.float64),
+        1.0e-12,
+    )
     mus = _line_meta_array(tied_line_meta, "ln_lambda0") + dmu
 
     broad_mask = jnp.asarray(_line_meta_broad_mask(tied_line_meta), dtype=jnp.float64)
@@ -239,7 +227,14 @@ def _evaluate_tied_line_components(wave_rest, cfg: SpectralComponentConfig, *, s
     return total, broad, narrow, diagnostics
 
 
-def _evaluate_simple_line_components(wave_rest, continuum_model, cfg: SpectralComponentConfig, *, site_prefix: str):
+def _evaluate_simple_line_components(
+    wave_rest,
+    continuum_model,
+    cfg: SpectralComponentConfig,
+    *,
+    site_prefix: str,
+    feature_amplitude_scale=1.0,
+):
     """Backward-compatible explicit Gaussian line list.
 
     Parameters
@@ -260,7 +255,11 @@ def _evaluate_simple_line_components(wave_rest, continuum_model, cfg: SpectralCo
         return line_model, broad_model, narrow_model, {}
     line_names = cfg.line_names or tuple(f"line_{i}" for i, _ in enumerate(cfg.line_centers_rest))
     broad_names = {str(name) for name in cfg.broad_line_names}
-    cont_scale = jnp.maximum(jnp.nanmedian(jnp.abs(continuum_model)), 1.0e-8)
+    amplitude_scale = jnp.maximum(
+        jnp.asarray(feature_amplitude_scale, dtype=jnp.float64),
+        1.0e-12,
+    )
+    cont_scale = jnp.maximum(jnp.nanmedian(jnp.abs(continuum_model)) * amplitude_scale, 1.0e-8)
     for name, center in zip(line_names, cfg.line_centers_rest):
         is_broad = str(name) in broad_names
         default_fwhm = cfg.broad_fwhm_kms_default if is_broad else cfg.narrow_fwhm_kms_default
@@ -268,6 +267,7 @@ def _evaluate_simple_line_components(wave_rest, continuum_model, cfg: SpectralCo
             f"{site_prefix}_line_amp_{name}",
             dist.LogNormal(jnp.log(cont_scale * 0.1), cfg.line_amp_prior_sigma),
         )
+        amp = amp / amplitude_scale
         fwhm = numpyro.sample(
             f"{site_prefix}_line_fwhm_{name}",
             dist.LogNormal(jnp.log(max(default_fwhm, 1.0)), 0.5),
@@ -405,6 +405,7 @@ def evaluate_joint_spectral_components(
     feii_template_wave_rest=None,
     feii_template_flux=None,
     site_prefix: str = "jqf",
+    feature_amplitude_scale=1.0,
 ):
     """Evaluate jaxqsofit spectral components around an external continuum.
 
@@ -417,6 +418,11 @@ def evaluate_joint_spectral_components(
     continuum_mjy
         External continuum prediction on ``wave_obs`` in mJy. In a joint
         grahspj fit this is the shared AGN+host continuum.
+    feature_amplitude_scale
+        Multiplicative calibration of the reference observed spectrum. Line,
+        Fe II, and Balmer amplitudes are sampled in that observed coordinate
+        system and divided by this value before being added to the intrinsic
+        continuum. The default of one preserves standalone behavior.
     feii_template_wave_rest, feii_template_flux
         Rest-frame Fe II template sampled as an f_lambda-shaped relative
         spectrum. The evaluated Fe II component is converted to f_nu shape
@@ -437,6 +443,10 @@ def evaluate_joint_spectral_components(
     continuum_mjy = jnp.asarray(continuum_mjy, dtype=jnp.float64)
     redshift = jnp.maximum(jnp.asarray(redshift, dtype=jnp.float64), 0.0)
     wave_rest = wave_obs / jnp.maximum(1.0 + redshift, 1.0e-8)
+    feature_amplitude_scale = jnp.maximum(
+        jnp.asarray(feature_amplitude_scale, dtype=jnp.float64),
+        1.0e-12,
+    )
 
     calibration = jnp.ones_like(wave_obs)
     if cfg.use_multiplicative_tilt:
@@ -455,6 +465,7 @@ def evaluate_joint_spectral_components(
                 wave_rest,
                 cfg,
                 site_prefix=site_prefix,
+                feature_amplitude_scale=feature_amplitude_scale,
             )
         else:
             line_model, line_broad_model, line_narrow_model, line_diagnostics = _evaluate_simple_line_components(
@@ -462,11 +473,16 @@ def evaluate_joint_spectral_components(
                 continuum_model,
                 cfg,
                 site_prefix=site_prefix,
+                feature_amplitude_scale=feature_amplitude_scale,
             )
 
     feii_model = jnp.zeros_like(wave_obs)
     if cfg.use_feii and feii_template_wave_rest is not None and feii_template_flux is not None:
-        feii_norm = numpyro.sample(f"{site_prefix}_feii_norm", dist.LogNormal(jnp.log(1.0e-3), 2.0))
+        feii_norm_observed = numpyro.sample(
+            f"{site_prefix}_feii_norm",
+            dist.LogNormal(jnp.log(1.0e-3), 2.0),
+        )
+        feii_norm = feii_norm_observed / feature_amplitude_scale
         feii_fwhm = numpyro.sample(
             f"{site_prefix}_feii_fwhm",
             dist.LogNormal(jnp.log(max(cfg.feii_fwhm_kms_default, 1.0)), 0.4),
@@ -489,7 +505,11 @@ def evaluate_joint_spectral_components(
 
     balmer_model = jnp.zeros_like(wave_obs)
     if cfg.use_balmer_continuum:
-        balmer_norm = numpyro.sample(f"{site_prefix}_balmer_norm", dist.LogNormal(jnp.log(1.0e-3), 2.0))
+        balmer_norm_observed = numpyro.sample(
+            f"{site_prefix}_balmer_norm",
+            dist.LogNormal(jnp.log(1.0e-3), 2.0),
+        )
+        balmer_norm = balmer_norm_observed / feature_amplitude_scale
         balmer_tau = numpyro.sample(f"{site_prefix}_balmer_tau", dist.LogNormal(jnp.log(1.0), 0.5))
         balmer_vel = numpyro.sample(
             f"{site_prefix}_balmer_vel",

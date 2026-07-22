@@ -1891,44 +1891,10 @@ class JAXQSOFit:
             helpers while the fitter keeps mirrored posterior state.
         """
         if kwargs:
-            legacy_targets = {
-                "deredden": "config.observation.apply_mw_deredden",
-                "fit_lines": "config.lines.enabled",
-                "decompose_host": "config.host.enabled",
-                "fit_pl": "config.continuum.fit_power_law",
-                "fit_fe": "config.continuum.fit_feii",
-                "fit_bc": "config.continuum.fit_balmer_continuum",
-                "fit_poly": "config.continuum.fit_polynomial_tilt",
-                "fit_reddening": "config.continuum.fit_reddening",
-                "fit_poly_order": "config.continuum.polynomial_order",
-                "save_result": "config.output.save_result",
-                "plot_fig": "config.output.plot_fig",
-                "save_fig": "config.output.save_fig",
-                "output_path": "config.output.output_path",
-                "fig_path": "config.output.output_path",
-                "result_path": "config.output.output_path",
-                "nuts_warmup": "config.inference.num_warmup",
-                "nuts_samples": "config.inference.num_samples",
-                "nuts_chains": "config.inference.num_chains",
-                "target_accept_prob": "config.inference.target_accept_prob",
-                "dense_mass": "config.inference.dense_mass",
-                "max_tree_depth": "config.inference.max_tree_depth",
-                "optax_steps": "config.inference.map_steps",
-                "optax_lr": "config.inference.learning_rate",
-                "fit_method": "config.inference.method",
-                "method": "config.inference.method",
-            }
-            details = []
-            for key in sorted(kwargs):
-                target = legacy_targets.get(key)
-                if target is None:
-                    details.append(f"{key}: no public fit() keyword exists")
-                else:
-                    details.append(f"{key}: set q.{target} before q.fit()")
-            joined = "; ".join(details)
             raise TypeError(
                 "JAXQSOFit.fit() is configuration-first and does not accept "
-                f"model/inference keyword arguments. {joined}."
+                "model/inference keyword arguments; set the corresponding "
+                f"FitConfig fields before calling fit(). Received: {', '.join(sorted(kwargs))}."
             )
 
         cfg = self.config
@@ -4460,20 +4426,6 @@ class JAXQSOFit:
         print(f"Saved results table: {out_file}")
         return
 
-    def _posterior_series(self, param_names=None, max_vector_elems=2):
-        """Flatten posterior samples into labeled 1D series for diagnostics.
-
-        Parameters
-        ----------
-        param_names : object
-            param_names value.
-        max_vector_elems : object
-            max_vector_elems value.
-        """
-        from .plotting import posterior_series
-
-        return posterior_series(self, param_names=param_names, max_vector_elems=max_vector_elems)
-
     @staticmethod
     def _build_result_arrays(entries):
         """Convert ``(name, value, type)`` entries into legacy result arrays.
@@ -4489,66 +4441,6 @@ class JAXQSOFit:
             np.array([dtype for _, _, dtype in entries], dtype=object),
             np.array([name for name, _, _ in entries], dtype=object),
         )
-
-    @staticmethod
-    def _filter_half_width_angstrom(filt):
-        """Return an approximate half-width for a photometric filter.
-
-
-        Parameters
-        ----------
-        filt : object
-            filt value.
-        """
-        from .plotting import filter_half_width_angstrom
-
-        return filter_half_width_angstrom(filt)
-
-    def _plot_filter_metadata(self, bands):
-        """Return plotting metadata arrays for the requested photometric bands.
-
-
-        Parameters
-        ----------
-        bands : object
-            bands value.
-        """
-        from .plotting import plot_filter_metadata
-
-        return plot_filter_metadata(self, bands)
-
-    @staticmethod
-    def _style_axis(ax, spine_lw=1.5):
-        """Apply consistent axis styling.
-
-        Parameters
-        ----------
-        ax : object
-            ax value.
-        spine_lw : object
-            spine_lw value.
-        """
-        from .plotting import style_axis
-
-        return style_axis(ax, spine_lw=spine_lw)
-
-    def _synthetic_photometry_for_plot(self, model_attr='model_total'):
-        """Return rest-frame synthetic photometry points for plotting, if available.
-
-        Parameters
-        ----------
-        model_attr : object
-            model_attr value.
-        """
-        from .plotting import synthetic_photometry_for_plot
-
-        return synthetic_photometry_for_plot(self, model_attr=model_attr)
-
-    def _observed_photometry_for_plot(self):
-        """Return rest-frame observed PSF photometry points for plotting, if available."""
-        from .plotting import observed_photometry_for_plot
-
-        return observed_photometry_for_plot(self)
 
     def plot_trace(
         self,

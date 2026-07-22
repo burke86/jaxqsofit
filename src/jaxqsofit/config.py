@@ -243,8 +243,8 @@ class InferenceConfig:
     random_seed: int = 0
     map_steps: int = 2000
     learning_rate: float = 1.0e-2
-    num_warmup: int = 50
-    num_samples: int = 50
+    num_warmup: int = 250
+    num_samples: int = 250
     num_chains: int = 1
     target_accept_prob: float = 0.85
     dense_mass: bool = False

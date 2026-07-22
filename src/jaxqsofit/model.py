@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from functools import lru_cache
 from typing import Any, Dict, List, Mapping, Sequence, Tuple, TypedDict
 
 import numpy as np
@@ -313,22 +312,6 @@ def _continuum_output_waves_from_prior_config(prior_config, *, default_waves=(25
             continue
         out.append(wave)
     return tuple(out)
-
-
-@lru_cache(maxsize=256)
-def _luminosity_distance_cm(z: float) -> float:
-    """Return luminosity distance in cm for a fixed flat LCDM cosmology.
-
-    Parameters
-    ----------
-    z : object
-        z value.
-    """
-    z = float(z)
-    grid = np.linspace(0.0, max(z, 1.0e-8), 256, dtype=float)
-    ez_inv = 1.0 / np.sqrt(np.maximum(_LUMINOSITY_OM0 * (1.0 + grid) ** 3 + (1.0 - _LUMINOSITY_OM0), 1.0e-18))
-    dc_mpc = (C_KMS / _LUMINOSITY_H0) * np.trapezoid(ez_inv, x=grid)
-    return float(dc_mpc * (1.0 + z) * MPC_TO_CM)
 
 
 def _ez_inv_flat_lcdm_jax(z):

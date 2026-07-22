@@ -304,7 +304,7 @@ def test_fit_rejects_legacy_keywords_with_config_hint():
     lam, flux, err = _make_simple_spectrum()
     q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
 
-    with pytest.raises(TypeError, match="configuration-first.*config.lines.enabled"):
+    with pytest.raises(TypeError, match="configuration-first.*FitConfig.*fit_lines"):
         q.fit(fit_lines=False)
 
 
@@ -550,8 +550,8 @@ def test_fit_builds_default_priors_from_rest_frame_flux(monkeypatch):
     expected_rest_fscale = np.nanmedian(np.abs(flux * (1.0 + z)))
     observed_fscale = np.nanmedian(np.abs(flux))
 
-    assert np.isclose(prior_config["log_cont_norm"].loc, np.log(expected_rest_fscale))
-    assert not np.isclose(prior_config["log_cont_norm"].loc, np.log(observed_fscale))
+    assert np.isclose(prior_config["cont_norm"].loc, np.log(expected_rest_fscale))
+    assert not np.isclose(prior_config["cont_norm"].loc, np.log(observed_fscale))
     assert np.allclose(q.flux, flux * (1.0 + z))
 
 
@@ -1147,7 +1147,7 @@ def test_posterior_series_defaults_use_sampled_parameter_names():
         "Balmer_Te": np.array([15000.0, 15000.0]),
     }
 
-    labels = [name for name, _ in q._posterior_series()]
+    labels = [name for name, _ in plottingmod.posterior_series(q)]
 
     assert "log_Fe_op_over_uv" in labels
     assert "Balmer_vel" in labels
