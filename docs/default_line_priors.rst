@@ -1,6 +1,10 @@
 Default emission-line priors
 ============================
 
+The publication-ready table containing the continuum, nuisance, and default
+emission-line priors is available as
+:download:`LaTeX source <prior_table.tex>`.
+
 This is the line model activated by default when a complex overlaps the fitted
 rest-frame wavelength range. Values are generated directly from
 ``DEFAULT_LINE_PRIOR_ROWS`` at documentation-build time.
@@ -16,14 +20,15 @@ The center-shift column gives the symmetric allowed range around the laboratory
 wavelength. These velocity conversions are intended to make the priors easy to
 interpret; the model continues to evaluate profiles in ln-wavelength.
 
-Tie badges are scoped to a single fitting complex:
+The ``v/w/f`` column lists the velocity, width, and amplitude tie indices.
+Tie indices are scoped to a single fitting complex:
 
-- matching **V** badges share a velocity offset;
-- matching **W** badges share a Gaussian width;
-- matching **A** badges share an amplitude coordinate.
+- matching positive ``v`` indices share a velocity offset;
+- matching positive ``w`` indices share a Gaussian width;
+- matching positive ``f`` indices share an amplitude coordinate.
 
-An em dash means the corresponding coordinate is independent. For tied
-amplitudes, the displayed multiplier is the row's fixed peak-amplitude factor.
+Zero means the corresponding coordinate is independent. For tied amplitudes,
+the displayed :math:`A_0` value is the row's fixed peak-amplitude factor.
 The ratio helper in the defaults converts physically specified integrated-flux
 ratios into the appropriate ln-wavelength peak ratios.
 
