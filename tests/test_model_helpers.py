@@ -1,6 +1,7 @@
 import numpy as np
 import jax
 import jax.numpy as jnp
+import numpyro
 import numpyro.distributions as dist
 from numpyro.handlers import seed, substitute, trace
 from types import SimpleNamespace
@@ -48,6 +49,27 @@ def test_multiplicative_calibration_is_positive_and_smooth():
         assert float(calibration) > 0.0
         assert np.isfinite(float(gradient))
         assert np.isfinite(float(curvature))
+
+
+def test_standardized_normal_prior_retains_gradient_beyond_six_sigma():
+    prior = dist.Normal(loc=2.0, scale=0.3)
+
+    def transformed(eps):
+        sample = substitute(
+            lambda: model_mod._sample_distribution(
+                {"standardize_active_priors": True},
+                "x",
+                prior,
+            ),
+            data={"x_std": eps},
+        )
+        return sample()
+
+    value = transformed(jnp.asarray(6.0))
+    gradient = jax.grad(transformed)(jnp.asarray(6.0))
+
+    np.testing.assert_allclose(value, 2.0 + 0.3 * 6.0)
+    np.testing.assert_allclose(gradient, 0.3)
 
 
 def test_polynomial_basis_is_weighted_orthogonal_to_continuum_and_reddening():
@@ -1160,6 +1182,72 @@ def test_flexible_host_age_prior_can_be_disabled():
     loc = np.asarray(_flexible_host_raw_weight_locs(_Grid(), cfg, 2), dtype=float)
 
     assert np.allclose(loc, [-0.5, -0.5])
+
+
+def test_flexible_host_shared_model_retains_physical_conditional_site():
+    wave = jnp.linspace(4000.0, 4100.0, 32)
+
+    class _Grid:
+        templates = np.column_stack(
+            [
+                np.ones(wave.size),
+                np.linspace(0.5, 1.5, wave.size),
+                np.linspace(1.5, 0.5, wave.size),
+            ]
+        )
+        template_meta = [
+            {"tage_gyr": 0.1, "logzsol": 0.0},
+            {"tage_gyr": 1.0, "logzsol": 0.0},
+            {"tage_gyr": 10.0, "logzsol": 0.0},
+        ]
+
+    tau = 0.35
+    epsilon = np.array([-1.0, 0.25, 1.5])
+    raw_loc = -0.4
+    cfg = {
+        "raw_w": {"dist": "Normal", "loc": raw_loc, "scale": 1.0},
+        "host_template_age_prior": {"enabled": False},
+    }
+    expected_raw = raw_loc + tau * epsilon
+    params = {
+        "tau_host": np.array(tau),
+        "fsps_weights_raw": expected_raw,
+        "gal_v_kms": np.array(0.0),
+        "log_gal_sigma_kms": np.log(1.0),
+    }
+
+    def host_model():
+        state = model_mod._build_host_component(
+            wave=wave,
+            host_wave=wave,
+            host_lnwave=jnp.log(wave),
+            templates=jnp.asarray(_Grid.templates),
+            fsps_grid=_Grid(),
+            prior_config=cfg,
+            host_amp=jnp.asarray(2.0),
+            z_qso=0.1,
+            sigma_inst_kms=0.0,
+            convolution_method="direct",
+            decompose_host=True,
+            host_sfh_model="flexible",
+        )
+        numpyro.deterministic("test_weight_fractions", state.fsps_weights_frac)
+        numpyro.deterministic("test_weights", state.fsps_weights)
+
+    tr = trace(
+        substitute(seed(host_model, jax.random.PRNGKey(8)), data=params)
+    ).get_trace()
+    expected_frac = np.asarray(jax.nn.softmax(jnp.asarray(expected_raw)))
+
+    assert tr["fsps_weights_raw"]["type"] == "sample"
+    np.testing.assert_allclose(tr["fsps_weights_raw"]["fn"].loc, raw_loc)
+    np.testing.assert_allclose(tr["fsps_weights_raw"]["fn"].scale, tau)
+    np.testing.assert_allclose(tr["fsps_weights_raw"]["value"], expected_raw)
+    np.testing.assert_allclose(
+        tr["test_weight_fractions"]["value"],
+        expected_frac,
+    )
+    np.testing.assert_allclose(tr["test_weights"]["value"], 2.0 * expected_frac)
 
 
 def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():

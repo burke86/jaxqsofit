@@ -61,10 +61,11 @@ def test_inference_defaults_use_standardized_line_block_geometry():
 
     assert inference.num_warmup == 250
     assert inference.num_samples == 250
-    assert inference.target_accept_prob == 0.85
+    assert inference.target_accept_prob == 0.82
     assert inference.dense_mass is False
     assert inference.line_block_dense_mass is True
     assert inference.standardize_active_priors is True
+    assert inference.warmup_max_tree_depth is None
 
 
 def test_feii_fractional_error_maps_to_likelihood_site():

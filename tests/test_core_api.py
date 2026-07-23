@@ -1,9 +1,13 @@
 import os
 import h5py
+import warnings
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
+import numpyro
+import numpyro.distributions as dist
 
 import jaxqsofit
 import jaxqsofit.core as coremod
@@ -27,6 +31,31 @@ def _make_wide_spectrum(n=256):
     flux = 40.0 + 0.0015 * (lam - 6000.0)
     err = np.full_like(flux, 0.4)
     return lam, flux, err
+
+
+def test_calculate_sn_skips_uncovered_standard_windows_without_warnings():
+    wave = np.linspace(2990.0, 3060.0, 96)
+    flux = 20.0 + 0.03 * np.sin(wave / 3.0)
+    fitter = object.__new__(JAXQSOFit)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        sn_ratio = fitter._calculate_sn(wave, flux)
+
+    assert np.isfinite(sn_ratio)
+    assert sn_ratio > 0.0
+
+
+def test_calculate_sn_constant_fallback_has_no_divide_by_zero_warning():
+    wave = np.linspace(7000.0, 7100.0, 64)
+    flux = np.full_like(wave, 20.0)
+    fitter = object.__new__(JAXQSOFit)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", RuntimeWarning)
+        sn_ratio = fitter._calculate_sn(wave, flux)
+
+    assert sn_ratio == -1.0
 
 
 def _build_bundle_source(tmp_path, filename, decompose_host):
@@ -144,7 +173,7 @@ def test_predictive_return_sites_prune_inactive_line_and_psf_outputs():
     assert "add_jitter" in sites
 
 
-def test_numpyro_geometry_reparam_config_disabled_for_map_warm_starts():
+def test_numpyro_geometry_reparam_config_only_decenters_flexible_host_for_nuts():
     prior_config = {
         "PL_slope": {"dist": "TruncatedNormal", "loc": -1.5, "scale": 0.3, "low": -3.5, "high": 0.5},
         "log_Fe_uv_norm": {"dist": "Normal", "loc": -5.0, "scale": 0.2},
@@ -152,15 +181,26 @@ def test_numpyro_geometry_reparam_config_disabled_for_map_warm_starts():
         "gal_v_kms": {"dist": "Normal", "loc": 0.0, "scale": 150.0},
     }
 
-    config = coremod._numpyro_geometry_reparam_config(
-        prior_config,
+    delayed_config = coremod._numpyro_geometry_reparam_config(
+        {**prior_config, "host_sfh_model": "delayed"},
+        fit_pl=True,
+        fit_fe=True,
+        fit_bc=False,
+        decompose_host=True,
+    )
+    flexible_config = coremod._numpyro_geometry_reparam_config(
+        {**prior_config, "host_sfh_model": "flexible"},
         fit_pl=True,
         fit_fe=True,
         fit_bc=False,
         decompose_host=True,
     )
 
-    assert config == {}
+    assert delayed_config == {}
+    assert set(flexible_config) == {"fsps_weights_raw"}
+    assert isinstance(
+        flexible_config["fsps_weights_raw"], coremod.LocScaleReparam
+    )
 
 
 def test_line_table_kind_filter_removes_broad_rows_only():
@@ -379,10 +419,25 @@ def test_line_complex_dense_mass_blocks_group_local_latents():
         ],
         "broad_width_order_complex_indices": [0],
         "broad_width_order_site_labels": ["Hb"],
+        "broad_width_order_groups": [np.array([0])],
         "n_wgroups": 2,
         "wgroup": np.array([0, 1]),
         "broad_mask": np.array([1.0, 0.0]),
         "unordered_width_group_ids": np.array([0, 1]),
+        "independent_vgroup_ids": np.array([0, 1]),
+        "nlr_vgroup_families": {
+            "low": np.array([2]),
+            "high": np.array([3]),
+            "coronal": np.array([4]),
+        },
+        "direct_width_groups": [
+            {"group_id": 2, "site_label": "OIII_wing"},
+        ],
+        "nlr_wgroup_families": {
+            "low": np.array([3]),
+            "high": np.array([4]),
+            "coronal": np.array([5]),
+        },
         "broad_centroid_hierarchy_groups": [
             {"complex_index": 0, "component_groups": [0, 1]}
         ],
@@ -395,14 +450,350 @@ def test_line_complex_dense_mass_blocks_group_local_latents():
     assert blocks == [
         ("line_amp_complex_1_std",),
         (
-            "line_log_broad_fwhm_std",
-            "line_log_fwhm_delta_group_std",
             "line_amp_complex_0_std",
             "line_broad_center_0_std",
             "line_broad_relative_offsets_0_std",
             "line_ordered_width_logits_Hb_std",
         ),
     ]
+
+
+def test_ordered_line_complexes_use_separate_dense_blocks():
+    tied_line_meta = {
+        "amp_complex_groups": [
+            {"complex_index": 0, "site_label": "Hb"},
+            {"complex_index": 1, "site_label": "MgII"},
+        ],
+        "broad_width_order_complex_indices": [0, 1],
+        "broad_width_order_site_labels": ["Hb", "MgII"],
+        "broad_centroid_hierarchy_groups": [
+            {"complex_index": 0},
+            {"complex_index": 1},
+        ],
+    }
+
+    blocks = coremod._line_complex_dense_mass_blocks(
+        tied_line_meta, standardized_amplitudes=True
+    )
+
+    assert blocks == [
+        (
+            "line_amp_Hb_std",
+            "line_broad_center_0_std",
+            "line_broad_relative_offsets_0_std",
+            "line_ordered_width_logits_Hb_std",
+        ),
+        (
+            "line_amp_MgII_std",
+            "line_broad_center_1_std",
+            "line_broad_relative_offsets_1_std",
+            "line_ordered_width_logits_MgII_std",
+        ),
+    ]
+
+
+def test_nuts_transition_diagnostics_distinguish_final_level_from_full_tree():
+    diagnostics = coremod._summarize_nuts_transition_fields(
+        {
+            "num_steps": np.array([[31, 128, 254, 255]], dtype=float),
+            "accept_prob": np.array([[0.8, 0.9, 0.95, 1.0]], dtype=float),
+            "diverging": np.array([[False, False, True, False]]),
+            "energy": np.array([[1.0, 2.0, 1.5, 2.5]], dtype=float),
+        },
+        max_tree_depth=8,
+    )
+
+    assert diagnostics["final_tree_level_fraction"] == pytest.approx(0.75)
+    assert diagnostics["full_trajectory_fraction"] == pytest.approx(0.25)
+    assert diagnostics["max_num_steps_fraction"] == pytest.approx(0.25)
+    assert diagnostics["n_max_num_steps"] == 1
+    assert diagnostics["max_num_steps"] == 255
+    assert diagnostics["n_divergent"] == 1
+    assert diagnostics["bfmi"].shape == (1,)
+
+
+def test_optax_state_reset_removes_stale_nuts_diagnostics():
+    lam, flux, err = _make_simple_spectrum()
+    fitter = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    nuts_state_names = (
+        "numpyro_mcmc",
+        "nuts_mass_matrix_structure",
+        "nuts_extra_fields",
+        "nuts_diagnostics",
+        "nuts_metric_diagnostics",
+    )
+    for name in nuts_state_names:
+        setattr(fitter, name, object())
+
+    fitter._clear_nuts_run_state()
+
+    assert not any(name in fitter.__dict__ for name in nuts_state_names)
+
+
+def test_nuts_metric_diagnostics_flag_nonfinite_dense_matrix():
+    mcmc = SimpleNamespace(
+        num_chains=1,
+        last_state=SimpleNamespace(
+            adapt_state=SimpleNamespace(
+                inverse_mass_matrix={
+                    ("x", "y"): np.asarray([[1.0, np.nan], [np.nan, 1.0]])
+                },
+                step_size=np.asarray(0.02),
+            )
+        ),
+    )
+
+    diagnostics = coremod._summarize_nuts_metric(mcmc)
+    block = diagnostics["blocks"][0]
+    assert block["n_nonfinite_eigenvalues"] == 2
+    assert np.isinf(block["condition_number"])
+
+
+def _install_mocked_numpyro_runtime(monkeypatch, q, *, host_basis_jax=None):
+    """Install fast inference doubles and return their captured arguments."""
+    captures = {"nuts": [], "init_values": [], "run": []}
+    fsps_grid = coremod.FSPSTemplateGrid(
+        wave=np.asarray(q.wave),
+        templates=np.zeros((np.asarray(q.wave).size, 1)),
+        template_meta=[{"norm": 1.0}],
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        host_basis_jax=host_basis_jax,
+        t_obs_gyr=1.0,
+    )
+    monkeypatch.setattr(q, "_build_fsps_grid_for_fit", lambda **kwargs: fsps_grid)
+    monkeypatch.setattr(q, "_consume_posterior_outputs", lambda **kwargs: None)
+
+    def fake_init_to_value(*, values):
+        captures["init_values"].append(dict(values))
+        return object()
+
+    class FakeNUTS:
+        def __init__(self, model, **kwargs):
+            captures["nuts"].append(kwargs)
+
+    class FakeMCMC:
+        def __init__(self, kernel, **kwargs):
+            self.num_chains = int(kwargs["num_chains"])
+            self.last_state = None
+
+        def run(self, key, **kwargs):
+            captures["run"].append(kwargs)
+
+        def print_summary(self):
+            return None
+
+        def get_samples(self, group_by_chain=False):
+            return {}
+
+        def get_extra_fields(self, group_by_chain=False):
+            assert group_by_chain is True
+            return {
+                "num_steps": np.array([[3, 7]]),
+                "accept_prob": np.array([[0.85, 0.95]]),
+                "diverging": np.array([[False, False]]),
+                "potential_energy": np.array([[1.0, 1.2]]),
+                "energy": np.array([[1.1, 1.4]]),
+            }
+
+    class FakePredictive:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __call__(self, *args, **kwargs):
+            return {}
+
+    monkeypatch.setattr(coremod, "init_to_value", fake_init_to_value)
+    monkeypatch.setattr(coremod, "NUTS", FakeNUTS)
+    monkeypatch.setattr(coremod, "MCMC", FakeMCMC)
+    monkeypatch.setattr(coremod, "Predictive", FakePredictive)
+    return captures
+
+
+def test_numpyro_full_dense_precedes_blocks_and_uses_warmup_depth_tuple(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave, q.flux, q.err = lam, flux, err
+    q.fe_uv_wave = q.fe_op_wave = np.array([lam[0], lam[-1]])
+    q.fe_uv_flux = q.fe_op_flux = np.zeros(2)
+    captures = _install_mocked_numpyro_runtime(monkeypatch, q)
+
+    cfg = build_default_prior_config(flux).to_mapping()
+    cfg.pop("line", None)
+    cfg["line_block_dense_mass"] = True
+
+    q.run_fsps_numpyro_fit(
+        num_warmup=2,
+        num_samples=2,
+        dense_mass=True,
+        max_tree_depth=7,
+        warmup_max_tree_depth=10,
+        prior_config=cfg,
+        use_lines=False,
+        decompose_host=False,
+        fit_fe=False,
+        fit_bc=False,
+    )
+
+    nuts_kwargs = captures["nuts"][0]
+    assert nuts_kwargs["dense_mass"] is True
+    assert nuts_kwargs["max_tree_depth"] == (10, 7)
+    assert nuts_kwargs["find_heuristic_step_size"] is True
+    assert q.nuts_mass_matrix_structure is True
+    assert captures["run"][0]["extra_fields"] == (
+        "num_steps",
+        "accept_prob",
+        "potential_energy",
+        "energy",
+    )
+
+
+def test_numpyro_delayed_host_warm_start_keeps_physical_shared_coordinates(monkeypatch):
+    lam, flux, err = _make_simple_spectrum()
+    q = JAXQSOFit.from_arrays(lam=lam, flux=flux, err=err, z=0.1)
+    q.wave, q.flux, q.err = lam, flux, err
+    q.fe_uv_wave = q.fe_op_wave = np.array([lam[0], lam[-1]])
+    q.fe_uv_flux = q.fe_op_flux = np.zeros(2)
+    class _HostBasis:
+        ssp_lg_age_gyr = np.log10(np.array([0.1, 1.0]))
+        ssp_lgmet = np.array([-2.0, -1.0])
+
+    captures = _install_mocked_numpyro_runtime(
+        monkeypatch,
+        q,
+        host_basis_jax=_HostBasis(),
+    )
+    cfg = build_default_prior_config(flux).to_mapping()
+    cfg.pop("line", None)
+    cfg["host_sfh_model"] = "delayed"
+    cfg["standardize_active_priors"] = True
+
+    q.run_fsps_numpyro_fit(
+        num_warmup=2,
+        num_samples=2,
+        dense_mass=True,
+        prior_config=cfg,
+        use_lines=False,
+        decompose_host=True,
+        fit_fe=False,
+        fit_bc=False,
+    )
+
+    values = captures["init_values"][0]
+    physical_shared = {
+        "log_stellar_mass",
+        "log_sfh_age_gyr",
+        "log_sfh_tau_over_age",
+        "gal_lgmet",
+        "log_gal_lgmet_scatter",
+    }
+    assert physical_shared <= set(values)
+    assert not any(f"{name}_std" in values for name in physical_shared)
+    assert values["log_host_aperture_scale_std"] == 0.0
+    assert np.log(0.01) < values["log_sfh_age_gyr"] < np.log(1.0)
+    assert -2.0 < values["gal_lgmet"] < -1.0
+
+
+def test_delayed_host_init_respects_high_redshift_age_and_ssp_metallicity_support():
+    class _HostBasis:
+        ssp_lg_age_gyr = np.log10(np.array([0.01, 0.1, 1.0]))
+        ssp_lgmet = np.array([-4.35, -2.5, -1.35])
+
+    grid = coremod.FSPSTemplateGrid(
+        wave=np.linspace(3000.0, 5000.0, 8),
+        templates=np.ones((8, 2)),
+        template_meta=[{"tage_gyr": 0.1}, {"tage_gyr": 1.0}],
+        age_grid_gyr=(0.1, 1.0),
+        logzsol_grid=(-1.0, 0.0),
+        host_basis_jax=_HostBasis(),
+        t_obs_gyr=1.2,
+    )
+    cfg = build_default_prior_config(np.ones(8)).to_mapping()
+
+    values = coremod._build_delayed_host_init_values(cfg, grid)
+
+    assert np.log(0.01) < values["log_sfh_age_gyr"] < np.log(1.2)
+    assert -4.35 < values["gal_lgmet"] < -1.35
+    assert "log_sfh_tau_over_age" in values
+    age_gyr = np.exp(values["log_sfh_age_gyr"])
+    assert np.log(0.03 / age_gyr) < values["log_sfh_tau_over_age"]
+    assert values["log_sfh_tau_over_age"] < np.log(30.0 / age_gyr)
+
+
+def test_flexible_host_map_init_is_converted_to_exact_nuts_noise():
+    class _Grid:
+        templates = np.ones((8, 3))
+        template_meta = [
+            {"tage_gyr": 0.1},
+            {"tage_gyr": 1.0},
+            {"tage_gyr": 10.0},
+        ]
+
+    cfg = {
+        "host_sfh_model": "flexible",
+        "standardize_active_priors": True,
+        "host_template_age_prior": {"enabled": False},
+        "raw_w": {"dist": "Normal", "loc": -0.4, "scale": 1.0},
+        "tau_host": dist.HalfNormal(1.0),
+    }
+    tau_std = np.array(0.25)
+    tau = np.asarray(
+        modelmod._standardized_prior_value(
+            cfg["tau_host"], coremod.jnp.asarray(tau_std)
+        )
+    )
+    expected_noise = np.array([-1.0, 0.5, 1.25])
+    raw = -0.4 + tau * expected_noise
+
+    converted = coremod._convert_flexible_host_init_for_nuts(
+        {
+            "tau_host_std": tau_std,
+            "fsps_weights_raw": raw,
+        },
+        _Grid(),
+        cfg,
+    )
+
+    assert "fsps_weights_raw" not in converted
+    np.testing.assert_allclose(
+        converted["fsps_weights_raw_decentered"], expected_noise
+    )
+    np.testing.assert_allclose(converted["tau_host_std"], tau_std)
+
+
+def test_flexible_host_nuts_reparam_keeps_physical_samples_for_predictive():
+    def model():
+        tau = numpyro.sample("tau_host", dist.HalfNormal(1.0))
+        numpyro.sample(
+            "fsps_weights_raw",
+            dist.Normal(np.array([-0.4, 0.2]), tau),
+        )
+
+    config = coremod._numpyro_geometry_reparam_config(
+        {"host_sfh_model": "flexible"},
+        decompose_host=True,
+    )
+    nuts_model = coremod.reparam(model, config=config)
+    mcmc = coremod.MCMC(
+        coremod.NUTS(nuts_model),
+        num_warmup=5,
+        num_samples=5,
+        progress_bar=False,
+    )
+    mcmc.run(coremod.jax.random.PRNGKey(10))
+    samples = mcmc.get_samples()
+
+    assert "fsps_weights_raw" in samples
+    assert "fsps_weights_raw_decentered" in samples
+    pred = coremod.Predictive(
+        model,
+        posterior_samples=samples,
+        return_sites=["fsps_weights_raw"],
+    )
+    pred_out = pred(coremod.jax.random.PRNGKey(11))
+    np.testing.assert_allclose(
+        pred_out["fsps_weights_raw"], samples["fsps_weights_raw"]
+    )
 
 
 def test_fit_dispatch_nuts_dereddens_psf_phot_when_enabled(monkeypatch):
@@ -509,7 +900,7 @@ def test_plot_initialization_uses_packaged_matplotlib_style(monkeypatch):
         entered["style"] += 1
         yield
 
-    monkeypatch.setattr("jaxqsofit.mplstyle.use_style", _style_context)
+    monkeypatch.setattr("jaxsedfit.mplstyle.use_style", _style_context)
     monkeypatch.setattr("jaxqsofit.plotting.plt.show", lambda: None)
 
     q._plot_initialization(
@@ -997,7 +1388,6 @@ def test_inference_method_unknown_raises():
 
 def test_load_from_samples_roundtrip(tmp_path, monkeypatch):
     q, lam, flux, _err = _build_bundle_source(tmp_path, "unit_test_fit", decompose_host=False)
-
     saved_path = q.save_posterior_bundle()
     assert saved_path.endswith("unit_test_fit_samples.h5")
 

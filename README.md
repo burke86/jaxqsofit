@@ -4,6 +4,12 @@
   <img src="logo.png" alt="JAXQSOFit logo" width="220">
 </p>
 
+JAXQSOFit is the spectrum-focused interface for the shared differentiable
+quasar model provided by `jaxsedfit`. Existing `jaxqsofit.model`,
+`jaxqsofit.components`, `jaxqsofit.defaults`, and related imports remain
+available as compatibility aliases, while their implementation has a single
+source of truth in `jaxsedfit`.
+
 Bayesian quasar spectral fitting with JAX + NumPyro, including:
 
 - AGN continuum (power law)

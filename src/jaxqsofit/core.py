@@ -22,6 +22,7 @@ import numpyro.distributions as dist
 from numpyro.handlers import reparam
 from numpyro.infer import MCMC, NUTS, Predictive, SVI, Trace_ELBO, init_to_value
 from numpyro.infer.autoguide import AutoDelta
+from numpyro.infer.reparam import LocScaleReparam
 from numpyro.optim import optax_to_numpyro
 
 from .config import (
@@ -57,6 +58,8 @@ from .model import (
     _continuum_output_waves_from_prior_config,
     _extract_line_table_from_prior_config,
     _balmer_static_terms_jax,
+    _fixed_prior_value,
+    _flexible_host_raw_weight_locs,
     _format_wave_label,
     _get_sfd_query,
     _direct_width_site,
@@ -68,7 +71,9 @@ from .model import (
     _normalize_template_flux,
     _np_to_jnp,
     _ordered_width_site,
+    _prior_distribution,
     _spectrum_center_pivot,
+    _standardized_prior_value,
     FSPSTemplateGrid,
     build_fsps_template_grid,
     build_orthogonal_polynomial_basis_config,
@@ -83,6 +88,161 @@ from .geometry import line_complex_dense_mass_blocks
 
 _SDSS_PSF_BANDS = ("u", "g", "r", "i", "z")
 _SDSS_FILTER_CACHE = None
+def _summarize_nuts_transition_fields(extra_fields, max_tree_depth):
+    """Return compact NUTS efficiency diagnostics from grouped transitions."""
+    fields = {name: np.asarray(value) for name, value in extra_fields.items()}
+    num_steps = np.asarray(fields.get("num_steps", []), dtype=float)
+    accept_prob = np.asarray(fields.get("accept_prob", []), dtype=float)
+    diverging = np.asarray(fields.get("diverging", []), dtype=bool)
+    energy = np.asarray(fields.get("energy", []), dtype=float)
+    max_num_steps = 2 ** int(max_tree_depth) - 1
+    final_level_min_steps = 2 ** max(int(max_tree_depth) - 1, 0)
+    finite_steps = num_steps[np.isfinite(num_steps) & (num_steps >= 0.0)]
+    depth_lower_bound = (
+        np.ceil(np.log2(finite_steps + 1.0))
+        if finite_steps.size
+        else np.asarray([], dtype=float)
+    )
+    if energy.ndim == 1:
+        energy = energy[None, :]
+    bfmi = []
+    for chain_energy in energy:
+        finite = chain_energy[np.isfinite(chain_energy)]
+        variance = np.var(finite) if finite.size > 1 else np.nan
+        bfmi.append(
+            float(np.mean(np.diff(finite) ** 2) / variance)
+            if finite.size > 1 and variance > 0.0
+            else np.nan
+        )
+    return {
+        "n_transitions": int(diverging.size),
+        "n_divergent": int(np.count_nonzero(diverging)),
+        "divergence_fraction": (
+            float(np.mean(diverging)) if diverging.size else np.nan
+        ),
+        "mean_accept_prob": (
+            float(np.nanmean(accept_prob)) if accept_prob.size else np.nan
+        ),
+        "mean_num_steps": (
+            float(np.mean(finite_steps)) if finite_steps.size else np.nan
+        ),
+        "median_num_steps": (
+            float(np.nanmedian(num_steps)) if num_steps.size else np.nan
+        ),
+        "p90_num_steps": (
+            float(np.nanpercentile(num_steps, 90.0)) if num_steps.size else np.nan
+        ),
+        "p99_num_steps": (
+            float(np.nanpercentile(num_steps, 99.0)) if num_steps.size else np.nan
+        ),
+        "total_num_steps": (
+            int(np.nansum(num_steps)) if num_steps.size else 0
+        ),
+        "max_num_steps": int(np.nanmax(num_steps)) if num_steps.size else 0,
+        "max_tree_depth": int(max_tree_depth),
+        "median_tree_depth_lower_bound": (
+            float(np.median(depth_lower_bound))
+            if depth_lower_bound.size
+            else np.nan
+        ),
+        "p90_tree_depth_lower_bound": (
+            float(np.percentile(depth_lower_bound, 90.0))
+            if depth_lower_bound.size
+            else np.nan
+        ),
+        "final_tree_level_fraction": (
+            float(np.mean(num_steps >= final_level_min_steps))
+            if num_steps.size
+            else np.nan
+        ),
+        "n_max_num_steps": (
+            int(np.count_nonzero(num_steps >= max_num_steps)) if num_steps.size else 0
+        ),
+        # NumPyro exposes leapfrog counts, not the realized tree depth. A full
+        # 2**depth-1 trajectory is therefore a conservative saturation flag;
+        # shorter trajectories may also have entered the final tree level.
+        "max_num_steps_fraction": (
+            float(np.mean(num_steps >= max_num_steps)) if num_steps.size else np.nan
+        ),
+        "full_trajectory_fraction": (
+            float(np.mean(num_steps >= max_num_steps)) if num_steps.size else np.nan
+        ),
+        "bfmi": np.asarray(bfmi, dtype=float),
+    }
+
+
+def _summarize_nuts_metric(mcmc):
+    """Summarize the adapted step size and mass-matrix conditioning."""
+    last_state = getattr(mcmc, "last_state", None)
+    adapt_state = getattr(last_state, "adapt_state", None)
+    inverse_mass = getattr(adapt_state, "inverse_mass_matrix", None)
+    step_size = getattr(adapt_state, "step_size", None)
+    if inverse_mass is None:
+        return {}
+    matrices = inverse_mass if isinstance(inverse_mass, dict) else {("all",): inverse_mass}
+    num_chains = int(getattr(mcmc, "num_chains", 1))
+    blocks = []
+    for site_names, value in matrices.items():
+        array = np.asarray(value, dtype=float)
+        chain_values = [array]
+        if num_chains > 1 and array.ndim >= 2 and array.shape[0] == num_chains:
+            chain_values = list(array)
+        for chain_index, chain_value in enumerate(chain_values):
+            dimension = (
+                chain_value.size
+                if chain_value.ndim == 1
+                else chain_value.shape[-1]
+            )
+            if chain_value.ndim == 1:
+                eigenvalues = chain_value
+            elif np.all(np.isfinite(chain_value)):
+                try:
+                    eigenvalues = np.linalg.eigvalsh(chain_value)
+                except np.linalg.LinAlgError:
+                    eigenvalues = np.full(dimension, np.nan, dtype=float)
+            else:
+                # LAPACK does not reliably propagate NaNs and can return
+                # plausible eigenvalues for a corrupted dense matrix.
+                eigenvalues = np.full(dimension, np.nan, dtype=float)
+            n_nonpositive = int(
+                np.count_nonzero(np.isfinite(eigenvalues) & (eigenvalues <= 0.0))
+            )
+            n_nonfinite = int(np.count_nonzero(~np.isfinite(eigenvalues)))
+            finite_positive = eigenvalues[
+                np.isfinite(eigenvalues) & (eigenvalues > 0.0)
+            ]
+            min_eigenvalue = (
+                float(np.min(finite_positive)) if finite_positive.size else np.nan
+            )
+            max_eigenvalue = (
+                float(np.max(finite_positive)) if finite_positive.size else np.nan
+            )
+            blocks.append(
+                {
+                    "sites": tuple(site_names),
+                    "chain": chain_index,
+                    "dimension": int(dimension),
+                    "min_eigenvalue": min_eigenvalue,
+                    "max_eigenvalue": max_eigenvalue,
+                    "n_nonpositive_eigenvalues": n_nonpositive,
+                    "n_nonfinite_eigenvalues": n_nonfinite,
+                    "condition_number": (
+                        np.inf
+                        if n_nonpositive or n_nonfinite
+                        else (
+                            max_eigenvalue / min_eigenvalue
+                            if min_eigenvalue > 0.0
+                            else np.nan
+                        )
+                    ),
+                }
+            )
+    return {
+        "adapted_step_size": (
+            np.asarray(step_size, dtype=float) if step_size is not None else np.asarray([])
+        ),
+        "blocks": blocks,
+    }
 
 
 def _materialize_prior_config(prior_config) -> dict:
@@ -206,10 +366,11 @@ def _numpyro_geometry_reparam_config(
     """Build additional NumPyro reparameterizers for NUTS.
 
     The broad/narrow tied-line model already uses explicit non-centered
-    standard-normal sites in physical model code. Do not add a global
-    ``LocScaleReparam`` layer here: it rewrites physical sample-site names to
-    decentered names, so Optax MAP warm starts keyed by physical names can miss
-    the actual NUTS latent sites and produce bad post-Optax fits.
+    standard-normal sites in physical model code. Flexible-host template
+    weights, however, retain their ordinary conditional Normal sample site in
+    the shared model so standalone MAP fits and saved physical samples keep
+    their established meaning. NUTS alone fully decenters that hierarchy; its
+    physical MAP initialization is converted explicitly before sampling.
 
     Parameters
     ----------
@@ -230,7 +391,249 @@ def _numpyro_geometry_reparam_config(
     decompose_host : object
         decompose_host value.
     """
-    return {}
+    host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
+    static_config = {}
+    if decompose_host and host_sfh_model in {
+        "flexible",
+        "free",
+        "template_weights",
+        "ssp_weights",
+    }:
+        static_config["fsps_weights_raw"] = LocScaleReparam(centered=0.0)
+
+    return static_config
+
+
+def _reparam_config_contains(config, site_name):
+    """Return whether a static reparameterizer is configured for one site."""
+    return site_name in config
+
+
+def _configured_prior_location(prior_config, key, default):
+    """Return a finite initialization location from a supported prior entry."""
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, dist.Distribution):
+        base = getattr(cfg, "base_dist", cfg)
+        value = getattr(base, "loc", None)
+        if value is None:
+            try:
+                value = cfg.icdf(jnp.asarray(0.5, dtype=jnp.float64))
+            except (AttributeError, NotImplementedError):
+                value = default
+    elif isinstance(cfg, dict):
+        value = cfg.get("value", cfg.get("loc", default))
+    elif isinstance(cfg, (tuple, list)) and len(cfg) > 0:
+        value = cfg[0]
+    elif cfg is None:
+        value = default
+    else:
+        value = cfg
+    try:
+        value = float(np.asarray(value, dtype=float))
+    except (TypeError, ValueError):
+        value = float(default)
+    return value if np.isfinite(value) else float(default)
+
+
+def _configured_prior_bounds(prior_config, key, low, high):
+    """Intersect model bounds with any explicit prior support bounds."""
+    cfg = prior_config.get(key, None)
+    prior_low = -np.inf
+    prior_high = np.inf
+    if isinstance(cfg, dist.Distribution):
+        support = getattr(cfg, "support", None)
+        if support is not None:
+            prior_low = getattr(support, "lower_bound", prior_low)
+            prior_high = getattr(support, "upper_bound", prior_high)
+    elif isinstance(cfg, dict):
+        prior_low = cfg.get("low", prior_low)
+        prior_high = cfg.get("high", prior_high)
+    try:
+        prior_low = float(np.asarray(prior_low, dtype=float))
+    except (TypeError, ValueError):
+        prior_low = -np.inf
+    try:
+        prior_high = float(np.asarray(prior_high, dtype=float))
+    except (TypeError, ValueError):
+        prior_high = np.inf
+    return max(float(low), prior_low), min(float(high), prior_high)
+
+
+def _configured_prior_scale(prior_config, key, default):
+    """Return a finite positive scale from a supported prior entry."""
+    cfg = prior_config.get(key, None)
+    if isinstance(cfg, dist.Distribution):
+        base = getattr(cfg, "base_dist", cfg)
+        value = getattr(base, "scale", default)
+    elif isinstance(cfg, dict):
+        value = cfg.get("scale", default)
+    elif isinstance(cfg, (tuple, list)) and len(cfg) > 1:
+        value = cfg[1]
+    else:
+        value = default
+    try:
+        value = float(np.asarray(value, dtype=float))
+    except (TypeError, ValueError):
+        value = float(default)
+    return value if np.isfinite(value) and value > 0.0 else float(default)
+
+
+def _clip_to_open_interval(value, low, high):
+    """Clip an initialization value strictly inside a finite interval."""
+    low = float(low)
+    high = float(high)
+    if not np.isfinite(low) or not np.isfinite(high) or high <= low:
+        raise ValueError(f"Invalid bounded-prior support [{low}, {high}].")
+    margin = max(1.0e-8, 1.0e-6 * (high - low))
+    if 2.0 * margin >= high - low:
+        return 0.5 * (low + high)
+    return float(np.clip(value, low + margin, high - margin))
+
+
+def _bounded_normal_init_value(prior_config, key, default, scale, low, high):
+    """Return the median of the effective truncated-Normal initialization prior."""
+    low, high = _configured_prior_bounds(prior_config, key, low, high)
+    loc = _configured_prior_location(prior_config, key, default)
+    prior_scale = _configured_prior_scale(prior_config, key, scale)
+    median = dist.TruncatedNormal(
+        jnp.asarray(loc, dtype=jnp.float64),
+        jnp.asarray(prior_scale, dtype=jnp.float64),
+        low=jnp.asarray(low, dtype=jnp.float64),
+        high=jnp.asarray(high, dtype=jnp.float64),
+    ).icdf(jnp.asarray(0.5, dtype=jnp.float64))
+    return _clip_to_open_interval(float(np.asarray(median)), low, high)
+
+
+def _build_delayed_host_init_values(prior_config, fsps_grid):
+    """Build prior-aware delayed-SFH initial values inside model support."""
+    host_basis = getattr(fsps_grid, "host_basis_jax", None)
+    if host_basis is None:
+        return {}
+
+    t_obs_gyr = getattr(fsps_grid, "t_obs_gyr", None)
+    if t_obs_gyr is None:
+        ssp_lg_age = np.asarray(host_basis.ssp_lg_age_gyr, dtype=float)
+        t_obs_gyr = float(np.nanmax(np.power(10.0, ssp_lg_age)))
+    physical_min_age = 0.01
+    physical_max_age = max(float(t_obs_gyr), physical_min_age * 1.01)
+
+    mass_init = _configured_prior_location(
+        prior_config, "log_stellar_mass", 10.0
+    )
+    mass_low, mass_high = _configured_prior_bounds(
+        prior_config, "log_stellar_mass", -np.inf, np.inf
+    )
+    if np.isfinite(mass_low) and np.isfinite(mass_high):
+        mass_init = _clip_to_open_interval(mass_init, mass_low, mass_high)
+    values = {"log_stellar_mass": mass_init}
+    if "log_sfh_age_gyr" in prior_config:
+        log_age = _bounded_normal_init_value(
+            prior_config,
+            "log_sfh_age_gyr",
+            np.log(min(3.0, physical_max_age)),
+            1.0,
+            np.log(physical_min_age),
+            np.log(physical_max_age),
+        )
+    else:
+        default_max_age = min(10.0, physical_max_age)
+        default_min_age = min(
+            max(10.0**-0.8, physical_min_age), default_max_age / 1.01
+        )
+        log_age = 0.5 * (np.log(default_min_age) + np.log(default_max_age))
+    values["log_sfh_age_gyr"] = log_age
+    age_gyr = np.exp(log_age)
+
+    if "log_sfh_tau_over_age" in prior_config:
+        values["log_sfh_tau_over_age"] = _bounded_normal_init_value(
+            prior_config,
+            "log_sfh_tau_over_age",
+            0.0,
+            0.5,
+            np.log(0.03 / age_gyr),
+            np.log(30.0 / age_gyr),
+        )
+    elif "log_sfh_tau_gyr" in prior_config:
+        values["log_sfh_tau_gyr"] = _bounded_normal_init_value(
+            prior_config,
+            "log_sfh_tau_gyr",
+            np.log(1.0),
+            0.5,
+            np.log(0.03),
+            np.log(30.0),
+        )
+    else:
+        values["log_sfh_tau_gyr"] = 0.5 * (np.log(0.1) + np.log(10.0))
+
+    if "gal_lgmet" in prior_config:
+        ssp_lgmet = np.asarray(host_basis.ssp_lgmet, dtype=float)
+        finite_lgmet = ssp_lgmet[np.isfinite(ssp_lgmet)]
+        if finite_lgmet.size == 0:
+            raise ValueError("The delayed-host SSP metallicity grid is empty.")
+        values["gal_lgmet"] = _bounded_normal_init_value(
+            prior_config,
+            "gal_lgmet",
+            0.0,
+            0.5,
+            np.min(finite_lgmet),
+            np.max(finite_lgmet),
+        )
+
+    if "log_gal_lgmet_scatter" in prior_config:
+        values["log_gal_lgmet_scatter"] = _configured_prior_location(
+            prior_config, "log_gal_lgmet_scatter", np.log(0.15)
+        )
+    elif "gal_lgmet_scatter" in prior_config:
+        values["gal_lgmet_scatter"] = _configured_prior_location(
+            prior_config, "gal_lgmet_scatter", 0.15
+        )
+    return values
+
+
+def _convert_flexible_host_init_for_nuts(init_values, fsps_grid, prior_config):
+    """Convert physical flexible-host MAP values to LocScaleReparam noise."""
+    values = dict(init_values)
+    if "fsps_weights_raw" not in values:
+        return values
+
+    raw_weights = np.asarray(values.pop("fsps_weights_raw"), dtype=float)
+    n_templates = int(fsps_grid.templates.shape[1])
+    if raw_weights.shape != (n_templates,):
+        raise ValueError(
+            "fsps_weights_raw initialization must have shape "
+            f"({n_templates},), got {raw_weights.shape}."
+        )
+    raw_loc = np.asarray(
+        _flexible_host_raw_weight_locs(
+            fsps_grid, prior_config, n_templates
+        ),
+        dtype=float,
+    )
+    fixed_tau = _fixed_prior_value(prior_config, "tau_host", None)
+    if fixed_tau is not None:
+        tau_host = float(np.asarray(fixed_tau, dtype=float))
+    else:
+        tau_prior = _prior_distribution(
+            prior_config, "tau_host", dist.HalfNormal(1.0)
+        )
+        if bool(prior_config.get("standardize_active_priors", False)):
+            tau_std = np.asarray(values.get("tau_host_std", 0.0), dtype=float)
+            values.setdefault("tau_host_std", tau_std)
+            tau_host = float(
+                np.asarray(
+                    _standardized_prior_value(tau_prior, jnp.asarray(tau_std)),
+                    dtype=float,
+                )
+            )
+        else:
+            if "tau_host" not in values:
+                values["tau_host"] = np.asarray(
+                    tau_prior.icdf(jnp.asarray(0.5, dtype=jnp.float64))
+                )
+            tau_host = float(np.asarray(values["tau_host"], dtype=float))
+    scale = max(tau_host, 1.0e-6)
+    values["fsps_weights_raw_decentered"] = (raw_weights - raw_loc) / scale
+    return values
 
 
 _line_complex_dense_mass_blocks = line_complex_dense_mass_blocks
@@ -500,6 +903,17 @@ class JAXQSOFit:
             state = _PosteriorState()
             self.__dict__["_posterior_state"] = state
         return state
+
+    def _clear_nuts_run_state(self) -> None:
+        """Remove sampler-only state before producing an Optax-only result."""
+        for name in (
+            "numpyro_mcmc",
+            "nuts_mass_matrix_structure",
+            "nuts_extra_fields",
+            "nuts_diagnostics",
+            "nuts_metric_diagnostics",
+        ):
+            self.__dict__.pop(name, None)
 
     def _sync_posterior_state_from_legacy_attrs(self) -> None:
         """Fold legacy dict-loaded posterior attributes into ``_posterior_state``."""
@@ -1353,6 +1767,10 @@ class JAXQSOFit:
             "_fit_use_psf_phot",
             "_fit_custom_components",
             "_fit_custom_line_components",
+            "nuts_mass_matrix_structure",
+            "nuts_extra_fields",
+            "nuts_diagnostics",
+            "nuts_metric_diagnostics",
         }
 
     def _collect_sample_bundle_meta(self):
@@ -1943,6 +2361,9 @@ class JAXQSOFit:
         line_block_dense_mass = bool(infer_cfg.line_block_dense_mass)
         standardize_active_priors = bool(infer_cfg.standardize_active_priors)
         nuts_max_tree_depth = int(infer_cfg.max_tree_depth)
+        nuts_warmup_max_tree_depth = infer_cfg.warmup_max_tree_depth
+        if nuts_warmup_max_tree_depth is not None:
+            nuts_warmup_max_tree_depth = int(nuts_warmup_max_tree_depth)
         optax_steps = int(infer_cfg.map_steps)
         optax_lr = float(infer_cfg.learning_rate)
         plot_init = bool(infer_cfg.plot_init or out_cfg.plot_init)
@@ -2186,6 +2607,7 @@ class JAXQSOFit:
                 target_accept_prob=nuts_target_accept,
                 dense_mass=nuts_dense_mass,
                 max_tree_depth=nuts_max_tree_depth,
+                warmup_max_tree_depth=nuts_warmup_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -2241,6 +2663,7 @@ class JAXQSOFit:
                 target_accept_prob=nuts_target_accept,
                 dense_mass=nuts_dense_mass,
                 max_tree_depth=nuts_max_tree_depth,
+                warmup_max_tree_depth=nuts_warmup_max_tree_depth,
                 age_grid_gyr=fsps_age_grid,
                 logzsol_grid=fsps_logzsol_grid,
                 prior_config=prior_config,
@@ -2281,8 +2704,9 @@ class JAXQSOFit:
 
     def run_fsps_numpyro_fit(self, num_warmup=500, num_samples=1000, num_chains=1,
                              target_accept_prob=0.9,
-                             dense_mass=True,
+                             dense_mass=False,
                              max_tree_depth=8,
+                             warmup_max_tree_depth=None,
                              age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                              logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                              prior_config=None,
@@ -2313,9 +2737,15 @@ class JAXQSOFit:
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
         dense_mass : bool, optional
-            If True, use a dense mass matrix during NUTS adaptation.
+            If True, use one global dense mass matrix. The default ``False``
+            uses compact dense emission-line blocks unless disabled in
+            ``prior_config``.
         max_tree_depth : int, optional
             Maximum NUTS tree depth.
+        warmup_max_tree_depth : int or None, optional
+            Warmup-only tree-depth limit. Retained draws continue to use
+            ``max_tree_depth`` so adaptation can explore longer trajectories
+            without silently increasing the production cost ceiling.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -2354,6 +2784,10 @@ class JAXQSOFit:
             prior_config = _materialize_prior_config(_build_default_prior_config(flux))
         else:
             prior_config = _materialize_prior_config(prior_config)
+        # The direct API predates ``InferenceConfig``. Match the high-level
+        # geometry default without changing any scientific prior: use compact
+        # line blocks unless the caller explicitly opts out.
+        prior_config.setdefault("line_block_dense_mass", True)
         prior_config = inject_default_custom_component_priors(prior_config, flux, custom_components)
         prior_config = inject_default_custom_line_component_priors(prior_config, flux, custom_line_components)
         conti_priors = prior_config.get('conti_priors', {})
@@ -2408,17 +2842,41 @@ class JAXQSOFit:
         self.tied_line_meta = tied_line_meta
 
         if init_values is None:
-            init_vals = {
-                'gal_v_kms': 0.0,
-                'log_gal_sigma_kms': np.log(150.0),
-            }
+            if bool(prior_config.get("standardize_active_priors", False)):
+                init_vals = {
+                    'gal_v_kms_std': 0.0,
+                    'log_gal_sigma_kms_std': 0.0,
+                }
+            else:
+                init_vals = {
+                    'gal_v_kms': 0.0,
+                    'log_gal_sigma_kms': np.log(150.0),
+                }
             host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
             if decompose_host and not (
                 host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}
                 and getattr(fsps_grid, "host_basis_jax", None) is not None
             ):
-                init_vals['cont_norm'] = np.exp(prior_config.get('log_cont_norm', {}).get('loc', np.log(max(np.nanmedian(np.abs(flux)), 1e-8))))
+                if bool(prior_config.get("standardize_active_priors", False)):
+                    init_vals['cont_norm_std'] = 0.0
+                else:
+                    init_vals['cont_norm'] = max(np.nanmedian(np.abs(flux)), 1e-8)
                 init_vals['log_frac_host'] = prior_config.get('log_frac_host', {}).get('loc', 0.0)
+            elif decompose_host:
+                # The physical delayed-SFH state is shared with jaxsedfit and
+                # samples these five coordinates directly. Only the
+                # qso-native aperture scale is routed through
+                # ``_sample_distribution`` and therefore gains ``_std`` when
+                # active-prior standardization is enabled.
+                init_vals.update(
+                    _build_delayed_host_init_values(prior_config, fsps_grid)
+                )
+                aperture_key = (
+                    'log_host_aperture_scale_std'
+                    if bool(prior_config.get("standardize_active_priors", False))
+                    else 'log_host_aperture_scale'
+                )
+                init_vals[aperture_key] = 0.0
             if fit_reddening:
                 reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
                 if bool(prior_config.get("standardize_active_priors", False)):
@@ -2434,7 +2892,6 @@ class JAXQSOFit:
                 tied_line_meta, prior_config, use_lines=use_lines
             ).items():
                 init_vals.setdefault(key, value)
-        init_strategy = init_to_value(values=init_vals)
         reparam_config = _numpyro_geometry_reparam_config(
             prior_config,
             fit_pl=fit_pl,
@@ -2450,57 +2907,90 @@ class JAXQSOFit:
             if reparam_config
             else qso_fsps_joint_model
         )
-        if bool(prior_config.get("line_block_dense_mass", False)) and use_lines:
-            mass_matrix_structure = _line_complex_dense_mass_blocks(
-                tied_line_meta,
-                standardized_amplitudes=bool(
-                    prior_config.get("standardize_active_priors", False)
-                ),
+        model_kwargs = {
+            "wave": wave,
+            "flux": flux,
+            "err": err,
+            "conti_priors": conti_priors,
+            "tied_line_meta": tied_line_meta,
+            "fsps_grid": fsps_grid,
+            "fe_uv_wave": self.fe_uv_wave,
+            "fe_uv_flux": self.fe_uv_flux,
+            "fe_op_wave": self.fe_op_wave,
+            "fe_op_flux": self.fe_op_flux,
+            **self._static_component_cache_kwargs(),
+            "use_lines": use_lines,
+            "prior_config": prior_config,
+            "decompose_host": decompose_host,
+            "fit_pl": fit_pl,
+            "fit_fe": fit_fe,
+            "fit_bc": fit_bc,
+            "fit_poly": fit_poly,
+            "fit_reddening": fit_reddening,
+            "fit_poly_order": fit_poly_order,
+            "z_qso": self.z,
+            "psf_mags": psf_mags,
+            "psf_mag_errs": psf_mag_errs,
+            "psf_filter_curves": psf_filter_curves,
+            "use_psf_phot": use_psf_phot,
+            "return_line_components": False,
+            "emit_deterministics": False,
+            "custom_components": custom_components,
+            "custom_line_components": custom_line_components,
+        }
+        if _reparam_config_contains(reparam_config, "fsps_weights_raw"):
+            init_vals = _convert_flexible_host_init_for_nuts(
+                init_vals,
+                fsps_grid,
+                prior_config,
             )
+        if bool(dense_mass):
+            mass_matrix_structure = True
+        elif bool(prior_config.get("line_block_dense_mass", False)):
+            if use_lines:
+                mass_matrix_structure = _line_complex_dense_mass_blocks(
+                    tied_line_meta,
+                    standardized_amplitudes=bool(
+                        prior_config.get("standardize_active_priors", False)
+                    ),
+                )
+            else:
+                mass_matrix_structure = False
         else:
             mass_matrix_structure = bool(dense_mass)
+        init_strategy = init_to_value(values=init_vals)
         self.nuts_mass_matrix_structure = mass_matrix_structure
+        warmup_depth = (
+            int(max_tree_depth)
+            if warmup_max_tree_depth is None
+            else int(warmup_max_tree_depth)
+        )
+        if int(max_tree_depth) < 1 or warmup_depth < 1:
+            raise ValueError("NUTS tree-depth limits must be positive integers.")
+        kernel_max_tree_depth = (
+            int(max_tree_depth)
+            if warmup_depth == int(max_tree_depth)
+            else (warmup_depth, int(max_tree_depth))
+        )
         kernel = NUTS(
             nuts_model,
             init_strategy=init_strategy,
             target_accept_prob=target_accept_prob,
             dense_mass=mass_matrix_structure,
-            max_tree_depth=int(max_tree_depth),
+            max_tree_depth=kernel_max_tree_depth,
+            find_heuristic_step_size=True,
         )
         mcmc = MCMC(kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains, progress_bar=True, jit_model_args=False)
         rng_key = jax.random.PRNGKey(int(random_seed))
         mcmc.run(
             rng_key,
-            wave=wave,
-            flux=flux,
-            err=err,
-            conti_priors=conti_priors,
-            tied_line_meta=tied_line_meta,
-            fsps_grid=fsps_grid,
-            fe_uv_wave=self.fe_uv_wave,
-            fe_uv_flux=self.fe_uv_flux,
-            fe_op_wave=self.fe_op_wave,
-            fe_op_flux=self.fe_op_flux,
-            **self._static_component_cache_kwargs(),
-            use_lines=use_lines,
-            prior_config=prior_config,
-            decompose_host=decompose_host,
-            fit_pl=fit_pl,
-            fit_fe=fit_fe,
-            fit_bc=fit_bc,
-            fit_poly=fit_poly,
-            fit_reddening=fit_reddening,
-            fit_poly_order=fit_poly_order,
-            z_qso=self.z,
-            psf_mags=psf_mags,
-            psf_mag_errs=psf_mag_errs,
-            psf_filter_curves=psf_filter_curves,
-            use_psf_phot=use_psf_phot,
-            return_line_components=False,
-            emit_deterministics=False,
-            custom_components=custom_components,
-            custom_line_components=custom_line_components,
-            extra_fields=("num_steps", "accept_prob"),
+            **model_kwargs,
+            extra_fields=(
+                "num_steps",
+                "accept_prob",
+                "potential_energy",
+                "energy",
+            ),
         )
         # Always expose convergence diagnostics in both terminal sessions and
         # notebook cell output immediately after NumPyro sampling completes.
@@ -2544,6 +3034,15 @@ class JAXQSOFit:
         )
 
         self.numpyro_mcmc = mcmc
+        self.nuts_extra_fields = {
+            name: np.asarray(value)
+            for name, value in mcmc.get_extra_fields(group_by_chain=True).items()
+        }
+        self.nuts_diagnostics = _summarize_nuts_transition_fields(
+            self.nuts_extra_fields,
+            max_tree_depth=max_tree_depth,
+        )
+        self.nuts_metric_diagnostics = _summarize_nuts_metric(mcmc)
         self._consume_posterior_outputs(
             samples=samples,
             pred_out=pred_out,
@@ -2730,6 +3229,7 @@ class JAXQSOFit:
         custom_line_components : object
             custom_line_components value.
         """
+        self._clear_nuts_run_state()
         wave = np.asarray(self.wave, dtype=float)
         flux = np.asarray(self.flux, dtype=float)
         err = np.asarray(self.err, dtype=float)
@@ -2966,6 +3466,9 @@ class JAXQSOFit:
 
         def _stage1_init_values():
             """Build data-scale-aware constrained initial values for stage 1."""
+            standardized = bool(
+                prior_config.get("standardize_active_priors", False)
+            )
             pl_init = _prior_field('PL_norm', 'scale', max(0.5 * np.nanmedian(np.abs(flux)), 1e-8))
             host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
             use_direct_host_amp = not (
@@ -2974,43 +3477,64 @@ class JAXQSOFit:
                 and getattr(fsps_grid, "host_basis_jax", None) is not None
             )
 
-            values = {
-                'gal_v_kms': 0.0,
-                'log_gal_sigma_kms': _prior_field('log_gal_sigma_kms', 'loc', np.log(150.0)),
-            }
+            values = (
+                {
+                    'gal_v_kms_std': 0.0,
+                    'log_gal_sigma_kms_std': 0.0,
+                }
+                if standardized
+                else {
+                    'gal_v_kms': 0.0,
+                    'log_gal_sigma_kms': _prior_field(
+                        'log_gal_sigma_kms', 'loc', np.log(150.0)
+                    ),
+                }
+            )
             if decompose_host and use_direct_host_amp:
-                values['cont_norm'] = max(np.exp(_prior_field('log_cont_norm', 'loc', np.log(max(np.nanmedian(np.abs(flux)), 1e-8)))), 1e-8)
+                if standardized:
+                    values['cont_norm_std'] = 0.0
+                else:
+                    values['cont_norm'] = max(
+                        np.exp(
+                            _prior_field(
+                                'log_cont_norm',
+                                'loc',
+                                np.log(max(np.nanmedian(np.abs(flux)), 1e-8)),
+                            )
+                        ),
+                        1e-8,
+                    )
                 values['log_frac_host'] = _prior_field('log_frac_host', 'loc', 0.0)
             if fit_pl:
                 if fit_reddening and bool(prior_config.get("residualize_reddening_geometry", False)):
                     values['PL_apparent_log_norm_std'] = np.array(0.0)
                     values['PL_apparent_slope_std'] = np.array(0.0)
-                elif bool(prior_config.get("standardize_active_priors", False)):
+                elif standardized:
                     values['PL_norm_std'] = np.array(0.0)
                     values['PL_slope_std'] = np.array(0.0)
                 else:
                     values['PL_norm'] = max(pl_init, 1e-8)
                 if fit_reddening:
                     reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
-                    if bool(prior_config.get("standardize_active_priors", False)):
+                    if standardized:
                         values[f'{reddening_key}_std'] = np.array(0.0)
                     else:
                         values[reddening_key] = _prior_field(reddening_key, 'loc', np.log(0.1))
 
             if decompose_host and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
-                values['log_stellar_mass'] = _prior_field('log_stellar_mass', 'loc', 9.0)
-                values['log_sfh_age_gyr'] = _prior_field('log_sfh_age_gyr', 'loc', np.log(3.0))
-                values['log_sfh_tau_over_age'] = _prior_field('log_sfh_tau_over_age', 'loc', 0.0)
-                gal_lgmet = _prior_field('gal_lgmet', 'loc', 0.0)
-                ssp_lgmet = np.asarray(getattr(fsps_grid.host_basis_jax, 'ssp_lgmet', []), dtype=float)
-                if ssp_lgmet.size and np.any(np.isfinite(ssp_lgmet)):
-                    low = float(np.nanmin(ssp_lgmet))
-                    high = float(np.nanmax(ssp_lgmet))
-                    margin = min(1.0e-6, max(0.0, 0.25 * (high - low)))
-                    gal_lgmet = float(np.clip(gal_lgmet, low + margin, high - margin))
-                values['gal_lgmet'] = gal_lgmet
-                values['log_gal_lgmet_scatter'] = _prior_field('log_gal_lgmet_scatter', 'loc', np.log(0.15))
-                values['log_host_aperture_scale'] = _prior_field('log_host_aperture_scale', 'value', 0.0)
+                values.update(
+                    _build_delayed_host_init_values(prior_config, fsps_grid)
+                )
+                aperture_key = (
+                    'log_host_aperture_scale_std'
+                    if standardized
+                    else 'log_host_aperture_scale'
+                )
+                values[aperture_key] = (
+                    0.0
+                    if standardized
+                    else _prior_field('log_host_aperture_scale', 'value', 0.0)
+                )
             return values
 
         # Stage 1: warm start on the continuum/host landscape. Keep reddening
@@ -3186,8 +3710,9 @@ class JAXQSOFit:
     def run_fsps_optax_nuts_fit(self, optax_steps=2000, optax_learning_rate=1e-2,
                                 num_warmup=500, num_samples=1000, num_chains=1,
                                 target_accept_prob=0.9,
-                                dense_mass=True,
+                                dense_mass=False,
                                 max_tree_depth=8,
+                                warmup_max_tree_depth=None,
                                 age_grid_gyr=(0.1, 0.3, 1.0, 3.0, 10.0),
                                 logzsol_grid=(-1.0, -0.5, 0.0, 0.2),
                                 prior_config=None,
@@ -3222,9 +3747,13 @@ class JAXQSOFit:
         target_accept_prob : float, optional
             Target acceptance probability for NUTS.
         dense_mass : bool, optional
-            If True, use a dense mass matrix during NUTS adaptation.
+            If True, use one global dense mass matrix. The default ``False``
+            uses compact dense emission-line blocks unless disabled in
+            ``prior_config``.
         max_tree_depth : int, optional
             Maximum NUTS tree depth.
+        warmup_max_tree_depth : int or None, optional
+            Warmup-only tree-depth limit passed to NumPyro.
         age_grid_gyr : sequence of float, optional
             SSP age grid in Gyr.
         logzsol_grid : sequence of float, optional
@@ -3286,6 +3815,7 @@ class JAXQSOFit:
             target_accept_prob=target_accept_prob,
             dense_mass=dense_mass,
             max_tree_depth=max_tree_depth,
+            warmup_max_tree_depth=warmup_max_tree_depth,
             age_grid_gyr=age_grid_gyr,
             logzsol_grid=logzsol_grid,
             prior_config=prior_config,
@@ -3834,13 +4364,28 @@ class JAXQSOFit:
             if n > 4:
                 signal = np.median(input_data)
                 noise = 0.6052697 * np.median(np.abs(2.0 * input_data[2:n - 2] - input_data[0:n - 4] - input_data[4:n]))
-                self.SN_ratio_conti = float(signal / noise)
+                self.SN_ratio_conti = (
+                    float(signal / noise)
+                    if np.isfinite(signal) and np.isfinite(noise) and noise > 0.0
+                    else -1.0
+                )
             else:
                 self.SN_ratio_conti = -1.
         else:
-            tmp_SN = np.array([flux[ind5100].mean() / flux[ind5100].std(), flux[ind3000].mean() / flux[ind3000].std(), flux[ind1350].mean() / flux[ind1350].std()])
-            tmp_SN = tmp_SN[np.array([np.sum(ind5100), np.sum(ind3000), np.sum(ind1350)]) > 10]
-            self.SN_ratio_conti = np.nanmean(tmp_SN) if not np.all(np.isnan(tmp_SN)) else -1.
+            # Reduce only populated windows. Computing mean/std for every
+            # window before filtering emitted empty-slice warnings whenever a
+            # spectrum covered one standard continuum region but not all three.
+            window_sn = []
+            for window in (ind5100, ind3000, ind1350):
+                if np.count_nonzero(window) <= 10:
+                    continue
+                values = np.asarray(flux[window], dtype=float)
+                scatter = np.std(values)
+                if np.isfinite(scatter) and scatter > 0.0:
+                    window_sn.append(np.mean(values) / scatter)
+            finite_sn = np.asarray(window_sn, dtype=float)
+            finite_sn = finite_sn[np.isfinite(finite_sn)]
+            self.SN_ratio_conti = float(np.mean(finite_sn)) if finite_sn.size else -1.0
         return self.SN_ratio_conti
 
     def _host_fraction_at_wave(self, w0):
