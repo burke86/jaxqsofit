@@ -5,9 +5,9 @@ Notebook tutorials
 ------------------
 
 The notebooks below are rendered into the documentation with ``nbsphinx``.
-By default, docs builds execute the notebooks so Read the Docs and CI render
-fresh outputs. To skip execution during a local text-only docs edit, set
-``NBSPHINX_EXECUTE=never`` before invoking Sphinx.
+GitHub Actions renders their saved outputs without executing them. Local and
+other documentation builds follow the ``NBSPHINX_EXECUTE`` setting in
+``conf.py``.
 
 .. toctree::
    :maxdepth: 1

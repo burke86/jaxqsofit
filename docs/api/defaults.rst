@@ -1,6 +1,9 @@
 Defaults Package
 ================
 
+For a readable, physically scaled view of the complete table, see
+:doc:`../default_line_priors`.
+
 .. currentmodule:: jaxqsofit.defaults
 
 .. autofunction:: build_default_bal_components
