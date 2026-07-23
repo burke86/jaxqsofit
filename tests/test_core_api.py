@@ -493,7 +493,7 @@ def test_ordered_line_complexes_use_separate_dense_blocks():
 
 
 def test_nuts_transition_diagnostics_distinguish_final_level_from_full_tree():
-    diagnostics = coremod._summarize_nuts_transition_fields(
+    diagnostics = coremod.summarize_nuts_transition_fields(
         {
             "num_steps": np.array([[31, 128, 254, 255]], dtype=float),
             "accept_prob": np.array([[0.8, 0.9, 0.95, 1.0]], dtype=float),
@@ -543,7 +543,7 @@ def test_nuts_metric_diagnostics_flag_nonfinite_dense_matrix():
         ),
     )
 
-    diagnostics = coremod._summarize_nuts_metric(mcmc)
+    diagnostics = coremod.nuts_metric_diagnostics(mcmc)
     block = diagnostics["blocks"][0]
     assert block["n_nonfinite_eigenvalues"] == 2
     assert np.isinf(block["condition_number"])
