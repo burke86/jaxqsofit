@@ -1,0 +1,112 @@
+\begin{table}[ht]
+\centering
+\caption{Prior continuum and nuisance parameters for SDSS spectral fitting.}
+\begin{tabular}{p{0.22\linewidth} p{0.30\linewidth} p{0.42\linewidth}}
+\hline
+\textbf{Parameter} & \textbf{Prior Distribution} & \textbf{Parameter Description} \\
+\hline
+\texttt{cont\_norm} & $\log\,\mathcal{N}(0,\ 0.3)$ & Total continuum normalization before splitting into AGN and host components. \\
+\texttt{log\_frac\_host} & $\mathcal{T}(3,\ 0,\ 2)$ & Latent host-fraction parameter, transformed with a sigmoid to give $f_{\rm host}\in(0,1)$. \\
+\texttt{PL\_norm} & $\mathcal{HN}(0.5)$ & AGN power-law continuum amplitude. \\
+\texttt{PL\_slope} & $\mathcal{N}(-1.5,\ 0.4)$ & AGN power-law slope in wavelength space, $\alpha_\lambda$, defined by $f_\lambda\propto\lambda^{\alpha_\lambda}$. \\
+\texttt{reddening\_ebv} & $\mathcal{HN}(0.3)$ & SMC-like AGN reddening amplitude. \\
+\texttt{Fe\_uv\_norm} & $\log\,\mathcal{N}(-6.91,\ 0.5)$ & UV Fe\,II template normalization. \\
+\texttt{log\_Fe\_op\_over\_uv} & $\mathcal{N}(0,\ 0.05)$ & Log optical-to-UV Fe\,II normalization ratio. \\
+\texttt{Fe\_uv\_FWHM} & $\log\,\mathcal{N}(8.01,\ 0.3)$ & UV Fe\,II template broadening FWHM in km s$^{-1}$. \\
+\texttt{Fe\_op\_FWHM} & $\log\,\mathcal{N}(8.01,\ 0.3)$ & Optical Fe\,II template broadening FWHM in km s$^{-1}$. \\
+\texttt{Fe\_uv\_shift} & $\mathcal{N}(0,\ 0.001)$ & UV Fe\,II template shift in log-wavelength units. \\
+\texttt{Fe\_op\_shift} & $\mathcal{N}(0,\ 0.001)$ & Optical Fe\,II template shift in log-wavelength units. \\
+\texttt{Balmer\_norm} & $\log\,\mathcal{N}(-6.91,\ 0.5)$ & Balmer continuum normalization. \\
+\texttt{Balmer\_Tau} & $\log\,\mathcal{N}(-0.693,\ 0.25)$ & Balmer continuum optical depth. \\
+\texttt{Balmer\_vel} & $\log\,\mathcal{N}(8.01,\ 0.25)$ & Balmer continuum velocity broadening in km s$^{-1}$. \\
+\texttt{tau\_host} & $\mathcal{HN}(1)$ & Hierarchical scale controlling the spread of raw FSPS template weights. \\
+\texttt{fsps\_weights\_raw[$i$]} & $\mathcal{N}(-0.5,\ \tau_{\rm host})$ & Raw latent FSPS template weight for template $i$ before softmax normalization. \\
+\texttt{gal\_v\_kms} & $\mathcal{N}(0,\ 120)$ & Host stellar velocity offset in km s$^{-1}$. \\
+\texttt{gal\_sigma\_kms} & $\mathcal{HN}(200)$ & Host stellar velocity dispersion in km s$^{-1}$. \\
+\texttt{poly\_c1} & $\mathcal{N}(0,\ 0.1)$ & Coefficient of the multiplicative continuum tilt polynomial term of order 1. \\
+\texttt{poly\_c2} & $\mathcal{N}(0,\ 0.1)$ & Coefficient of the multiplicative continuum tilt polynomial term of order 2. \\
+\texttt{frac\_jitter} & $\mathcal{HN}(0.02)$ & Fractional model-dependent extra scatter term. \\
+\texttt{add\_jitter} & $\mathcal{HN}(0.3\langle\mathrm{err}\rangle)$ & Additive extra scatter term. \\
+\texttt{delta\_m\_psf\_raw} & $\mathcal{N}(0, 0.5)$ & Global magnitude offset for the PSF-photometry forward model. \\
+\texttt{eta\_psf\_raw} & $\mathrm{Beta}(2, 2)$ & Host suppression factor in the PSF-photometry forward model. \\
+\texttt{sigma\_phot\_extra} & $\mathcal{HN}(0.05)$ & Extra photometric scatter for PSF magnitude constraints. \\
+\hline
+\end{tabular}
+\vspace{0.4em}
+\begin{minipage}{0.94\linewidth}
+\footnotesize
+\textit{Note.} $\mathcal{N}(\mu,\sigma)$ indicates a normal prior with mean $\mu$ and standard deviation $\sigma$. $\mathcal{HN}(\sigma)$ indicates a half-normal prior with scale $\sigma$. $\log\,\mathcal{N}(\mu,\sigma)$ indicates a log-normal prior whose logarithm is normally distributed with mean $\mu$ and standard deviation $\sigma$. $\mathcal{TN}(\mu,\sigma,[a,b])$ indicates a truncated normal prior with location $\mu$, scale $\sigma$, lower bound $a$, and upper bound $b$. $\mathcal{T}(\nu,\mu,\sigma)$ indicates a Student-$t$ prior with degrees of freedom $\nu$, location $\mu$, and scale $\sigma$. $\mathcal{U}(a,b)$ indicates a uniform prior between the minimum value $a$ and maximum value $b$.
+\end{minipage}
+\end{table}
+
+\begin{table}[ht]
+\centering
+\caption{Prior parameters for the emission line components.}
+\label{tab:jaxqsofit-default-lines}
+\scriptsize
+\begin{tabular}{p{0.20\linewidth} r c c c c}
+\hline
+\textbf{Line} & $\boldsymbol{\lambda_0}$ (\AA) & $\boldsymbol{N_G;\ v/w/f}$ &
+$\boldsymbol{A_0}$ & $\boldsymbol{\sigma_0[\sigma_{\min},\sigma_{\max}]}$ &
+$\boldsymbol{\Delta_{\max}}$ \\
+\hline
+\texttt{Ha\_br} & 6564.61 & 2; 0/0/0 & 0.05 & $0.005[0.004,0.05]$ & 0.015 \\
+\texttt{Ha\_na} & 6564.61 & 1; 1/1/0 & 0.002 & $0.001[0.0005,0.00169]$ & 0.010 \\
+\texttt{NII6549} & 6549.85 & 1; 1/1/1 & 1 & $0.001[0.00023,0.00169]$ & 0.005 \\
+\texttt{NII6585} & 6585.28 & 1; 1/1/1 & $3(6549.85/6585.28)$ & $0.001[0.00023,0.00169]$ & 0.005 \\
+\texttt{SII6718} & 6718.29 & 1; 1/1/2 & 0.001 & $0.001[0.00023,0.00169]$ & 0.005 \\
+\texttt{SII6732} & 6732.67 & 1; 1/1/2 & 0.001 & $0.001[0.00023,0.00169]$ & 0.005 \\
+\texttt{Hb\_br} & 4862.68 & 2; 0/0/0 & 0.01 & $0.005[0.004,0.05]$ & 0.010 \\
+\texttt{Hb\_na} & 4862.68 & 1; 1/1/0 & 0.002 & $0.001[0.00023,0.00169]$ & 0.010 \\
+\texttt{OIII4959c} & 4960.30 & 1; 1/1/3 & 1 & $0.001[0.00023,0.00169]$ & 0.010 \\
+\texttt{OIII5007c} & 5008.24 & 1; 1/1/3 & $2.98(4960.30/5008.24)$ & $0.001[0.00023,0.00169]$ & 0.010 \\
+\texttt{OIII4959w} & 4960.30 & 1; 2/2/4 & 1 & $0.003[0.00023,0.004]$ & 0.010 \\
+\texttt{OIII5007w} & 5008.24 & 1; 2/2/4 & $2.98(4960.30/5008.24)$ & $0.003[0.00023,0.004]$ & 0.010 \\
+\texttt{Hg\_br} & 4341.68 & 1; 0/0/0 & 0.01 & $0.005[0.004,0.05]$ & 0.010 \\
+\texttt{Hg\_na} & 4341.68 & 1; 1/1/0 & 0.002 & $0.001[0.00023,0.00169]$ & 0.010 \\
+\texttt{Hd\_br} & 4102.89 & 1; 0/0/0 & 0.01 & $0.005[0.004,0.05]$ & 0.010 \\
+\texttt{Hd\_na} & 4102.89 & 1; 1/1/0 & 0.002 & $0.001[0.00023,0.00169]$ & 0.010 \\
+\texttt{OII3728} & 3728.48 & 1; 1/1/0 & 0.001 & $0.001[0.000333,0.00169]$ & 0.010 \\
+\texttt{NeV3426} & 3426.84 & 1; 0/0/0 & 0.001 & $0.001[0.000333,0.00169]$ & 0.010 \\
+\hline
+\texttt{MgII\_br} & 2798.75 & 2; 0/0/0 & 0.05 & $0.005[0.004,0.05]$ & 0.015 \\
+\texttt{MgII\_na} & 2798.75 & 1; 1/1/0 & 0.002 & $0.001[0.0005,0.00169]$ & 0.010 \\
+\texttt{CIII\_br} & 1908.73 & 2; 3/0/0 & 0.01 & $0.005[0.003,0.05]$ & 0.015 \\
+\texttt{CIII\_na} & 1908.73 & 1; 4/4/0 & 0.002 & $0.001[0.0005,0.002]$ & 0.010 \\
+\texttt{SiIII1892} & 1892.03 & 1; 1/1/0 & 0.005 & $0.002[0.001,0.015]$ & 0.003 \\
+\texttt{AlIII1857} & 1857.40 & 1; 1/1/0 & 0.005 & $0.002[0.001,0.015]$ & 0.003 \\
+\texttt{SiII1816} & 1816.98 & 1; 2/2/0 & 0.0002 & $0.002[0.001,0.015]$ & 0.010 \\
+\texttt{NIII1750} & 1750.26 & 1; 2/2/0 & 0.001 & $0.002[0.001,0.015]$ & 0.010 \\
+\texttt{NIV1718} & 1718.55 & 1; 2/2/0 & 0.001 & $0.002[0.001,0.015]$ & 0.010 \\
+\hline
+\texttt{CIV\_br} & 1549.06 & 3; 0/0/0 & 0.05 & $0.005[0.004,0.05]$ & 0.015 \\
+\texttt{CIV\_na} & 1549.06 & 1; 1/1/0 & 0.002 & $0.001[0.0005,0.002]$ & 0.010 \\
+\texttt{OIII1663} & 1663.48 & 1; 1/1/0 & 0.002 & $0.001[0.0005,0.002]$ & 0.008 \\
+\texttt{OIII1663\_br} & 1663.48 & 1; 2/2/0 & 0.002 & $0.005[0.0025,0.02]$ & 0.008 \\
+\texttt{HeII1640} & 1640.42 & 1; 1/1/0 & 0.002 & $0.001[0.0005,0.002]$ & 0.008 \\
+\texttt{HeII1640\_br} & 1640.42 & 1; 2/2/0 & 0.002 & $0.005[0.0025,0.02]$ & 0.008 \\
+\texttt{SiIV\_OIV1\_br} & 1402.06 & 1; 1/1/0 & 0.05 & $0.005[0.002,0.05]$ & 0.015 \\
+\texttt{SiIV\_OIV2\_br} & 1396.76 & 1; 1/1/0 & 0.05 & $0.005[0.002,0.05]$ & 0.015 \\
+\texttt{CII1335} & 1335.30 & 1; 2/2/0 & 0.001 & $0.002[0.001,0.015]$ & 0.010 \\
+\texttt{OI1304} & 1304.35 & 1; 2/2/0 & 0.001 & $0.002[0.001,0.015]$ & 0.010 \\
+\texttt{Lya\_br} & 1215.67 & 3; 0/0/0 & 0.05 & $0.005[0.004,0.05]$ & 0.020 \\
+\texttt{NV1240\_br} & 1240.14 & 1; 0/0/0 & 0.002 & $0.002[0.001,0.01]$ & 0.005 \\
+\hline
+\end{tabular}
+\vspace{0.4em}
+\begin{minipage}{0.96\linewidth}
+\scriptsize
+\textit{Note.} $N_G$ is the number of Gaussian components generated from a
+line-table row, and $v/w/f$ are its configured centroid, width, and amplitude
+tie indices. Zero means independent; positive indices tie rows only within the
+same line complex. $A_0$ is the configured initial amplitude or relative
+peak-amplitude value, while runtime amplitude bounds are rescaled to the input
+spectrum. Widths and $\Delta_{\max}$ are in $\ln\lambda$. For broad lines
+modeled with multiple Gaussians, the components are centered near one another
+and their widths are arranged from narrowest to broadest. The width and
+wavelength-shift ranges shown in the table define the values allowed during
+the fit. Fixed doublet ratios include the wavelength
+factor required to convert integrated-flux ratios to peak-amplitude ratios in
+$\ln\lambda$.
+\end{minipage}
+\end{table}
