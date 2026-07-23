@@ -504,12 +504,27 @@ Warm-start with Optax, then run NUTS:
    q.config.inference.map_steps = 800
    q.config.inference.num_warmup = 200
    q.config.inference.num_samples = 400
-   q.config.inference.dense_mass = True
+   q.config.inference.dense_mass = False
+   q.config.inference.line_block_dense_mass = True
    q.config.inference.max_tree_depth = 8
    result = q.fit()
    components = result.predict(n_draws=200)
 
-``dense_mass`` and ``max_tree_depth`` are passed directly to NumPyro's NUTS
-kernel. For difficult posteriors, lowering ``max_tree_depth`` can cap runtime;
-turning ``dense_mass`` off can reduce adaptation cost, but may require more
-warmup for strongly correlated parameters.
+With ``dense_mass=False`` and ``line_block_dense_mass=True`` (the defaults),
+``jaxqsofit`` learns compact dense metrics for individual emission-line
+complexes and their shared ordered-width hierarchy while leaving continuum,
+host, and unrelated line coordinates diagonal.
+``dense_mass=True`` instead requests one fully dense metric, which
+usually needs substantially more warmup.  Set ``line_block_dense_mass=False``
+for a fully diagonal metric.  ``max_tree_depth`` limits both warmup and retained
+draws by default. For a difficult tied-line spectrum, try a longer but shallower
+adaptation phase before increasing the retained tree limit:
+
+.. code-block:: python
+
+   q.config.inference.num_warmup = 500
+   q.config.inference.warmup_max_tree_depth = 7
+   q.config.inference.max_tree_depth = 8
+
+The extra warmup draws matter: applying the depth-7 ceiling to only 250 warmup
+draws can leave the block covariance under-adapted.

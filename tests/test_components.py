@@ -8,6 +8,7 @@ from jaxqsofit.components import (
     render_joint_feature_state,
 )
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
+from jaxqsofit.reparameterization import NORMAL_LOGNORMAL_STANDARDIZATION
 
 
 def test_evaluate_joint_spectral_components_uses_external_continuum():
@@ -103,6 +104,49 @@ def test_joint_feature_amplitudes_can_use_observed_spectrum_coordinates():
             0.5 * np.asarray(unit[name]),
             rtol=1e-10,
             atol=1e-12,
+        )
+
+
+def test_joint_feii_balmer_sites_advertise_nuts_standardization_only():
+    wave_obs = np.linspace(3000.0, 7000.0, 32)
+    template_wave = np.linspace(2000.0, 8000.0, 64)
+    tr = trace(
+        seed(evaluate_joint_spectral_components, jax.random.PRNGKey(18))
+    ).get_trace(
+        wave_obs=wave_obs,
+        redshift=0.0,
+        continuum_mjy=np.ones_like(wave_obs),
+        config=SpectralComponentConfig(
+            use_lines=False,
+            use_feii=True,
+            use_balmer_continuum=True,
+            broadening_convolution="direct",
+        ),
+        feii_template_wave_rest=template_wave,
+        feii_template_flux=np.ones_like(template_wave),
+    )
+    expected = {
+        "jqf_feii_norm",
+        "jqf_feii_fwhm",
+        "jqf_feii_shift",
+        "jqf_balmer_norm",
+        "jqf_balmer_tau",
+        "jqf_balmer_vel",
+    }
+    advertised = {
+        name
+        for name, site in tr.items()
+        if NORMAL_LOGNORMAL_STANDARDIZATION in (site.get("infer") or {})
+    }
+
+    assert advertised == expected
+    for name in expected:
+        assert tr[name]["type"] == "sample"
+        assert (
+            tr[name]["infer"][NORMAL_LOGNORMAL_STANDARDIZATION][
+                "auxiliary_name"
+            ]
+            == f"{name}_std"
         )
 
 
