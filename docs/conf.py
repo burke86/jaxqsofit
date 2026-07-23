@@ -80,8 +80,8 @@ html_theme_options = {
     'use_download_button': True,
 }
 
-# Render tutorial notebooks as documentation pages. Execute notebooks by
-# default so Read the Docs and CI render fresh outputs. Set
-# NBSPHINX_EXECUTE=never locally when iterating on text-only docs changes.
-nbsphinx_execute = os.environ.get('NBSPHINX_EXECUTE', 'always')
+# Render saved tutorial outputs without rerunning expensive inference during
+# documentation builds. Set NBSPHINX_EXECUTE=always explicitly when a fresh
+# local notebook execution is desired.
+nbsphinx_execute = os.environ.get('NBSPHINX_EXECUTE', 'never')
 nbsphinx_allow_errors = False

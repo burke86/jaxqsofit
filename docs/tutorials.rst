@@ -5,9 +5,8 @@ Notebook tutorials
 ------------------
 
 The notebooks below are rendered into the documentation with ``nbsphinx``.
-GitHub Actions renders their saved outputs without executing them. Local and
-other documentation builds follow the ``NBSPHINX_EXECUTE`` setting in
-``conf.py``.
+Documentation builds render their saved outputs without executing them. Set
+``NBSPHINX_EXECUTE=always`` explicitly to rerun notebooks during a local build.
 
 .. toctree::
    :maxdepth: 1
