@@ -10,5 +10,6 @@ with joint AGN + host galaxy decomposition.
 
    installation
    quickstart
+   default_line_priors
    tutorials
    api/index

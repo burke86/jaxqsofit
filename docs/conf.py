@@ -10,8 +10,11 @@ os.environ.setdefault('XLA_PYTHON_CLIENT_PREALLOCATE', 'false')
 
 ROOT = os.path.abspath('..')
 SRC = os.path.join(ROOT, 'src')
+DOCS_EXT = os.path.abspath('_ext')
 if SRC not in sys.path:
     sys.path.insert(0, SRC)
+if DOCS_EXT not in sys.path:
+    sys.path.insert(0, DOCS_EXT)
 
 project = 'JAXQSOFit'
 author = 'JAXQSOFit contributors'
@@ -24,6 +27,7 @@ extensions = [
     'sphinx.ext.viewcode',
     'nbsphinx',
     'nbsphinx_link',
+    'default_line_table',
 ]
 
 autosummary_generate = True
@@ -63,6 +67,7 @@ exclude_patterns = ['_build', 'Thumbs.db', '.DS_Store']
 
 html_theme = 'sphinx_book_theme'
 html_static_path = ['_static']
+html_css_files = ['default-line-table.css']
 html_title = 'JAXQSOFit Documentation'
 html_show_sourcelink = False
 html_theme_options = {
