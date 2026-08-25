@@ -251,7 +251,17 @@ When enabled, JAXQSOFit appends conservative multiplicative BAL absorption compo
   - `cfg.prior_config.student_t_df` controls tail heaviness.
   - Lower `df` is more robust to outliers.
 
-## Outputs on `JAXQSOFit` object
+## Results
+
+`result = q.fit()` returns the supported high-level result interface. Use
+`result.spectrum` for named, unit-explicit posterior spectra and emission-line
+measurements. For example, broad H-beta component flux draws are available as
+`result.spectrum.lines["Hb_br_1"].flux_erg_s_cm2`, and the summed physical-line
+flux is `result.spectrum.line_groups["Hb_br"].total_flux_erg_s_cm2`. See the
+[quickstart](docs/quickstart.rst#reading-spectral-results) for the complete
+spectral-results contract.
+
+## Lower-level outputs on `JAXQSOFit` object
 
 Common fitted arrays:
 

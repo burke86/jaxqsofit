@@ -8,9 +8,9 @@ Fitting Interface
    :show-inheritance:
 
 .. autoclass:: FitResult
-   :members: predict, save, plot_corner, plot_trace
+   :members: spectrum, predict, save, plot_corner, plot_trace
 
 .. autoclass:: PredictionResult
-   :members: median, keys, items, get
+   :members: spectrum, median, keys, items, get
 
 .. autofunction:: load_from_samples

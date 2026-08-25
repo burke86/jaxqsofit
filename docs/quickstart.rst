@@ -439,17 +439,75 @@ These fields are compact median-and-error summaries.  Analyses that require
 credible intervals, parameter covariances, or component velocity-separation
 distributions should use the posterior draws described below instead.
 
-After fitting, per-component line draws are available in ``q.pred_out``:
+.. _reading-spectral-results:
+
+Reading spectral results
+------------------------
+
+``result.spectrum`` is the supported interface for spectral analysis. It uses
+named, unit-explicit fields and keeps internal NumPyro site names out of user
+code. Individual Gaussian components of a broad line have explicit names, so
+no array-position convention is required:
 
 .. code-block:: python
 
-   amp = np.asarray(q.pred_out["line_amp_per_component"])
-   mu = np.asarray(q.pred_out["line_mu_per_component"])
-   sig = np.asarray(q.pred_out["line_sig_per_component"])
-   sig_effective = np.asarray(q.pred_out["line_sig_effective_per_component"])
+   result = q.fit()
 
-For most workflows, use the helper methods that reconstruct a named broad-line
-profile from those draws and then measure FWHM and integrated area:
+   hb1 = result.spectrum.lines["Hb_br_1"]
+   hb2 = result.spectrum.lines["Hb_br_2"]
+
+   hb1_amplitude_draws = hb1.amplitude_flambda_1e17
+   hb1_width_draws = hb1.fwhm_kms
+   hb1_flux_draws = hb1.flux_erg_s_cm2
+
+Every numerical line field retains the posterior-draw axis. Available fields
+are ``amplitude_flambda_1e17``, ``center_rest_angstrom``,
+``sigma_ln_lambda``, ``fwhm_kms``, ``velocity_offset_kms``, and
+``flux_erg_s_cm2``. Amplitude is in units of
+``1e-17 erg s^-1 cm^-2 Angstrom^-1`` and integrated flux is in
+``erg s^-1 cm^-2``. Scalar metadata fields are ``parent_line``,
+``component_index``, ``kind``, and ``rest_wavelength_angstrom``.
+
+Single-component lines omit a redundant ``_1`` suffix, so ``OIII_5007_1`` in
+the internal model is accessed as ``result.spectrum.lines["OIII_5007"]``.
+For a physical line represented by several Gaussians, use ``line_groups``:
+
+.. code-block:: python
+
+   result.spectrum.line_groups["Hb_br"].component_names
+   # ("Hb_br_1", "Hb_br_2", ...)
+
+   hb_total_flux_draws = result.spectrum.line_groups["Hb_br"].total_flux_erg_s_cm2
+
+The fitted spectrum and its main components use the same explicit units. The
+model-component arrays have shape ``(draw, pixel)``; wavelength, observed flux,
+error, and mask have shape ``(pixel,)``:
+
+.. code-block:: python
+
+   spectrum = result.spectrum
+   wave = spectrum.wavelength_rest_angstrom
+   observed = spectrum.observed_flux_flambda_1e17
+   error = spectrum.error_flambda_1e17
+   model_draws = spectrum.model_flambda_1e17
+   continuum_draws = spectrum.continuum_flambda_1e17
+   line_draws = spectrum.line_flambda_1e17
+   feii_draws = spectrum.feii_flambda_1e17
+   balmer_draws = spectrum.balmer_continuum_flambda_1e17
+   host_draws = spectrum.host_flambda_1e17
+   power_law_draws = spectrum.power_law_flambda_1e17
+
+Use ``result.predict(n_draws=200).spectrum`` to reconstruct on another grid or
+limit the number of draws. On a non-native grid, ``observed_flux_flambda_1e17``
+and ``error_flambda_1e17`` are ``NaN`` and ``mask`` is false because there is
+no one-to-one observed pixel corresponding to each reconstructed pixel.
+
+The lower-level ``q.pred_out`` arrays remain available for advanced internal
+diagnostics, but their site names and array positions are not the public output
+contract.
+
+For example, luminosity intervals for the full broad H-beta line can be
+calculated directly from the grouped flux draws:
 
 .. code-block:: python
 
@@ -457,25 +515,10 @@ profile from those draws and then measure FWHM and integrated area:
 
    cosmo = FlatLambdaCDM(H0=70, Om0=0.3)
 
-   def flux_to_luminosity(area_1e17, z):
-       d_l_cm = cosmo.luminosity_distance(z).to("cm").value
-       return area_1e17 * 1.0e-17 * 4.0 * np.pi * d_l_cm**2
-
-   for line_key in ["CIV_br", "MgII_br", "Hb_br", "Ha_br"]:
-       fwhm_draws = []
-       log_l_draws = []
-       for draw_index in range(amp.shape[0]):
-           profile = q.line_profile_from_draw(draw_index, line_key)
-           fwhm_kms, area_1e17 = q.line_props(profile)
-           fwhm_draws.append(fwhm_kms)
-           if np.isfinite(area_1e17) and area_1e17 > 0.0:
-               log_l_draws.append(np.log10(flux_to_luminosity(area_1e17, q.z)))
-           else:
-               log_l_draws.append(np.nan)
-
-       f16, f50, f84 = np.nanpercentile(fwhm_draws, [16, 50, 84])
-       l16, l50, l84 = np.nanpercentile(log_l_draws, [16, 50, 84])
-       print(line_key, f50, f84 - f50, f50 - f16, l50, l84 - l50, l50 - l16)
+   flux_draws = result.spectrum.line_groups["Hb_br"].total_flux_erg_s_cm2
+   d_l_cm = cosmo.luminosity_distance(q.z).to("cm").value
+   luminosity_draws = flux_draws * 4.0 * np.pi * d_l_cm**2
+   print(np.nanpercentile(np.log10(luminosity_draws), [16, 50, 84]))
 
 Fast mode
 ---------

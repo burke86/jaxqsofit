@@ -30,6 +30,9 @@ __all__ = [
     "SpectroscopyData",
     "PSFPhotometryData",
     "PredictionResult",
+    "SpectralResult",
+    "LineComponentResult",
+    "LineGroupResult",
     "PreprocessingConfig",
     "AGNConfig",
     "BALConfig",
@@ -79,6 +82,10 @@ def __getattr__(name):
         from . import results as _results
 
         return getattr(_results, name)
+    if name in {"SpectralResult", "LineComponentResult", "LineGroupResult"}:
+        from . import spectral_results as _spectral_results
+
+        return getattr(_spectral_results, name)
     if name in {"load_from_samples", "load"}:
         from .core import JAXQSOFit
 

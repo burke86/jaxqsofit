@@ -6,6 +6,8 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from .spectral_results import SpectralResult, build_spectral_result
+
 
 def median_mapping(values: Mapping[str, Any] | None) -> dict[str, Any]:
     """Return posterior medians for every value in a sample-like mapping.
@@ -50,6 +52,14 @@ class PredictionResult:
     data: Mapping[str, Any]
     fitter: Any
     _median: dict[str, Any] | None = field(default=None, init=False, repr=False)
+    _spectrum: SpectralResult | None = field(default=None, init=False, repr=False)
+
+    @property
+    def spectrum(self) -> SpectralResult:
+        """Typed, unit-explicit spectral posterior results."""
+        if self._spectrum is None:
+            self._spectrum = build_spectral_result(self.data, self.fitter)
+        return self._spectrum
 
     @property
     def median(self) -> dict[str, Any]:
@@ -99,6 +109,18 @@ class FitResult:
     path: Path | None = None
     figure: Any = None
     _state: _PosteriorState | None = field(default=None, repr=False, compare=False)
+    _spectrum: SpectralResult | None = field(
+        default=None, init=False, repr=False, compare=False
+    )
+
+    @property
+    def spectrum(self) -> SpectralResult:
+        """Typed spectral results on the fitted rest-frame wavelength grid."""
+        if self._spectrum is None:
+            self._spectrum = self.predict(
+                wave_out=np.asarray(self.fitter.wave, dtype=float)
+            ).spectrum
+        return self._spectrum
 
     def predict(self, **kwargs) -> PredictionResult:
         """Reconstruct posterior spectral components for this fit.
