@@ -142,6 +142,61 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
     assert np.allclose(out["draws"]["continuum"], expected)
 
 
+def test_reconstruct_posterior_components_includes_lines_on_requested_grid(monkeypatch):
+    class _Grid:
+        def __init__(self, wave):
+            self.wave = np.asarray(wave, dtype=float)
+            self.templates = np.zeros((self.wave.size, 1), dtype=float)
+
+    monkeypatch.setattr(
+        modelmod,
+        "build_fsps_template_grid",
+        lambda **kwargs: _Grid(kwargs["wave_out"]),
+    )
+    wave_out = np.linspace(4800.0, 4920.0, 31)
+    center = np.log(4862.68)
+    samples = {"cont_norm": np.zeros(2)}
+    pred_out = {
+        "fsps_weights": np.zeros((2, 1)),
+        "line_amp_per_component": np.array([[2.0], [3.0]]),
+        "line_mu_per_component": np.full((2, 1), center),
+        "line_sig_per_component": np.full((2, 1), 0.01),
+    }
+    metadata = {
+        "names": ["Hb_br_1"],
+        "line_lambda": np.array([4862.68]),
+        "broad_mask": np.array([True]),
+    }
+
+    out = modelmod.reconstruct_posterior_components(
+        wave_out=wave_out,
+        samples=samples,
+        pred_out=pred_out,
+        age_grid_gyr=(1.0,),
+        logzsol_grid=(0.0,),
+        dsps_ssp_fn="fake.h5",
+        prior_config={"PL_pivot": 4862.68},
+        fit_poly=False,
+        fit_reddening=False,
+        fit_poly_order=0,
+        fe_uv_wave=np.array([4800.0, 4920.0]),
+        fe_uv_flux=np.zeros(2),
+        fe_op_wave=np.array([4800.0, 4920.0]),
+        fe_op_flux=np.zeros(2),
+        tied_line_meta=metadata,
+        n_draws=2,
+    )
+
+    assert out["draws"]["line_components"].shape == (2, 1, wave_out.size)
+    assert np.allclose(
+        out["draws"]["lines"], out["draws"]["line_components"][:, 0]
+    )
+    assert np.allclose(
+        out["draws"]["model"],
+        out["draws"]["continuum"] + out["draws"]["lines"],
+    )
+
+
 def test_reconstruct_posterior_components_host_disabled_uses_dummy_grid(monkeypatch):
     def _boom(**kwargs):
         raise AssertionError("FSPS templates should not be loaded when decompose_host=False")

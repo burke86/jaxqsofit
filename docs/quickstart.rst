@@ -351,24 +351,66 @@ The most commonly edited row fields are:
    already uses multiple broad components for lines such as ``Ha_br``,
    ``Hb_br``, ``MgII_br``, ``CIV_br``, and ``Lya_br``.
 
-Copy the default table before editing it, because the table is a module-level
-list of mutable dictionaries:
+For new code, convert the defaults to typed ``LineDefinition`` objects. This
+gives every wavelength, width, tie, and component-count field one documented
+meaning while the model handles conversion to its internal table:
 
 .. code-block:: python
 
-   from copy import deepcopy
+   from dataclasses import replace
 
-   from jaxqsofit import PriorConfig
+   from jaxqsofit import LineDefinition, PriorConfig
    from jaxqsofit.defaults import DEFAULT_LINE_PRIOR_ROWS
 
-   line_table = deepcopy(DEFAULT_LINE_PRIOR_ROWS)
-   for row in line_table:
-       if row["linename"] == "Hb_br":
-           row["ngauss"] = 3
+   line_table = [LineDefinition.from_mapping(row) for row in DEFAULT_LINE_PRIOR_ROWS]
+   line_table = [
+       replace(line, components=3) if line.name == "Hb_br" else line
+       for line in line_table
+   ]
 
    if cfg.prior_config is None:
        cfg.prior_config = PriorConfig()
    cfg.prior_config.lines.table = line_table
+
+Custom continuum and line components likewise use one public definition and
+one list:
+
+.. code-block:: python
+
+   import numpyro.distributions as dist
+   from jaxqsofit import SpectralComponentSpec
+
+   extra = SpectralComponentSpec(
+       name="extra_continuum",
+       kind="continuum",  # or "broad_line" / "narrow_line"
+       parameter_priors={"amplitude": dist.HalfNormal(1.0)},
+       evaluate=my_component,
+   )
+   cfg.lines.components = [extra]
+
+The same ``LineDefinition`` and ``SpectralComponentSpec`` classes are accepted
+by jaxsedfit joint spectrum+photometry fits.
+
+For code that switches between standalone and joint fitting, the main feature
+switches also share one config type:
+
+.. code-block:: python
+
+   from jaxqsofit import SpectrumConfig
+
+   cfg.spectrum = SpectrumConfig(
+       power_law_enabled=True,
+       host_enabled=True,
+       lines_enabled=True,
+       feii_enabled=True,
+       balmer_continuum_enabled=True,
+       line_definitions=line_table,
+       components=[extra],
+   )
+
+``SpectrumConfig`` has the same fields in jaxqsofit and jaxsedfit. Settings
+specific to standalone preprocessing, joint photometry, or inference remain in
+their respective top-level config sections.
 
 The tie columns follow PyQSOFit-style conventions, scoped by ``compname``:
 ``vindex`` ties velocity shifts, ``windex`` ties Gaussian widths, and

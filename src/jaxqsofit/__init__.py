@@ -31,8 +31,10 @@ __all__ = [
     "PSFPhotometryData",
     "PredictionResult",
     "SpectralResult",
+    "SpectrumConfig",
     "LineComponentResult",
     "LineGroupResult",
+    "LineDefinition",
     "PreprocessingConfig",
     "AGNConfig",
     "BALConfig",
@@ -52,6 +54,7 @@ __all__ = [
     "load",
     "CustomComponentSpec",
     "CustomLineComponentSpec",
+    "SpectralComponentSpec",
     "make_custom_component",
     "make_custom_line_component",
     "make_template_component",
@@ -86,6 +89,14 @@ def __getattr__(name):
         from . import spectral_results as _spectral_results
 
         return getattr(_spectral_results, name)
+    if name == "LineDefinition":
+        from jaxsedfit.spectroscopy import LineDefinition
+
+        return LineDefinition
+    if name == "SpectrumConfig":
+        from jaxsedfit.spectroscopy import SpectrumConfig
+
+        return SpectrumConfig
     if name in {"load_from_samples", "load"}:
         from .core import JAXQSOFit
 
@@ -93,6 +104,7 @@ def __getattr__(name):
     if name in {
         "CustomComponentSpec",
         "CustomLineComponentSpec",
+        "SpectralComponentSpec",
         "make_custom_component",
         "make_custom_line_component",
         "make_template_component",

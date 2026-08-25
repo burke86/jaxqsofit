@@ -14,6 +14,7 @@ import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
 import jaxqsofit.plotting as plottingmod
 from jaxqsofit import JAXQSOFit
+from jaxqsofit import FitConfig, Observation, SpectroscopyData, SpectrumConfig
 from jaxqsofit.config import PriorConfig
 from jaxqsofit.defaults import _build_default_prior_config as build_default_prior_config
 from jaxqsofit.results import FitResult, PredictionResult
@@ -126,6 +127,28 @@ def test_fit_result_spectrum_requests_the_native_grid_and_is_cached():
     assert first is second
     assert len(calls) == 1
     assert np.array_equal(calls[0]["wave_out"], fitter.wave)
+
+
+def test_shared_spectrum_config_drives_standalone_feature_switches():
+    config = FitConfig(
+        observation=Observation(redshift=0.1),
+        spectroscopy=SpectroscopyData(
+            wave_obs=[5000.0, 5001.0],
+            fluxes=[1.0, 1.0],
+            errors=[0.1, 0.1],
+        ),
+        spectrum=SpectrumConfig(
+            host_enabled=False,
+            lines_enabled=False,
+            feii_enabled=True,
+            broadening_convolution="direct",
+        ),
+    )
+
+    assert config.host.enabled is False
+    assert config.lines.enabled is False
+    assert config.continuum.fit_feii is True
+    assert config.continuum.broadening_convolution == "direct"
 
 
 def test_calculate_sn_skips_uncovered_standard_windows_without_warnings():

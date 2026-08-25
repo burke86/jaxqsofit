@@ -7,9 +7,19 @@ from typing import Any, Mapping
 
 import numpy as np
 
+from jaxsedfit.spectroscopy import (
+    LineComponentResultBase,
+    LineGroupResultBase,
+    SpectralSites,
+    fwhm_kms_from_sigma_ln,
+    gaussian_flambda_flux_erg_s_cm2,
+    line_component_metadata,
+    velocity_offset_kms,
+)
+
 
 @dataclass(frozen=True)
-class LineComponentResult:
+class LineComponentResult(LineComponentResultBase):
     """Posterior draws and metadata for one Gaussian line component."""
 
     amplitude_flambda_1e17: np.ndarray
@@ -18,20 +28,13 @@ class LineComponentResult:
     fwhm_kms: np.ndarray
     velocity_offset_kms: np.ndarray
     flux_erg_s_cm2: np.ndarray
-    parent_line: str
-    component_index: int
-    kind: str
-    rest_wavelength_angstrom: float
 
 
 @dataclass(frozen=True)
-class LineGroupResult:
+class LineGroupResult(LineGroupResultBase):
     """Aggregate posterior quantities for one physical emission line."""
 
-    component_names: tuple[str, ...]
     total_flux_erg_s_cm2: np.ndarray
-    kind: str
-    rest_wavelength_angstrom: float
 
 
 @dataclass(frozen=True)
@@ -51,10 +54,6 @@ class SpectralResult:
     balmer_continuum_flambda_1e17: np.ndarray
     host_flambda_1e17: np.ndarray
     power_law_flambda_1e17: np.ndarray
-
-
-_C_KMS = 299792.458
-_GAUSSIAN_FWHM = 2.354820045
 
 
 def _raw_predictive(fitter: Any) -> Mapping[str, Any]:
@@ -90,9 +89,9 @@ def _line_results(
 ) -> tuple[dict[str, LineComponentResult], dict[str, LineGroupResult]]:
     names = [str(name) for name in metadata.get("names", ())]
     required = (
-        "line_amp_per_component",
-        "line_mu_per_component",
-        "line_sig_per_component",
+        SpectralSites.STANDALONE_LINE_AMPLITUDE,
+        SpectralSites.STANDALONE_LINE_CENTER_LN,
+        SpectralSites.STANDALONE_LINE_SIGMA_LN,
     )
     if not names or any(name not in raw for name in required):
         return {}, {}
@@ -107,46 +106,38 @@ def _line_results(
         raise ValueError(
             "Line metadata does not match the posterior component axis."
         )
-    rest_wavelengths = np.asarray(metadata["line_lambda"], dtype=float)
-    broad_mask = np.asarray(metadata["broad_mask"], dtype=bool)
-    parents = [name.rsplit("_", 1)[0] for name in names]
-    parent_counts = {parent: parents.count(parent) for parent in set(parents)}
+    component_metadata, group_metadata = line_component_metadata(metadata)
 
     lines: dict[str, LineComponentResult] = {}
     members_by_parent: dict[str, list[str]] = {}
-    for index, (internal_name, parent) in enumerate(zip(names, parents)):
-        public_name = internal_name if parent_counts[parent] > 1 else parent
+    for index, identity in enumerate(component_metadata):
         amplitude = amplitudes[..., index]
         center_ln = centers_ln[..., index]
         sigma_ln = sigmas_ln[..., index]
-        try:
-            component_index = int(internal_name.rsplit("_", 1)[1])
-        except (IndexError, ValueError):
-            component_index = len(members_by_parent.get(parent, [])) + 1
-        lines[public_name] = LineComponentResult(
+        lines[identity.public_name] = LineComponentResult(
             amplitude_flambda_1e17=amplitude,
             center_rest_angstrom=np.exp(center_ln),
             sigma_ln_lambda=sigma_ln,
-            fwhm_kms=_GAUSSIAN_FWHM * _C_KMS * sigma_ln,
-            velocity_offset_kms=_C_KMS
-            * (center_ln - np.log(rest_wavelengths[index])),
-            flux_erg_s_cm2=(
-                amplitude
-                * np.sqrt(2.0 * np.pi)
-                * sigma_ln
-                * np.exp(center_ln + 0.5 * sigma_ln**2)
-                * 1.0e-17
+            fwhm_kms=fwhm_kms_from_sigma_ln(sigma_ln),
+            velocity_offset_kms=velocity_offset_kms(
+                center_ln, identity.rest_wavelength_angstrom
             ),
-            parent_line=parent,
-            component_index=component_index,
-            kind="broad" if broad_mask[index] else "narrow",
-            rest_wavelength_angstrom=float(rest_wavelengths[index]),
+            flux_erg_s_cm2=gaussian_flambda_flux_erg_s_cm2(
+                amplitude, center_ln, sigma_ln
+            ),
+            parent_line=identity.parent_line,
+            component_index=identity.component_index,
+            kind=identity.kind,
+            rest_wavelength_angstrom=identity.rest_wavelength_angstrom,
         )
-        members_by_parent.setdefault(parent, []).append(public_name)
+        members_by_parent.setdefault(identity.parent_line, []).append(
+            identity.public_name
+        )
 
     groups: dict[str, LineGroupResult] = {}
+    group_by_name = {item.name: item for item in group_metadata}
     for parent, component_names in members_by_parent.items():
-        first = lines[component_names[0]]
+        identity = group_by_name[parent]
         groups[parent] = LineGroupResult(
             component_names=tuple(component_names),
             total_flux_erg_s_cm2=np.sum(
@@ -156,8 +147,8 @@ def _line_results(
                 ),
                 axis=0,
             ),
-            kind=first.kind,
-            rest_wavelength_angstrom=first.rest_wavelength_angstrom,
+            kind=identity.kind,
+            rest_wavelength_angstrom=identity.rest_wavelength_angstrom,
         )
     return lines, groups
 
@@ -174,19 +165,26 @@ def build_spectral_result(data: Mapping[str, Any], fitter: Any) -> SpectralResul
         continuum = continuum[None, :]
     n_draws = continuum.shape[0]
     native_wave = np.asarray(fitter.wave, dtype=float)
-    if n_draws == 0 and "continuum_model" in raw:
-        n_draws = np.asarray(raw["continuum_model"]).shape[0]
+    if n_draws == 0 and SpectralSites.STANDALONE_CONTINUUM_FLUX in raw:
+        n_draws = np.asarray(raw[SpectralSites.STANDALONE_CONTINUUM_FLUX]).shape[0]
         continuum = _interpolate_draws(
-            raw["continuum_model"], native_wave, wave, n_draws
+            raw[SpectralSites.STANDALONE_CONTINUUM_FLUX], native_wave, wave, n_draws
         )
     lines, groups = _line_results(raw, metadata, n_draws)
-    line = _interpolate_draws(
-        raw.get("line_model", np.zeros((n_draws, native_wave.size))),
-        native_wave,
-        wave,
-        n_draws,
-    )
-    model = continuum + line
+    reconstructed_line = draws.get("lines")
+    if reconstructed_line is None:
+        line = _interpolate_draws(
+            raw.get(
+                SpectralSites.STANDALONE_LINE_FLUX,
+                np.zeros((n_draws, native_wave.size)),
+            ),
+            native_wave,
+            wave,
+            n_draws,
+        )
+    else:
+        line = np.asarray(reconstructed_line, dtype=float)
+    model = np.asarray(draws.get("model", continuum + line), dtype=float)
     feii = np.asarray(draws.get("Fe_uv", 0.0), dtype=float) + np.asarray(
         draws.get("Fe_op", 0.0), dtype=float
     )

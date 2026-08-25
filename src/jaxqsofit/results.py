@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 
@@ -46,7 +47,7 @@ class _PosteriorState:
 
 
 @dataclass
-class PredictionResult:
+class PredictionResult(Mapping[str, Any]):
     """Dict-like posterior prediction or reconstruction result."""
 
     data: Mapping[str, Any]
@@ -77,6 +78,12 @@ class PredictionResult:
             key value.
         """
         return self.data[key]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.data)
+
+    def __len__(self) -> int:
+        return len(self.data)
 
     def keys(self):
         return self.data.keys()

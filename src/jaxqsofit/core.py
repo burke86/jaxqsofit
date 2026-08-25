@@ -18,7 +18,7 @@ from jaxsedfit.inference import (
     nuts_metric_diagnostics,
     summarize_nuts_transition_fields,
 )
-from jaxsedfit.spectroscopy import line_complex_dense_mass_blocks
+from jaxsedfit.spectroscopy import SpectralSites, line_complex_dense_mass_blocks
 
 import jax
 import jax.numpy as jnp
@@ -46,12 +46,14 @@ from .config import (
 from .custom_components import (
     CustomComponentSpec,
     CustomLineComponentSpec,
+    SpectralComponentSpec,
     custom_component_site_names,
     custom_line_component_site_names,
     inject_default_custom_component_priors,
     inject_default_custom_line_component_priors,
     normalize_custom_components,
     normalize_custom_line_components,
+    split_spectral_components,
 )
 from .defaults import (
     append_optional_line_rows,
@@ -1055,18 +1057,18 @@ class JAXQSOFit:
             'PL_slope',
             'frac_jitter',
             'add_jitter',
-            'f_pl_model',
-            'f_fe_mgii_model',
-            'f_fe_balmer_model',
-            'f_bc_model',
+            SpectralSites.STANDALONE_POWER_LAW_FLUX,
+            SpectralSites.STANDALONE_FEII_UV_FLUX,
+            SpectralSites.STANDALONE_FEII_OPTICAL_FLUX,
+            SpectralSites.STANDALONE_BALMER_FLUX,
             'f_poly_model',
             'ebv',
             'reddening_a2500',
             'agn_model',
-            'gal_model',
-            'line_model',
-            'continuum_model',
-            'model',
+            SpectralSites.STANDALONE_HOST_FLUX,
+            SpectralSites.STANDALONE_LINE_FLUX,
+            SpectralSites.STANDALONE_CONTINUUM_FLUX,
+            SpectralSites.STANDALONE_MODEL_FLUX,
             'fsps_weights',
             'gal_sigma_effective_kms',
             'spectral_likelihood_weight',
@@ -1077,11 +1079,11 @@ class JAXQSOFit:
             return_sites += [
                 'line_model_broad',
                 'line_model_narrow',
-                'line_component_profiles',
-                'line_amp_per_component',
+                SpectralSites.STANDALONE_LINE_PROFILES,
+                SpectralSites.STANDALONE_LINE_AMPLITUDE,
                 'line_amp_group',
-                'line_mu_per_component',
-                'line_sig_per_component',
+                SpectralSites.STANDALONE_LINE_CENTER_LN,
+                SpectralSites.STANDALONE_LINE_SIGMA_LN,
                 'line_sig_effective_per_component',
                 'line_amp_effective_per_component',
             ]
@@ -1391,6 +1393,8 @@ class JAXQSOFit:
             return JAXQSOFit._serialize_for_hdf5(value.to_state())
         if isinstance(value, CustomLineComponentSpec):
             return JAXQSOFit._serialize_for_hdf5(value.to_state())
+        if isinstance(value, SpectralComponentSpec):
+            return JAXQSOFit._serialize_for_hdf5(value.to_state())
         if hasattr(value, "to_mapping"):
             return JAXQSOFit._serialize_for_hdf5(value.to_mapping())
         if is_dataclass(value) and not isinstance(value, type):
@@ -1425,6 +1429,8 @@ class JAXQSOFit:
                 return CustomComponentSpec.from_state(value)
             if value.get("__custom_line_component__", False):
                 return CustomLineComponentSpec.from_state(value)
+            if value.get("__spectral_component__", False):
+                return SpectralComponentSpec.from_state(value)
             if value.get("__ndarray_object__", False):
                 items = [JAXQSOFit._deserialize_from_hdf5(v) for v in value["items"]]
                 arr = np.asarray(items, dtype=object)
@@ -2163,6 +2169,10 @@ class JAXQSOFit:
             )
 
         cfg = self.config
+        # Re-apply a shared spectrum config in case it was assigned or edited
+        # after FitConfig construction.
+        if cfg.spectrum is not None:
+            cfg.__post_init__()
         obs_cfg = cfg.observation
         prep_cfg = cfg.preprocessing
         cont_cfg = cfg.continuum
@@ -2233,6 +2243,11 @@ class JAXQSOFit:
             self.output_path = out_cfg.output_path
         custom_components = line_cfg.custom_components
         custom_line_components = line_cfg.custom_line_components
+        unified_continuum, unified_lines = split_spectral_components(
+            line_cfg.components
+        )
+        custom_components = tuple(custom_components or ()) + unified_continuum
+        custom_line_components = tuple(custom_line_components or ()) + unified_lines
 
         if kwargs_plot is None:
             kwargs_plot = {}
@@ -3721,11 +3736,11 @@ class JAXQSOFit:
             float(meta.get("norm", 1.0)) for meta in getattr(fsps_grid, "template_meta", [])
         )
         self.pred_out = pred_out
-        self._pred_host_draws = np.asarray(pred_out['gal_model'])
-        self._pred_bc_draws = np.asarray(pred_out['f_bc_model'])
-        self._pred_cont_draws = np.asarray(pred_out['continuum_model'])
-        self._pred_total_draws = np.asarray(pred_out['model'])
-        self._pred_line_draws = np.asarray(pred_out['line_model'])
+        self._pred_host_draws = np.asarray(pred_out[SpectralSites.STANDALONE_HOST_FLUX])
+        self._pred_bc_draws = np.asarray(pred_out[SpectralSites.STANDALONE_BALMER_FLUX])
+        self._pred_cont_draws = np.asarray(pred_out[SpectralSites.STANDALONE_CONTINUUM_FLUX])
+        self._pred_total_draws = np.asarray(pred_out[SpectralSites.STANDALONE_MODEL_FLUX])
+        self._pred_line_draws = np.asarray(pred_out[SpectralSites.STANDALONE_LINE_FLUX])
         self._pred_psf_draws = np.asarray(pred_out['psf_model']) if 'psf_model' in pred_out else None
         self.custom_components = {}
         self._pred_custom_draws = {}
@@ -3734,24 +3749,24 @@ class JAXQSOFit:
         self.bi = np.nan
         self.bi_err = np.nan
 
-        self.f_pl_model = np.median(np.asarray(pred_out['f_pl_model']), axis=0)
+        self.f_pl_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_POWER_LAW_FLUX]), axis=0)
         intrinsic_pl_draws = self._intrinsic_powerlaw_draws()
         if intrinsic_pl_draws is not None and intrinsic_pl_draws.shape[1] == len(self.wave):
             self.f_pl_model_intrinsic = np.median(intrinsic_pl_draws, axis=0)
         else:
             self.f_pl_model_intrinsic = np.full_like(self.f_pl_model, np.nan)
-        self.f_fe_mgii_model = np.median(np.asarray(pred_out['f_fe_mgii_model']), axis=0)
-        self.f_fe_balmer_model = np.median(np.asarray(pred_out['f_fe_balmer_model']), axis=0)
-        self.f_bc_model = np.median(np.asarray(pred_out['f_bc_model']), axis=0)
+        self.f_fe_mgii_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_FEII_UV_FLUX]), axis=0)
+        self.f_fe_balmer_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_FEII_OPTICAL_FLUX]), axis=0)
+        self.f_bc_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_BALMER_FLUX]), axis=0)
         self.f_poly_model = np.median(np.asarray(pred_out['f_poly_model']), axis=0)
         self.qso = np.median(np.asarray(pred_out['agn_model']), axis=0)
-        self.host = np.median(np.asarray(pred_out['gal_model']), axis=0)
+        self.host = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_HOST_FLUX]), axis=0)
         self.line_broad = np.median(np.asarray(pred_out['line_model_broad']), axis=0) if 'line_model_broad' in pred_out else np.full_like(self.qso, np.nan)
         self.line_narrow = np.median(np.asarray(pred_out['line_model_narrow']), axis=0) if 'line_model_narrow' in pred_out else np.full_like(self.qso, np.nan)
-        self.line_component_profiles = np.median(np.asarray(pred_out['line_component_profiles']), axis=0) if 'line_component_profiles' in pred_out else np.empty((0, len(self.wave)), dtype=float)
-        self.f_line_model = np.median(np.asarray(pred_out['line_model']), axis=0)
-        self.f_conti_model = np.median(np.asarray(pred_out['continuum_model']), axis=0)
-        self.model_total = np.median(np.asarray(pred_out['model']), axis=0)
+        self.line_component_profiles = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_LINE_PROFILES]), axis=0) if SpectralSites.STANDALONE_LINE_PROFILES in pred_out else np.empty((0, len(self.wave)), dtype=float)
+        self.f_line_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_LINE_FLUX]), axis=0)
+        self.f_conti_model = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_CONTINUUM_FLUX]), axis=0)
+        self.model_total = np.median(np.asarray(pred_out[SpectralSites.STANDALONE_MODEL_FLUX]), axis=0)
         self.qso_psf = np.median(np.asarray(pred_out['agn_model_psf']), axis=0) if 'agn_model_psf' in pred_out else np.full_like(self.model_total, np.nan)
         self.host_psf = np.median(np.asarray(pred_out['gal_model_psf']), axis=0) if 'gal_model_psf' in pred_out else np.full_like(self.model_total, np.nan)
         self.line_broad_psf = np.median(np.asarray(pred_out['line_model_broad_psf']), axis=0) if 'line_model_broad_psf' in pred_out else np.full_like(self.model_total, np.nan)
@@ -4386,6 +4401,8 @@ class JAXQSOFit:
             fe_op_wave=self.fe_op_wave,
             fe_op_flux=self.fe_op_flux,
             custom_components=getattr(self, '_fit_custom_components', ()),
+            custom_line_components=getattr(self, '_fit_custom_line_components', ()),
+            tied_line_meta=getattr(self, 'tied_line_meta', None),
             template_norms=getattr(self, '_fit_fsps_template_norms', None),
             n_draws=n_draws,
             return_components=return_components,
