@@ -33,6 +33,101 @@ def _make_wide_spectrum(n=256):
     return lam, flux, err
 
 
+def _fake_spectral_result_inputs():
+    wave = np.array([4800.0, 4862.68, 5008.24])
+    raw = {
+        "line_model": np.full((3, 3), 2.0),
+        "continuum_model": np.full((3, 3), 10.0),
+        "line_amp_per_component": np.array(
+            [[1.0, 2.0, 3.0], [1.1, 2.1, 3.1], [1.2, 2.2, 3.2]]
+        ),
+        "line_mu_per_component": np.log(
+            np.array(
+                [
+                    [4862.68, 4863.0, 5008.24],
+                    [4862.8, 4863.1, 5008.3],
+                    [4862.9, 4863.2, 5008.4],
+                ]
+            )
+        ),
+        "line_sig_per_component": np.full((3, 3), 0.01),
+    }
+    fitter = SimpleNamespace(
+        wave=wave,
+        flux=np.array([11.0, 12.0, 13.0]),
+        err=np.full(3, 0.5),
+        tied_line_meta={
+            "names": ["Hb_br_1", "Hb_br_2", "OIII_5007_1"],
+            "line_lambda": np.array([4862.68, 4862.68, 5008.24]),
+            "broad_mask": np.array([True, True, False]),
+        },
+    )
+    fitter._ensure_posterior_state = lambda: SimpleNamespace(predictive=raw)
+    data = {
+        "wave": wave,
+        "draws": {
+            "continuum": np.full((2, 3), 10.0),
+            "PL": np.full((2, 3), 6.0),
+            "Fe_uv": np.full((2, 3), 1.0),
+            "Fe_op": np.full((2, 3), 2.0),
+            "Balmer_cont": np.full((2, 3), 0.5),
+            "host": np.full((2, 3), 0.5),
+        },
+    }
+    return fitter, data
+
+
+def test_prediction_spectrum_has_named_unit_explicit_line_results():
+    fitter, data = _fake_spectral_result_inputs()
+
+    spectrum = PredictionResult(data, fitter).spectrum
+
+    assert tuple(spectrum.lines) == ("Hb_br_1", "Hb_br_2", "OIII_5007")
+    assert spectrum.line_groups["Hb_br"].component_names == (
+        "Hb_br_1",
+        "Hb_br_2",
+    )
+    hb1 = spectrum.lines["Hb_br_1"]
+    assert hb1.parent_line == "Hb_br"
+    assert hb1.component_index == 1
+    assert hb1.kind == "broad"
+    assert hb1.amplitude_flambda_1e17.shape == (2,)
+    assert np.allclose(hb1.center_rest_angstrom, [4862.68, 4862.8])
+    assert np.allclose(
+        spectrum.line_groups["Hb_br"].total_flux_erg_s_cm2,
+        spectrum.lines["Hb_br_1"].flux_erg_s_cm2
+        + spectrum.lines["Hb_br_2"].flux_erg_s_cm2,
+    )
+    assert spectrum.model_flambda_1e17.shape == (2, 3)
+    assert np.allclose(spectrum.model_flambda_1e17, 12.0)
+    assert np.allclose(spectrum.feii_flambda_1e17, 3.0)
+    assert np.array_equal(spectrum.mask, np.ones(3, dtype=bool))
+
+
+def test_fit_result_spectrum_requests_the_native_grid_and_is_cached():
+    fitter, data = _fake_spectral_result_inputs()
+    calls = []
+
+    def reconstruct(**kwargs):
+        calls.append(kwargs)
+        return data
+
+    fitter.reconstruct_posterior_spectrum = reconstruct
+    result = FitResult(
+        fitter=fitter,
+        samples={},
+        median={},
+        method="test",
+    )
+
+    first = result.spectrum
+    second = result.spectrum
+
+    assert first is second
+    assert len(calls) == 1
+    assert np.array_equal(calls[0]["wave_out"], fitter.wave)
+
+
 def test_calculate_sn_skips_uncovered_standard_windows_without_warnings():
     wave = np.linspace(2990.0, 3060.0, 96)
     flux = 20.0 + 0.03 * np.sin(wave / 3.0)

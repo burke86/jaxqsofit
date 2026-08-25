@@ -20,6 +20,7 @@ API Sections
    :maxdepth: 2
 
    fitting
+   results
    config
    model
    components
