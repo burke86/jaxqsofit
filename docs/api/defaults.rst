@@ -1,7 +1,7 @@
 Defaults Package
 ================
 
-For a readable, physically scaled view of the complete table, see
+For readable, physically scaled views of the default and optional tables, see
 :doc:`../default_line_priors`.
 
 .. currentmodule:: jaxqsofit.defaults
