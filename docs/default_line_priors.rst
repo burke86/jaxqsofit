@@ -8,7 +8,7 @@ emission-line priors is available as
 The tables below are generated directly from the built-in prior rows at
 documentation-build time. Only the first table is enabled by default; the two
 opt-in tables extend it for spectra that need more complete optical narrow-line
-coverage.
+coverage. Each table is displayed in ascending laboratory wavelength order.
 
 Default broad-line AGN table
 ----------------------------
