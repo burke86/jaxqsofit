@@ -75,7 +75,8 @@ class _LineTableDirective(Directive):
         from jaxqsofit import defaults
 
         rows = getattr(defaults, self.rows_name)
-        html = _table_html([dict(row) for row in rows])
+        ordered_rows = sorted(rows, key=lambda row: float(row["lambda"]))
+        html = _table_html([dict(row) for row in ordered_rows])
         return [nodes.raw("", html, format="html")]
 
 
