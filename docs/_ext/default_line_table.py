@@ -65,21 +65,46 @@ def _table_html(rows: list[dict]) -> str:
 </div>"""
 
 
-class DefaultLineTableDirective(Directive):
-    """Insert the current default emission-line table."""
+class _LineTableDirective(Directive):
+    """Base directive for rendering one of the built-in line tables."""
 
     has_content = False
+    rows_name: str
 
     def run(self):
-        from jaxqsofit.defaults import DEFAULT_LINE_PRIOR_ROWS
+        from jaxqsofit import defaults
 
-        html = _table_html([dict(row) for row in DEFAULT_LINE_PRIOR_ROWS])
+        rows = getattr(defaults, self.rows_name)
+        ordered_rows = sorted(rows, key=lambda row: float(row["lambda"]))
+        html = _table_html([dict(row) for row in ordered_rows])
         return [nodes.raw("", html, format="html")]
+
+
+class DefaultLineTableDirective(_LineTableDirective):
+    """Insert the default broad-line AGN emission-line table."""
+
+    rows_name = "DEFAULT_LINE_PRIOR_ROWS"
+
+
+class OpticalLineTableDirective(_LineTableDirective):
+    """Insert the optional optical/red-NIR narrow-line table."""
+
+    rows_name = "DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS"
+
+
+class HighIonizationLineTableDirective(_LineTableDirective):
+    """Insert the optional high-ionization/coronal line table."""
+
+    rows_name = "DEFAULT_HIGH_IONIZATION_LINE_PRIOR_ROWS"
 
 
 def setup(app):
     """Register the directive with Sphinx."""
     app.add_directive("default-line-table", DefaultLineTableDirective)
+    app.add_directive("optical-line-table", OpticalLineTableDirective)
+    app.add_directive(
+        "high-ionization-line-table", HighIonizationLineTableDirective
+    )
     return {
         "version": "1.0",
         "parallel_read_safe": True,
