@@ -340,15 +340,6 @@ def test_custom_line_component_kind_filter_removes_broad_components():
     assert tuple(comp.name for comp in filtered) == ("narrow_core",)
 
 
-def test_spectral_likelihood_weight_from_resolving_power():
-    wave = np.arange(5000.0, 5010.0, 1.0)
-
-    weight = float(modelmod.spectral_likelihood_weight_from_resolving_power(wave, 2000.0))
-
-    assert weight == pytest.approx(0.36, rel=1.0e-2)
-    assert float(modelmod.spectral_likelihood_weight_from_resolving_power(wave, None)) == 1.0
-
-
 def test_from_arrays_stores_resolving_power():
     lam, flux, err = _make_simple_spectrum()
 

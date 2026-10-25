@@ -141,8 +141,12 @@ def test_reddening_does_not_affect_custom_line_components():
         custom_line_components=(broad_comp, narrow_comp),
     )
 
-    assert np.allclose(out["custom_line_exp_broad_model"][0], 2.0)
-    assert np.allclose(out["custom_line_exp_narrow_model"][0], 3.0)
-    assert np.allclose(out["line_model_broad"][0], 2.0)
-    assert np.allclose(out["line_model_narrow"][0], 3.0)
-    assert np.allclose(out["line_model"][0], 5.0)
+    # Custom components are declared in observed-frame f_nu (mJy); the model converts them to
+    # rest-frame f_lambda (1e-17 erg/s/cm^2/A) and must not redden them.
+    broad = modelmod._custom_fnu_mjy_to_rest_flambda_1e17(wave, 2.0, 0.0)
+    narrow = modelmod._custom_fnu_mjy_to_rest_flambda_1e17(wave, 3.0, 0.0)
+    assert np.allclose(out["custom_line_exp_broad_model"][0], broad)
+    assert np.allclose(out["custom_line_exp_narrow_model"][0], narrow)
+    assert np.allclose(out["line_model_broad"][0], broad)
+    assert np.allclose(out["line_model_narrow"][0], narrow)
+    assert np.allclose(out["line_model"][0], broad + narrow)
