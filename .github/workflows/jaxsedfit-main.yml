@@ -1,0 +1,52 @@
+name: jaxsedfit main
+
+# Weekly backstop: run the unit tests against jaxsedfit main instead of the pinned
+# commit, so jaxsedfit changes that break jaxqsofit are caught before the next pin bump.
+on:
+  schedule:
+    - cron: "0 6 * * 1"  # Mondays 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  unit-vs-jaxsedfit-main:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install package, then jaxsedfit main over the pinned commit
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+          # replace the pinned jaxsedfit, then install any dependencies main added
+          pip install --force-reinstall --no-deps "jaxsedfit @ git+https://github.com/burke86/jaxsedfit.git@main"
+          pip install "jaxsedfit @ git+https://github.com/burke86/jaxsedfit.git@main"
+          pip install pytest astroquery
+          python -c "import jaxsedfit; print('jaxsedfit', jaxsedfit.__file__)"
+          pip show jaxsedfit | head -3
+
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
+            https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
+            --output tempdata.h5
+          test -s tempdata.h5
+
+      - name: Run unit tests
+        run: pytest -q tests -m "not integration"
