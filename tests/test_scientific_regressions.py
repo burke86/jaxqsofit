@@ -9,7 +9,6 @@ from jaxqsofit.model import (
     _rest_log_lambda_llambda_from_flam,
     _synth_ab_mag_from_grid,
     _luminosity_distance_cm_jax,
-    spectral_likelihood_weight_from_resolving_power,
     combine_gaussian_sigma,
     instrumental_sigma_kms,
     instrumental_sigma_lnwave,
@@ -71,17 +70,6 @@ def test_mass_and_aperture_scale_are_exactly_degenerate_in_spectrum_normalizatio
     mass_a, aperture_a = 10.0**10, 0.2
     mass_b, aperture_b = 10.0**9, 2.0
     assert np.allclose(shape * mass_a * aperture_a, shape * mass_b * aperture_b)
-
-
-def test_resolution_likelihood_weight_converges_with_pixel_sampling():
-    resolving_power = 2000.0
-    coarse = np.geomspace(4000.0, 8000.0, 1500)
-    fine = np.geomspace(4000.0, 8000.0, 6000)
-    coarse_weight = float(spectral_likelihood_weight_from_resolving_power(coarse, resolving_power))
-    fine_weight = float(spectral_likelihood_weight_from_resolving_power(fine, resolving_power))
-    coarse_neff = coarse_weight * coarse.size
-    fine_neff = fine_weight * fine.size
-    assert coarse_neff == pytest.approx(fine_neff, rel=5e-3)
 
 
 @pytest.mark.parametrize(

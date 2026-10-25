@@ -138,7 +138,9 @@ def test_fft_velocity_convolution_matches_direct_backend():
     direct = _convolve_velocity_space(lnwave, signal, sigma_ln, method="direct")
     fft = _convolve_velocity_space(lnwave, signal, sigma_ln, method="fft")
 
-    np.testing.assert_allclose(np.asarray(fft), np.asarray(direct), rtol=1e-9, atol=1e-9)
+    # The FFT backend applies an exact Fourier-space Gaussian; the direct backend
+    # truncates the kernel at radius_mult * sigma, so they agree to ~1e-6 of the peak.
+    np.testing.assert_allclose(np.asarray(fft), np.asarray(direct), rtol=0.0, atol=1e-6 * float(jnp.max(signal)))
 
 
 def test_split_many_gauss_lnlam_matches_two_pass_broad_narrow_sum():
@@ -1250,93 +1252,12 @@ def test_flexible_host_shared_model_retains_physical_conditional_site():
     np.testing.assert_allclose(tr["test_weights"]["value"], 2.0 * expected_frac)
 
 
-def test_qso_fsps_joint_model_supports_delayed_sfh_host_with_mzr():
-    wave = np.linspace(2000.0, 6000.0, 32)
-    flux = np.ones_like(wave)
-    err = np.full_like(wave, 0.1)
-    cfg = build_default_prior_config(flux).to_mapping()
-    cfg["host_sfh_model"] = "delayed"
-    cfg["mass_metallicity_relation"] = {
-        "enabled": True,
-        "pivot_mass": 10.0,
-        "pivot_logzsol": -0.1,
-        "slope": 0.25,
-        "scale": 0.3,
-    }
-
-    class _Grid:
-        templates = np.column_stack(
-            [
-                np.ones(wave.size),
-                np.linspace(0.8, 1.2, wave.size),
-                np.linspace(1.2, 0.8, wave.size),
-                np.full(wave.size, 0.7),
-            ]
-        )
-        template_meta = [
-            {"tage_gyr": 0.1, "logzsol": -0.5},
-            {"tage_gyr": 1.0, "logzsol": -0.5},
-            {"tage_gyr": 0.1, "logzsol": 0.0},
-            {"tage_gyr": 1.0, "logzsol": 0.0},
-        ]
-        age_grid_gyr = np.array([0.1, 1.0])
-        logzsol_grid = np.array([-0.5, 0.0])
-
-    params = {
-        "cont_norm": np.array(1.0),
-        "log_frac_host": np.array(1.0),
-        "PL_norm": np.array(1.0),
-        "PL_slope": np.array(0.0),
-        "log_stellar_mass": np.array(10.0),
-        "log_sfh_age_gyr": np.log(1.0),
-        "log_sfh_tau_over_age": np.log(0.5),
-        "gal_lgmet": np.array(-0.1),
-        "log_gal_lgmet_scatter": np.log(0.2),
-        "gal_v_kms": np.array(0.0),
-        "log_gal_sigma_kms": np.log(100.0),
-        "frac_jitter": np.array(0.0),
-        "add_jitter": np.array(0.0),
-    }
-    tr = trace(substitute(seed(qso_fsps_joint_model, jax.random.PRNGKey(0)), data=params)).get_trace(
-        wave=wave,
-        flux=flux,
-        err=err,
-        conti_priors={},
-        tied_line_meta={"n_lines": 0},
-        fsps_grid=_Grid(),
-        fe_uv_wave=np.array([2000.0, 6000.0]),
-        fe_uv_flux=np.zeros(2),
-        fe_op_wave=np.array([2000.0, 6000.0]),
-        fe_op_flux=np.zeros(2),
-        use_lines=False,
-        prior_config=cfg,
-        decompose_host=True,
-        fit_pl=True,
-        fit_fe=False,
-        fit_bc=False,
-        fit_poly=False,
-        fit_reddening=False,
-    )
-
-    weights = np.asarray(tr["fsps_weights_frac"]["value"])
-    assert weights.shape == (4,)
-    assert np.isclose(np.sum(weights), 1.0)
-    assert np.all(weights >= 0.0)
-    assert "host_amp" in tr
-    assert "mass_metallicity_relation_prior" in tr
-    assert "mass_metallicity_relation_logprior" in tr
-    assert np.isfinite(float(tr["mass_metallicity_relation_logprior"]["value"]))
-    assert np.isfinite(float(tr["sfh_age_gyr"]["value"]))
-    assert np.isfinite(float(tr["sfh_tau_gyr"]["value"]))
-
-
 def test_delayed_sfh_host_uses_physical_stellar_mass_scaling():
     wave = np.linspace(4000.0, 4100.0, 16)
     flux = np.ones_like(wave)
     err = np.full_like(wave, 0.1)
     cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
-    cfg["mass_metallicity_relation"] = {"enabled": False}
     cfg["log_host_aperture_scale"] = {"dist": "Normal", "loc": 0.0, "scale": 0.1}
 
     class _Grid:
@@ -1417,7 +1338,6 @@ def test_psf_host_fraction_applies_to_total_host_before_fiber_aperture_scale():
     err = np.full_like(wave, 0.1)
     cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
-    cfg["mass_metallicity_relation"] = {"enabled": False}
     cfg["log_host_aperture_scale"] = {"dist": "Delta", "value": np.log(0.25)}
 
     class _Grid:
@@ -1498,7 +1418,6 @@ def test_delayed_sfh_host_accepts_jitted_redshift_tracer():
     flux = np.ones_like(wave)
     cfg = build_default_prior_config(flux).to_mapping()
     cfg["host_sfh_model"] = "delayed"
-    cfg["mass_metallicity_relation"] = {"enabled": False}
     cfg["z_qso"] = 0.1
     cfg["log_host_aperture_scale"] = {"dist": "Delta", "value": 0.0}
 

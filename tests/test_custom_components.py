@@ -4,6 +4,7 @@ import numpyro.distributions as dist
 
 import jaxqsofit.core as coremod
 import jaxqsofit.model as modelmod
+import jaxqsofit.plotting as plotting_mod
 from jaxqsofit import (
     JAXQSOFit,
     make_custom_component,
@@ -134,6 +135,7 @@ def test_reconstruct_posterior_components_includes_custom_draws(monkeypatch):
         custom_components=comps,
         n_draws=2,
         return_components=True,
+        redshift=0.1,
     )
 
     assert "alt_fe" in out["draws"]
@@ -781,7 +783,7 @@ def test_plot_fig_draws_bal_components_individually_with_single_legend_label():
     ax = fig.axes[0]
     bal_lines = [
         line for line in ax.get_lines()
-        if line.get_color() == "red" and np.nanmin(line.get_ydata()) < -0.1
+        if line.get_color() == plotting_mod._BAL_COMPONENT_COLOR and np.nanmin(line.get_ydata()) < -0.1
     ]
     labels = [line.get_label() for line in bal_lines]
     assert len(bal_lines) == 2
