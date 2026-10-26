@@ -23,3 +23,51 @@ The profiler uses a synthetic rest-frame spectrum, excludes JIT compilation from
 the reported timings, and prints the active line count, line-group dimensions,
 host template matrix shape, parameter count, forward time, and value+gradient
 time for several likelihood variants.
+
+## Chimera spectral validation
+
+`chimera_spectra_validation.py` fits the composite Chimera spectra (a COSMOS host
+galaxy spectrum from DESI DR1 or LEGA-C plus a weighted SDSS DR7 quasar spectrum)
+with `jaxqsofit.fit_batch`, spectrum only, and compares the recovered values with
+the truths:
+
+| Quantity | Fitted (MAP) | Truth |
+|---|---|---|
+| Stellar mass | `log_stellar_mass` | COSMOS2015 LePhare mass of the host |
+| AGN bolometric luminosity | power-law λLλ × Shen et al. (2011) correction (9.26 at 5100 Å below z = 0.7, 5.15 at 3000 Å below z = 1.9, else 3.81 at 1350 Å) | Shen et al. (2011) `logLbol` + log10(QSO weight) |
+| SFR | current SFR of the delayed-τ SFH | COSMOS2015 LePhare SFR (star-forming hosts only) |
+| Broad Hα, Hβ, Mg II FWHM and EW | summed broad components; EW relative to the power-law continuum | Wu & Shen (2022) |
+
+The spectra and the photometric truths come from jaxsedfit's Chimera validation
+sample (`benchmarks/data/chimera_validation_spectra.fits` and
+`chimera_validation_sample.csv`); the workflow downloads them from fixed jaxsedfit
+commits. The host aperture scale is fixed at one, because the spectra are scaled
+to the total photometry. Point estimates are MAPs: `fit_batch`'s Laplace step gave
+non-positive-definite Hessians for many of these spectra, so its draws are not
+used.
+
+```bash
+python benchmarks/chimera_spectra_validation.py run \
+  --output-dir /tmp/chimera-spectra-validation \
+  --dsps-ssp-fn tempdata.h5 \
+  --spectra <jaxsedfit>/benchmarks/data/chimera_validation_spectra.fits \
+  --sample <jaxsedfit>/benchmarks/data/chimera_validation_sample.csv   # add --limit 16 for a quick look
+```
+
+`data/chimera_broad_line_truth.csv` holds the Wu & Shen (2022) broad-line FWHM and
+rest-frame EW of the sample quasars, matched within 1″ to the position in their
+SDSS name (226 of 227). Wu & Shen measured 203 of them on the same SDSS DR7
+spectrum the Chimeras use and 23 on a later SDSS spectrum; their values agree with
+Shen et al. (2011) to within 0.05 dex in the median. Rebuild it only when the
+sample changes:
+
+```bash
+python benchmarks/chimera_spectra_validation.py make-truth \
+  --catalog dr16q_prop_May01_2024.fits \
+  --spectra <jaxsedfit>/benchmarks/data/chimera_validation_spectra.fits
+```
+
+`.github/workflows/chimera-spectra-validation.yml` runs this on pull requests that
+touch `src/` (and on manual dispatch), uploads the plots and, for pull requests
+from branches of this repository, creates or updates a PR comment with the metrics
+tables and embedded plots. Nothing is gated yet.
