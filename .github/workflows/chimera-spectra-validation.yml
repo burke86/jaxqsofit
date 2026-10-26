@@ -100,6 +100,7 @@ jobs:
             --sample chimera-data/chimera_validation_sample.csv \
             --chunk 4 \
             --slice 16 \
+            --isolate-slices \
             --samples 50 \
             --sha "${SHA::7}" \
             ${image_base_url:+--image-base-url "${image_base_url}"}

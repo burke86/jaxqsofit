@@ -47,6 +47,7 @@ import ctypes
 import gc
 import json
 import os
+import subprocess
 import sys
 import time
 import warnings
@@ -272,30 +273,79 @@ def _release_memory() -> None:
             pass
 
 
-def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk, slice_size, num_samples):
-    """Fit in redshift-ordered slices, keeping only the measured values of each slice.
+def _sorted_rows(spectra, limit=None):
+    """Spectra (optionally the first ``limit``) in redshift order, so slices share line tables."""
+    rows = list(spectra if not limit else spectra[:limit])
+    return sorted(rows, key=lambda r: float(r["redshift"]))
 
-    A fitted ``JAXQSOFit`` holds its host template grid (about 40 MB), so fitting
-    all spectra in one ``fit_batch`` call would keep every fitter alive at once.
-    """
+
+def fit_rows(rows, sample, lines, *, resolving_power, dsps_ssp_fn, steps, chunk, num_samples):
+    """Fit ``rows`` with one ``fit_batch`` call and return the measured values and the fit time."""
     from jaxqsofit import fit_batch
 
-    rows = sorted(spectra, key=lambda r: float(r["redshift"]))
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fitters = [build_fitter(r, resolving_power=resolving_power, dsps_ssp_fn=dsps_ssp_fn, steps=steps)
+                   for r in rows]
+        t0 = time.time()
+        fits = fit_batch(fitters, method="laplace", chunk_size=chunk, num_samples=num_samples)
+        elapsed = time.time() - t0
+    return [_measure(row, q, fit, sample, lines) for row, q, fit in zip(rows, fitters, fits)], elapsed
+
+
+def fit_sample(args, spectra, sample, lines):
+    """Fit in redshift-ordered slices, keeping only the measured values of each slice.
+
+    A fitted ``JAXQSOFit`` holds its host template grid and predictive draws (about
+    80 MB), and ``fit_batch`` keeps every fitter until it returns, so the spectra are
+    fitted ``--slice`` at a time. With ``--isolate-slices`` each slice runs in its own
+    Python process, which returns all of its memory to the OS when it exits; within
+    one process, compiled programs and glibc's allocator kept the memory floor rising
+    from slice to slice on CI runners.
+    """
+    rows = _sorted_rows(spectra, args.limit)
     results, elapsed = [], 0.0
-    for start in range(0, len(rows), slice_size):
-        part = rows[start:start + slice_size]
-        print(f"[chimera-spectra] spectra {start + 1}-{start + len(part)} of {len(rows)}", flush=True)
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore")
-            fitters = [build_fitter(r, resolving_power=spectra.meta["SPEC_RES"], dsps_ssp_fn=dsps_ssp_fn,
-                                    steps=steps) for r in part]
-            t0 = time.time()
-            fits = fit_batch(fitters, method="laplace", chunk_size=chunk, num_samples=num_samples)
-            elapsed += time.time() - t0
-        results += [_measure(row, q, fit, sample, lines) for row, q, fit in zip(part, fitters, fits)]
-        del fitters, fits
-        _release_memory()
+    for start in range(0, len(rows), args.slice):
+        stop = min(start + args.slice, len(rows))
+        print(f"[chimera-spectra] spectra {start + 1}-{stop} of {len(rows)}", flush=True)
+        if args.isolate_slices:
+            out = Path(args.output_dir) / f"slice_{start:04d}.json"
+            cmd = [sys.executable, str(Path(__file__).resolve()), "fit-slice", "--start", str(start), "--stop", str(stop),
+                   "--out", str(out)] + _shared_cli_args(args)
+            subprocess.run(cmd, check=True)
+            part = json.loads(out.read_text())
+            out.unlink()
+            results += part["results"]
+            elapsed += part["elapsed_s"]
+        else:
+            part, t = fit_rows(rows[start:stop], sample, lines, resolving_power=spectra.meta["SPEC_RES"],
+                               dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps, chunk=args.chunk,
+                               num_samples=args.samples)
+            results += part
+            elapsed += t
+            _release_memory()
     return results, elapsed
+
+
+def _shared_cli_args(args):
+    """Command-line options a ``fit-slice`` child needs to reproduce the parent's setup."""
+    out = ["--dsps-ssp-fn", args.dsps_ssp_fn, "--spectra", args.spectra, "--sample", args.sample,
+           "--truth", args.truth, "--chunk", str(args.chunk), "--steps", str(args.steps), "--samples", str(args.samples)]
+    return out + (["--limit", str(args.limit)] if args.limit else [])
+
+
+def fit_slice(args) -> int:
+    """Fit one slice (used by ``run --isolate-slices``) and write its results as JSON."""
+    from astropy.table import Table
+
+    spectra = Table.read(args.spectra)
+    sample, lines = load_truth(args.sample, args.truth)
+    rows = _sorted_rows(spectra, args.limit)[args.start:args.stop]
+    results, elapsed = fit_rows(rows, sample, lines, resolving_power=spectra.meta["SPEC_RES"],
+                                dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps, chunk=args.chunk,
+                                num_samples=args.samples)
+    Path(args.out).write_text(json.dumps({"results": results, "elapsed_s": elapsed}))
+    return 0
 
 
 def _measure(row, q, fit, sample, lines):
@@ -558,14 +608,11 @@ def run(args) -> int:
 
     spectra = Table.read(args.spectra)
     sample, lines = load_truth(args.sample, args.truth)
-    if args.limit:
-        spectra = spectra[: args.limit]
     out = Path(args.output_dir)
     out.mkdir(parents=True, exist_ok=True)
-    print(f"[chimera-spectra] fitting {len(spectra)} spectra", flush=True)
+    print(f"[chimera-spectra] fitting {len(_sorted_rows(spectra, args.limit))} spectra", flush=True)
 
-    results, elapsed = fit_sample(spectra, sample, lines, dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps,
-                                  chunk=args.chunk, slice_size=args.slice, num_samples=args.samples)
+    results, elapsed = fit_sample(args, spectra, sample, lines)
     metrics = compute_metrics(results)
     (out / "results.json").write_text(json.dumps(results, indent=1))
     (out / "metrics.json").write_text(json.dumps({**metrics, "elapsed_s": elapsed}, indent=2))
@@ -590,21 +637,32 @@ def main(argv=None) -> int:
     p.add_argument("--max-sep", type=float, default=1.0, help="Match radius [arcsec].")
     p.set_defaults(func=make_truth)
 
+    def add_fit_args(p):
+        p.add_argument("--dsps-ssp-fn", required=True)
+        p.add_argument("--spectra", required=True, help="jaxsedfit chimera_validation_spectra.fits.")
+        p.add_argument("--sample", required=True, help="jaxsedfit chimera_validation_sample.csv (truths).")
+        p.add_argument("--truth", default=str(DEFAULT_TRUTH), help="Emission-line truth table.")
+        p.add_argument("--chunk", type=int, default=16, help="Spectra per compiled batch.")
+        p.add_argument("--steps", type=int, default=2000, help="MAP steps.")
+        p.add_argument("--samples", type=int, default=100, help="Laplace draws per spectrum.")
+        p.add_argument("--limit", type=int, default=None, help="Fit only the first N spectra of the file (quick look).")
+
     p = sub.add_parser("run", help="Fit the spectra and write metrics, plots and the comment.")
     p.add_argument("--output-dir", required=True)
-    p.add_argument("--dsps-ssp-fn", required=True)
-    p.add_argument("--spectra", required=True, help="jaxsedfit chimera_validation_spectra.fits.")
-    p.add_argument("--sample", required=True, help="jaxsedfit chimera_validation_sample.csv (truths).")
-    p.add_argument("--truth", default=str(DEFAULT_TRUTH), help="Emission-line truth table.")
-    p.add_argument("--chunk", type=int, default=16, help="Spectra per compiled batch.")
-    p.add_argument("--slice", type=int, default=32,
-                   help="Spectra per fit_batch call; fitters are released after each slice to bound memory.")
-    p.add_argument("--steps", type=int, default=2000, help="MAP steps.")
-    p.add_argument("--samples", type=int, default=100, help="Laplace draws per spectrum.")
-    p.add_argument("--limit", type=int, default=None, help="Fit only the first N spectra (quick look).")
+    add_fit_args(p)
+    p.add_argument("--slice", type=int, default=32, help="Spectra per fit_batch call (see --isolate-slices).")
+    p.add_argument("--isolate-slices", action="store_true",
+                   help="Fit each slice in its own process, so its memory is returned to the OS (for CI runners).")
     p.add_argument("--sha", default="local")
     p.add_argument("--image-base-url", default=None, help="URL of the directory holding the plots.")
     p.set_defaults(func=run)
+
+    p = sub.add_parser("fit-slice", help="Internal: fit one slice of a run --isolate-slices and write JSON.")
+    add_fit_args(p)
+    p.add_argument("--start", type=int, required=True)
+    p.add_argument("--stop", type=int, required=True)
+    p.add_argument("--out", required=True)
+    p.set_defaults(func=fit_slice)
 
     args = parser.parse_args(argv)
     return args.func(args)
