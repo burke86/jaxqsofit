@@ -98,7 +98,9 @@ jobs:
             --dsps-ssp-fn tempdata.h5 \
             --spectra chimera-data/chimera_validation_spectra.fits \
             --sample chimera-data/chimera_validation_sample.csv \
-            --chunk 8 \
+            --chunk 4 \
+            --slice 16 \
+            --samples 50 \
             --sha "${SHA::7}" \
             ${image_base_url:+--image-base-url "${image_base_url}"}
           cat chimera-spectra-validation/output >> "${GITHUB_STEP_SUMMARY}"
