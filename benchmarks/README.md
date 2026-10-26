@@ -36,7 +36,7 @@ the truths:
 | Stellar mass | `log_stellar_mass` | COSMOS2015 LePhare mass of the host |
 | AGN bolometric luminosity | power-law λLλ × Shen et al. (2011) correction (9.26 at 5100 Å below z = 0.7, 5.15 at 3000 Å below z = 1.9, else 3.81 at 1350 Å) | Shen et al. (2011) `logLbol` + log10(QSO weight) |
 | SFR | current SFR of the delayed-τ SFH | COSMOS2015 LePhare SFR (star-forming hosts only) |
-| Broad Hα, Hβ, Mg II FWHM and EW | summed broad components; EW relative to the power-law continuum | Wu & Shen (2022) |
+| Hα, Hβ, Mg II FWHM and flux | sum of each line's broad and narrow components | Wu & Shen (2022) whole-line values; flux × QSO weight × the quasar's photometric scale |
 
 The spectra and the photometric truths come from jaxsedfit's Chimera validation
 sample (`benchmarks/data/chimera_validation_spectra.fits` and
@@ -44,7 +44,9 @@ sample (`benchmarks/data/chimera_validation_spectra.fits` and
 commits. The host aperture scale is fixed at one, because the spectra are scaled
 to the total photometry. Point estimates are MAPs: `fit_batch`'s Laplace step gave
 non-positive-definite Hessians for many of these spectra, so its draws are not
-used.
+used. Spectra are fitted in redshift-ordered slices (`--slice`, default 32) and
+each slice's fitters are released before the next, because a fitted `JAXQSOFit`
+holds about 40 MB.
 
 ```bash
 python benchmarks/chimera_spectra_validation.py run \
@@ -54,11 +56,12 @@ python benchmarks/chimera_spectra_validation.py run \
   --sample <jaxsedfit>/benchmarks/data/chimera_validation_sample.csv   # add --limit 16 for a quick look
 ```
 
-`data/chimera_broad_line_truth.csv` holds the Wu & Shen (2022) broad-line FWHM and
-rest-frame EW of the sample quasars, matched within 1″ to the position in their
-SDSS name (226 of 227). Wu & Shen measured 203 of them on the same SDSS DR7
-spectrum the Chimeras use and 23 on a later SDSS spectrum; their values agree with
-Shen et al. (2011) to within 0.05 dex in the median. Rebuild it only when the
+`data/chimera_line_truth.csv` holds the Wu & Shen (2022) whole-line (broad +
+narrow) FWHM and flux of Hα, Hβ and Mg II for the sample quasars, matched within
+1″ to the position in their SDSS name (226 of 227). Wu & Shen measured 203 of them
+on the same SDSS DR7 spectrum the Chimeras use and 23 on a later SDSS spectrum, so
+line fluxes of those 23 can differ through variability. Their broad-line widths and
+EWs agree with Shen et al. (2011) to within 0.05 dex in the median. Rebuild it only when the
 sample changes:
 
 ```bash

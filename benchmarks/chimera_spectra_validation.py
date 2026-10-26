@@ -4,7 +4,8 @@ Fits the composite spectra of the Chimera validation sample (COSMOS host galaxy
 spectrum + weighted SDSS DR7 quasar spectrum; see jaxsedfit
 ``benchmarks/data/chimera_validation_spectra.fits``) with
 :func:`jaxqsofit.fit_batch`, spectrum only, and compares the recovered stellar
-mass, AGN bolometric luminosity, SFR and broad-line FWHM and EW with the truths.
+mass, AGN bolometric luminosity, SFR and emission-line FWHM and flux with the
+truths.
 
 Truths
 ------
@@ -16,19 +17,22 @@ AGN luminosity
     weight. The fitted value uses the same bolometric corrections on the fitted
     power-law continuum: 9.26 L5100 (z < 0.7), 5.15 L3000 (z < 1.9), else
     3.81 L1350.
-Broad lines
-    FWHM and rest-frame EW of broad H-alpha, H-beta and MgII from Wu & Shen
-    (2022), matched by the quasar's SDSS name (the prefix of the chimera id);
-    ``data/chimera_broad_line_truth.csv``. Both are independent of the QSO weight.
+Emission lines
+    FWHM and flux of the whole (broad + narrow) H-alpha, H-beta and MgII lines
+    from Wu & Shen (2022), matched by the quasar's SDSS name (the prefix of the
+    chimera id); ``data/chimera_line_truth.csv``. The chimera line flux is their
+    flux times the QSO weight and the factor that scaled the quasar spectrum to
+    its photometry (moving the quasar to the host redshift leaves line fluxes
+    unchanged); the FWHM does not depend on either.
 
-Point estimates are MAPs; the fitted SFR is the current SFR of the delayed-tau
-SFH, and broad-line FWHM and EW are measured on the summed broad components,
-with the EW relative to the power-law continuum at the line (as in PyQSOFit).
+Point estimates are MAPs. The fitted SFR is the current SFR of the delayed-tau
+SFH; line FWHM and flux are measured on the sum of the line's broad and narrow
+components.
 
 Subcommands
 -----------
 make-truth
-    Build ``data/chimera_broad_line_truth.csv`` from the Wu & Shen (2022) catalog
+    Build ``data/chimera_line_truth.csv`` from the Wu & Shen (2022) catalog
     (only needed when the sample changes).
 run
     Fit the sample and write ``results.json``, ``metrics.json``, the plots and a
@@ -38,6 +42,8 @@ from __future__ import annotations
 
 import argparse
 import csv
+import ctypes
+import gc
 import json
 import os
 import sys
@@ -48,7 +54,7 @@ from pathlib import Path
 import numpy as np
 
 HERE = Path(__file__).resolve().parent
-DEFAULT_TRUTH = HERE / "data" / "chimera_broad_line_truth.csv"
+DEFAULT_TRUTH = HERE / "data" / "chimera_line_truth.csv"
 LUMINOSITY_BIN_LABELS = ["L < 42", "42 ≤ L < 43", "43 ≤ L < 44", "44 ≤ L < 45"]
 OUTLIER_DEX = 0.5
 SFR_MIN_LOG_SSFR = -11.0
@@ -56,13 +62,13 @@ COMMENT_MARKER = "jaxqsofit Chimera spectral validation"
 C_AA = 2.99792458e18
 # Shen et al. (2011) bolometric corrections: (rest wavelength [A], correction, upper redshift).
 BOLOMETRIC_CORRECTIONS = ((5100, 9.26, 0.7), (3000, 5.15, 1.9), (1350, 3.81, np.inf))
-# Broad lines: jaxqsofit parent name, Wu & Shen (2022) column, rest wavelength [A], plot label.
-BROAD_LINES = (
-    ("Ha_br", "HALPHA_BR", 6564.61, r"H$\alpha$"),
-    ("Hb_br", "HBETA_BR", 4862.68, r"H$\beta$"),
-    ("MgII_br", "MGII_BR", 2798.75, "Mg II"),
+# Lines: jaxqsofit component prefix, Wu & Shen (2022) whole-line column, rest wavelength [A], plot label.
+LINES = (
+    ("Ha", "HALPHA", 6564.61, r"H$\alpha$"),
+    ("Hb", "HBETA", 4862.68, r"H$\beta$"),
+    ("MgII", "MGII", 2798.75, "Mg II"),
 )
-LINE_NAMES = {"HALPHA_BR": "Hα", "HBETA_BR": "Hβ", "MGII_BR": "Mg II"}
+LINE_NAMES = {"HALPHA": "Hα", "HBETA": "Hβ", "MGII": "Mg II"}
 # A line is scored when this fraction of the pixels within +-3000 km/s is unmasked.
 LINE_COVERAGE = 0.8
 LINE_WINDOW_LN = 0.01
@@ -85,7 +91,7 @@ QUANTITIES = {
         note="Scored on star-forming hosts (true log sSFR > −11); quiescent hosts are plotted as open circles.",
     ),
 }
-LINE_PLOTS = {"fwhm": "chimera_spec_broad_fwhm.png", "ew": "chimera_spec_broad_ew.png"}
+LINE_PLOTS = {"fwhm": "chimera_spec_line_fwhm.png", "flux": "chimera_spec_line_flux.png"}
 
 
 def _sdss_name(chimera_id: str) -> str:
@@ -120,7 +126,7 @@ def make_truth(args) -> int:
     targets = SkyCoord(*np.array([_jname_to_deg(n) for n in names]).T, unit=u.deg)
 
     columns = ["SDSS_NAME", "RA", "DEC", "Z_DR16Q", "PLATE", "MJD", "FIBERID"]
-    columns += [c for _, base, _, _ in BROAD_LINES for c in (base, f"{base}_ERR")]
+    columns += [c for _, base, _, _ in LINES for c in (base, f"{base}_ERR")]
     with fits.open(args.catalog, memmap=True) as hdul:
         data = hdul[1].data
         cat = SkyCoord(np.asarray(data["RA"], float), np.asarray(data["DEC"], float), unit=u.deg)
@@ -139,13 +145,13 @@ def make_truth(args) -> int:
         r = rows[name]
         row = {"sdss_name": name, "wushen_name": str(r["SDSS_NAME"]).strip(), "sep_arcsec": round(r["sep_arcsec"], 3),
                "z_dr16q": float(r["Z_DR16Q"]), "plate": int(r["PLATE"]), "mjd": int(r["MJD"]), "fiberid": int(r["FIBERID"])}
-        for _, base, _, _ in BROAD_LINES:
+        for _, base, _, _ in LINES:
             value, err = np.asarray(r[base], float), np.asarray(r[f"{base}_ERR"], float)
-            # Wu & Shen line arrays: [peak wave, 50% flux centroid, flux, log L, FWHM, rest-frame EW]
+            # Wu & Shen line arrays: [peak wave, 50% flux centroid, flux [1e-17 erg/s/cm2], log L, FWHM, rest-frame EW]
             row[f"{base.lower()}_fwhm_kms"] = float(value[4])
             row[f"{base.lower()}_fwhm_err_kms"] = float(err[4])
-            row[f"{base.lower()}_ew_aa"] = float(value[5])
-            row[f"{base.lower()}_ew_err_aa"] = float(err[5])
+            row[f"{base.lower()}_flux_1e17"] = float(value[2])
+            row[f"{base.lower()}_flux_err_1e17"] = float(err[2])
         out_rows.append(row)
 
     out = Path(args.output)
@@ -201,28 +207,25 @@ def build_fitter(row, *, resolving_power, dsps_ssp_fn, steps):
     return q
 
 
-def _broad_line(q, parent, rest_wave):
-    """MAP FWHM [km/s] and EW [A] of one broad line, or NaNs if it is not covered."""
+def _line(q, prefix, rest_wave):
+    """MAP FWHM [km/s] and flux [1e-17 erg/s/cm2] of a whole (broad + narrow) line, or NaNs if not covered."""
     lnw = np.log(np.asarray(q.wave, dtype=float))
     window = np.abs(lnw - np.log(rest_wave)) < LINE_WINDOW_LN
     step = float(np.median(np.diff(lnw)))
     if window.sum() < LINE_COVERAGE * 2 * LINE_WINDOW_LN / step:
         return np.nan, np.nan
-    meta = q.tied_line_meta
-    names = [str(n) for n in meta["names"]]
-    members = [i for i, n in enumerate(names) if n.rsplit("_", 1)[0] == parent]
+    names = [str(n) for n in q.tied_line_meta["names"]]
+    members = [i for i, n in enumerate(names) if n.split("_", 1)[0] == prefix]
     if not members:
         return np.nan, np.nan
     po = q.pred_out
-    amp = np.asarray(po["line_amp_per_component"], dtype=float).reshape(-1, len(names))[0, members]
-    mu = np.asarray(po["line_mu_per_component"], dtype=float).reshape(-1, len(names))[0, members]
-    sig = np.asarray(po["line_sig_per_component"], dtype=float).reshape(-1, len(names))[0, members]
+    amp, mu, sig = (np.asarray(po[f"line_{k}_per_component"], dtype=float).reshape(-1, len(names))[0, members]
+                    for k in ("amp", "mu", "sig"))
     grid = np.log(rest_wave) + np.linspace(-0.1, 0.1, 20001)
     profile = np.sum(amp[:, None] * np.exp(-0.5 * ((grid[None, :] - mu[:, None]) / sig[:, None]) ** 2), axis=0)
-    fwhm, area = q.line_props(profile, np.exp(grid))
-    pl = np.interp(rest_wave, np.asarray(q.wave, dtype=float), np.asarray(po["f_pl_model"], dtype=float).reshape(-1, len(q.wave))[0])
-    ew = area / pl if pl > 0 else np.nan
-    return float(fwhm), float(ew)
+    # The fitted flux is in rest-frame units ((1 + z) f_lambda), so its rest-frame integral is the observed flux.
+    fwhm, flux = q.line_props(profile, np.exp(grid))
+    return float(fwhm), float(flux)
 
 
 def _log_sfr(po):
@@ -243,48 +246,73 @@ def _log_lbol(po, z):
     return np.nan
 
 
-def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk):
+def _release_memory() -> None:
+    """Free released fitters and, on Linux, hand the memory back to the OS (glibc keeps it otherwise)."""
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
+
+
+def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk, slice_size):
+    """Fit in redshift-ordered slices, keeping only the measured values of each slice.
+
+    A fitted ``JAXQSOFit`` holds its host template grid (about 40 MB), so fitting
+    all spectra in one ``fit_batch`` call would keep every fitter alive at once.
+    """
     from jaxqsofit import fit_batch
 
-    rows = list(spectra)
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        fitters = [build_fitter(r, resolving_power=spectra.meta["SPEC_RES"], dsps_ssp_fn=dsps_ssp_fn, steps=steps)
-                   for r in rows]
-        t0 = time.time()
-        fits = fit_batch(fitters, method="map", chunk_size=chunk)
-        elapsed = time.time() - t0
-
-    results = []
-    for row, q, fit in zip(rows, fitters, fits):
-        object_id = str(row["id"])
-        truth = sample[object_id]
-        z = float(row["redshift"])
-        po = q.pred_out
-        result = {
-            "id": object_id,
-            "sdss_name": _sdss_name(object_id),
-            "redshift": z,
-            "galaxy_survey": str(row["galaxy_survey"]),
-            "chimera_QSO_weight": float(row["chimera_QSO_weight"]),
-            "luminosity_bin_index": int(truth["luminosity_bin_index"]),
-            "log_stellar_mass_truth": float(truth["log_stellar_mass_truth"]),
-            "log_stellar_mass_fit": float(np.ravel(fit.samples["log_stellar_mass"])[0]),
-            "log_lbol_agn_truth": float(truth["log_lbol_chimera_truth"]),
-            "log_lbol_agn_fit": _log_lbol(po, z),
-            "log_sfr_truth": float(truth["log_sfr_truth"]),
-            "log_sfr_fit": _log_sfr(po),
-            "map_loss": float(q.batch_diagnostics["loss"]),
-        }
-        line_truth = lines.get(result["sdss_name"], {})
-        for parent, base, rest_wave, _ in BROAD_LINES:
-            fwhm, ew = _broad_line(q, parent, rest_wave)
-            key = base.lower()
-            result[f"{key}_fwhm_fit"], result[f"{key}_ew_fit"] = fwhm, ew
-            result[f"{key}_fwhm_truth"] = float(line_truth.get(f"{key}_fwhm_kms", np.nan))
-            result[f"{key}_ew_truth"] = float(line_truth.get(f"{key}_ew_aa", np.nan))
-        results.append(result)
+    rows = sorted(spectra, key=lambda r: float(r["redshift"]))
+    results, elapsed = [], 0.0
+    for start in range(0, len(rows), slice_size):
+        part = rows[start:start + slice_size]
+        print(f"[chimera-spectra] spectra {start + 1}-{start + len(part)} of {len(rows)}", flush=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            fitters = [build_fitter(r, resolving_power=spectra.meta["SPEC_RES"], dsps_ssp_fn=dsps_ssp_fn,
+                                    steps=steps) for r in part]
+            t0 = time.time()
+            fits = fit_batch(fitters, method="map", chunk_size=chunk)
+            elapsed += time.time() - t0
+        results += [_measure(row, q, fit, sample, lines) for row, q, fit in zip(part, fitters, fits)]
+        del fitters, fits
+        _release_memory()
     return results, elapsed
+
+
+def _measure(row, q, fit, sample, lines):
+    """Fitted and true values for one chimera."""
+    object_id = str(row["id"])
+    truth = sample[object_id]
+    z = float(row["redshift"])
+    po = q.pred_out
+    result = {
+        "id": object_id,
+        "sdss_name": _sdss_name(object_id),
+        "redshift": z,
+        "galaxy_survey": str(row["galaxy_survey"]),
+        "chimera_QSO_weight": float(row["chimera_QSO_weight"]),
+        "luminosity_bin_index": int(truth["luminosity_bin_index"]),
+        "log_stellar_mass_truth": float(truth["log_stellar_mass_truth"]),
+        "log_stellar_mass_fit": float(np.ravel(fit.samples["log_stellar_mass"])[0]),
+        "log_lbol_agn_truth": float(truth["log_lbol_chimera_truth"]),
+        "log_lbol_agn_fit": _log_lbol(po, z),
+        "log_sfr_truth": float(truth["log_sfr_truth"]),
+        "log_sfr_fit": _log_sfr(po),
+        "map_loss": float(q.batch_diagnostics["loss"]),
+    }
+    line_truth = lines.get(result["sdss_name"], {})
+    # Chimera line flux = quasar line flux x QSO weight x scale of the quasar spectrum to its photometry.
+    flux_scale = float(row["chimera_QSO_weight"]) * float(row["qso_scale"])
+    for prefix, base, rest_wave, _ in LINES:
+        fwhm, flux = _line(q, prefix, rest_wave)
+        key = base.lower()
+        result[f"{key}_fwhm_fit"], result[f"{key}_flux_fit"] = fwhm, flux
+        result[f"{key}_fwhm_truth"] = float(line_truth.get(f"{key}_fwhm_kms", np.nan))
+        result[f"{key}_flux_truth"] = float(line_truth.get(f"{key}_flux_1e17", np.nan)) * flux_scale
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -333,14 +361,14 @@ def compute_metrics(results) -> dict:
             res = [r[f"{name}_fit"] - r[f"{name}_truth"] for r in results
                    if r["luminosity_bin_index"] == b and _scored(r, name)]
             metrics[name].append({"bin": b, "label": label, **_stats(res)})
-    for kind in ("fwhm", "ew"):
-        metrics[f"broad_{kind}"] = []
-        for _, base, _, _ in BROAD_LINES:
+    for kind in LINE_PLOTS:
+        metrics[f"line_{kind}"] = []
+        for _, base, _, _ in LINES:
             for b, bin_label in enumerate(LUMINOSITY_BIN_LABELS):
                 pairs = [(t, f) for t, f, r in _line_pairs(results, base, kind) if r["luminosity_bin_index"] == b]
                 res = [np.log10(f / t) for t, f in pairs]
-                metrics[f"broad_{kind}"].append({"line": base, "line_label": LINE_NAMES[base], "bin": b, "label": bin_label,
-                                                 **_stats(res)})
+                metrics[f"line_{kind}"].append({"line": base, "line_label": LINE_NAMES[base], "bin": b,
+                                                "label": bin_label, **_stats(res)})
     return metrics
 
 
@@ -403,13 +431,17 @@ def plot_quantity(results, metrics, name, path: Path) -> None:
 def plot_lines(results, kind, path: Path) -> None:
     plt = _style()
 
-    unit = "km s$^{-1}$" if kind == "fwhm" else r"$\AA$"
-    what = "FWHM" if kind == "fwhm" else "rest-frame EW"
+    if kind == "fwhm":
+        x_label, y_label, unit = "Wu & Shen (2022) FWHM", "Fitted FWHM", "km s$^{-1}$"
+    else:
+        x_label, y_label = "Wu & Shen (2022) flux × QSO weight", "Fitted line flux"
+        unit = r"$10^{-17}$ erg s$^{-1}$ cm$^{-2}$"
     colors = ["#1f3b73", "#2a78d6", "#eda100", "#eb6834"]  # one per AGN luminosity bin, faint to bright
-    fig, axes = plt.subplots(1, len(BROAD_LINES), figsize=(15.0, 4.8), constrained_layout=True)
-    for ax, (_, base, _, label) in zip(axes, BROAD_LINES):
+    fig, axes = plt.subplots(1, len(LINES), figsize=(15.0, 4.8), constrained_layout=True)
+    for ax, (_, base, _, label) in zip(axes, LINES):
         pairs = _line_pairs(results, base, kind)
-        lo, hi = (1.0e3, 3.0e4) if kind == "fwhm" else (3.0, 1.0e3)
+        truths = np.array([t for t, _, _ in pairs] or [1.0])
+        lo, hi = truths.min() / 10**0.75, truths.max() * 10**0.75  # fits beyond this are drawn at the edge
         ax.plot([lo, hi], [lo, hi], color="black", lw=1.0, ls="--", zorder=0)
         for factor in (10**OUTLIER_DEX, 10**-OUTLIER_DEX):
             ax.plot([lo, hi], [lo * factor, hi * factor], color="0.55", lw=0.9, ls=":", zorder=0)
@@ -427,8 +459,8 @@ def plot_lines(results, kind, path: Path) -> None:
         ax.set_yscale("log")
         ax.set_xlim(lo, hi)
         ax.set_ylim(lo, hi)
-        ax.set_xlabel(f"Wu & Shen (2022) {what} [{unit}]")
-        ax.set_ylabel(f"Fitted {what} [{unit}]")
+        ax.set_xlabel(f"{x_label} [{unit}]")
+        ax.set_ylabel(f"{y_label} [{unit}]")
         ax.grid(alpha=0.18, which="both")
     axes[0].legend(loc="upper left", fontsize=9, title="Injected log L")
     fig.savefig(path, dpi=110)
@@ -463,10 +495,12 @@ def write_comment(path: Path, metrics, *, n_objects, sha, elapsed, image_base_ur
         if q.get("note"):
             lines += [q["note"], ""]
         lines += _table(metrics[name], "AGN luminosity bin", "label") + ["", image(q["plot"], q["title"])]
-    for kind, title in (("fwhm", "Broad-line FWHM"), ("ew", "Broad-line rest-frame EW")):
-        lines += ["", f"### {title} (vs Wu & Shen 2022)", "",
-                  "Δ = log10(fit / truth), for chimeras whose line is covered and measured by Wu & Shen.", ""]
-        rows = [{**m, "name": f"{m['line_label']}, {m['label']}"} for m in metrics[f"broad_{kind}"]]
+    for kind, title in (("fwhm", "Line FWHM (broad + narrow)"), ("flux", "Line flux (broad + narrow)")):
+        lines += ["", f"### {title} vs Wu & Shen (2022)", "",
+                  "Δ = log10(fit / truth), for chimeras whose line is covered and measured by Wu & Shen; "
+                  "the true flux is theirs × QSO weight × the quasar's photometric scale. The truth counts only the "
+                  "quasar's lines, so where the AGN is faint the host's own emission lines dominate the fit.", ""]
+        rows = [{**m, "name": f"{m['line_label']}, {m['label']}"} for m in metrics[f"line_{kind}"]]
         lines += _table(rows, "Line, AGN luminosity bin", "name") + ["", image(LINE_PLOTS[kind], title)]
     workflow_url = os.environ.get("GITHUB_SERVER_URL", "") and (
         f"{os.environ['GITHUB_SERVER_URL']}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
@@ -488,7 +522,7 @@ def run(args) -> int:
     print(f"[chimera-spectra] fitting {len(spectra)} spectra", flush=True)
 
     results, elapsed = fit_sample(spectra, sample, lines, dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps,
-                                  chunk=args.chunk)
+                                  chunk=args.chunk, slice_size=args.slice)
     metrics = compute_metrics(results)
     (out / "results.json").write_text(json.dumps(results, indent=1))
     (out / "metrics.json").write_text(json.dumps({**metrics, "elapsed_s": elapsed}, indent=2))
@@ -506,7 +540,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("make-truth", help="Build the broad-line truth table from Wu & Shen (2022).")
+    p = sub.add_parser("make-truth", help="Build the emission-line truth table from Wu & Shen (2022).")
     p.add_argument("--catalog", required=True, help="Wu & Shen (2022) dr16q_prop FITS catalog.")
     p.add_argument("--spectra", required=True, help="jaxsedfit chimera_validation_spectra.fits.")
     p.add_argument("--output", default=str(DEFAULT_TRUTH))
@@ -518,8 +552,10 @@ def main(argv=None) -> int:
     p.add_argument("--dsps-ssp-fn", required=True)
     p.add_argument("--spectra", required=True, help="jaxsedfit chimera_validation_spectra.fits.")
     p.add_argument("--sample", required=True, help="jaxsedfit chimera_validation_sample.csv (truths).")
-    p.add_argument("--truth", default=str(DEFAULT_TRUTH), help="Broad-line truth table.")
+    p.add_argument("--truth", default=str(DEFAULT_TRUTH), help="Emission-line truth table.")
     p.add_argument("--chunk", type=int, default=16, help="Spectra per compiled batch.")
+    p.add_argument("--slice", type=int, default=32,
+                   help="Spectra per fit_batch call; fitters are released after each slice to bound memory.")
     p.add_argument("--steps", type=int, default=2000, help="MAP steps.")
     p.add_argument("--limit", type=int, default=None, help="Fit only the first N spectra (quick look).")
     p.add_argument("--sha", default="local")

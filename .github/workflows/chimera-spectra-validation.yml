@@ -1,10 +1,10 @@
 name: Chimera spectral validation
 
 # Spectrum-only recovery of stellar mass, AGN bolometric luminosity, SFR and
-# broad-line FWHM/EW on the Chimera composite spectra with batched MAP fits
+# emission-line FWHM and flux on the Chimera composite spectra with batched MAP fits
 # (benchmarks/chimera_spectra_validation.py). The spectra and the photometric
-# truths come from jaxsedfit's Chimera validation sample; the broad-line truths
-# (Wu & Shen 2022) are in benchmarks/data/chimera_broad_line_truth.csv. Nothing is
+# truths come from jaxsedfit's Chimera validation sample; the line truths
+# (Wu & Shen 2022) are in benchmarks/data/chimera_line_truth.csv. Nothing is
 # gated yet. For pull requests from branches of this repository the job posts (and
 # updates) a PR comment with the metrics and plots; the plots are stored on the
 # chimera-spectra-validation-plots branch so the comment can embed them. Pull
@@ -16,7 +16,7 @@ on:
     paths:
       - "src/**"
       - "benchmarks/chimera_spectra_validation.py"
-      - "benchmarks/data/chimera_broad_line_truth.csv"
+      - "benchmarks/data/chimera_line_truth.csv"
       - "pyproject.toml"
       - ".github/workflows/chimera-spectra-validation.yml"
   workflow_dispatch:
