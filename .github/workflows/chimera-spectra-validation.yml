@@ -83,6 +83,9 @@ jobs:
       - name: Run Chimera spectral validation
         env:
           MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+          # glibc keeps a memory pool per thread and rarely returns freed memory (as in
+          # jaxsedfit's Chimera validation); two pools cap it.
+          MALLOC_ARENA_MAX: "2"
         run: |
           image_base_url=""
           if [ "${SAME_REPO}" = "true" ]; then

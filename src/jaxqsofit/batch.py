@@ -21,7 +21,10 @@ removing those pixels.
 """
 from __future__ import annotations
 
+import ctypes
+import gc
 import json
+import sys
 from typing import Any, Sequence
 
 import jax
@@ -29,6 +32,7 @@ import jax.numpy as jnp
 import numpy as np
 from numpyro.infer import Predictive
 
+import jaxsedfit.preload as _jaxsedfit_preload
 from jaxsedfit.batched import BatchedInputs, make_batched_fitter
 from jaxsedfit.config import serialize_config
 from jaxsedfit.spectral_model import tied_line_coverage_mask
@@ -54,6 +58,33 @@ from .model import (
 _BATCH_METHODS = {"optax": "map", "map": "map", "laplace": "laplace"}
 # Flags the stage-1 continuum MAP switches off, as in JAXQSOFit.run_fsps_optax_fit.
 _STAGE1_FLAGS = dict(use_lines=False, fit_fe=False, fit_bc=False, fit_poly=False, fit_poly_order=2)
+
+
+def _clear_per_spectrum_caches() -> None:
+    """Drop jaxsedfit caches that gain an entry for every spectrum.
+
+    The host SSP basis is cached by the content of the rest-frame wavelength grid,
+    which differs for every spectrum (about 35 MB each), and the projection caches
+    are keyed by redshift. Built model inputs keep their own references.
+    """
+    _jaxsedfit_preload.clear_per_object_caches()
+    _jaxsedfit_preload._HOST_BASIS_CACHE.clear()
+
+
+def _release_memory() -> None:
+    """Free a fitted chunk and hand the memory back to the OS.
+
+    The chunk's inputs contain reference cycles, so they are only freed by the cyclic
+    garbage collector; on Linux, glibc also keeps freed memory unless asked to trim
+    it. As in ``jaxsedfit.fit_batch``, memory otherwise grew by about a chunk per chunk
+    on CI runners.
+    """
+    gc.collect()
+    if sys.platform.startswith("linux"):
+        try:
+            ctypes.CDLL("libc.so.6").malloc_trim(0)
+        except (OSError, AttributeError):
+            pass
 
 
 def _batch_model(*, pixel_mask, stage1_pixel_mask, stage1=False, **kwargs):
@@ -288,6 +319,7 @@ def fit_batch(
             chunk = window[start:start + chunk_size]
             padded = list(chunk) + [chunk[-1]] * (chunk_size - len(chunk))
             inputs = [_model_inputs(fitters[i], preps[i], table_range, n_pixels) for i in padded]
+            _clear_per_spectrum_caches()
             if layout is None:
                 layout, fit = new_fitter(inputs)
             try:
@@ -305,6 +337,9 @@ def fit_batch(
                 map_point = {site: np.asarray(v[j]) for site, v in out["map"].items()}
                 results[i] = _load_result(fitters[i], preps[i], table_range, samples, map_point, kind,
                                           float(out["loss"][j]), out.get("hessian_min_eigenvalue", [None] * len(padded))[j])
+            del out, arrays, inputs, init, init_values
+            _clear_per_spectrum_caches()
+            _release_memory()
             if progress is not None:
                 progress.update(1)
     if progress is not None:
