@@ -191,6 +191,20 @@ result = q.fit()
 
 This runs a staged MAP optimization (continuum warm start, then full model) and is typically much faster than NUTS.
 
+To fit many spectra with the same configuration, `jaxqsofit.fit_batch` runs this
+MAP (optionally followed by a Laplace approximation) for all of them with one
+compiled program:
+
+```python
+fitters = [jaxqsofit.JAXQSOFit(make_config(row)) for row in catalog]
+results = jaxqsofit.fit_batch(fitters, method="laplace", chunk_size=16)
+```
+
+Spectra are padded to a common length with masked pixels, and fitters are split
+into redshift windows (`redshift_window`, in ln(1 + z)) that share one emission-line
+table; lines a spectrum does not cover are masked to zero amplitude. Each fitter is
+left in its fitted state, as after `fit()`. PSF photometry is not supported yet.
+
 Optional: override any prior defaults on the config:
 
 ```python

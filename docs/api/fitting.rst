@@ -14,3 +14,8 @@ Fitting Interface
    :members: spectrum, median, keys, items, get
 
 .. autofunction:: load_from_samples
+
+Batched fitting
+---------------
+
+.. autofunction:: fit_batch
