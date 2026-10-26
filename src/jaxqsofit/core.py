@@ -486,6 +486,143 @@ def _convert_flexible_host_init_for_nuts(init_values, fsps_grid, prior_config):
 _line_complex_dense_mass_blocks = line_complex_dense_mass_blocks
 
 
+def _stage1_continuum_keep_mask(wave_in):
+    """Mask strong optical emission-line windows for continuum warm start.
+
+    Parameters
+    ----------
+    wave_in : object
+        wave_in value.
+    """
+    line_windows = (
+        (2700.0, 2900.0),   # Mg II
+        (3700.0, 3755.0),   # [O II]
+        (3850.0, 3895.0),   # [Ne III]
+        (4070.0, 4135.0),   # Hdelta
+        (4300.0, 4385.0),   # Hgamma + [O III] 4363
+        (4630.0, 5105.0),   # He II, Hbeta, [O III]
+        (5800.0, 5925.0),   # He I
+        (6250.0, 6405.0),   # [O I]
+        (6450.0, 6775.0),   # Halpha, [N II], [S II]
+        (7050.0, 7165.0),   # He I / [Ar III]
+        (7300.0, 7355.0),   # [O II]
+    )
+    wave_in = np.asarray(wave_in, dtype=float)
+    keep = np.isfinite(wave_in)
+    for lo, hi in line_windows:
+        keep &= ~((wave_in >= lo) & (wave_in <= hi))
+    min_keep = max(50, int(0.2 * wave_in.size))
+    if int(np.sum(keep)) < min_keep:
+        return np.isfinite(wave_in)
+    return keep
+
+
+def _optax_prior_field(prior_config, key, field, default):
+    """Read a scalar field from a prior-config entry.
+
+    Parameters
+    ----------
+    prior_config : dict
+        Materialized prior configuration.
+    key : object
+        key value.
+    field : object
+        field value.
+    default : object
+        default value.
+    """
+    cfg = prior_config.get(key, default)
+    if isinstance(cfg, dict):
+        value = cfg.get(field, cfg.get('value', cfg.get('loc', default)))
+    elif isinstance(cfg, dist.Distribution):
+        base_dist = getattr(cfg, 'base_dist', cfg)
+        value = getattr(cfg, field, getattr(base_dist, field, getattr(base_dist, 'loc', default)))
+    elif isinstance(cfg, (tuple, list)) and len(cfg) > 0:
+        value = cfg[0]
+    else:
+        value = cfg
+    try:
+        value = float(np.asarray(value, dtype=float))
+    except Exception:
+        value = float(default)
+    return value if np.isfinite(value) else float(default)
+
+def _optax_stage1_init_values(prior_config, flux, fsps_grid, *, decompose_host, fit_pl, fit_reddening):
+    """Build data-scale-aware constrained initial values for the stage-1 continuum MAP."""
+    standardized = bool(
+        prior_config.get("standardize_active_priors", False)
+    )
+    pl_init = _optax_prior_field(prior_config, 'PL_norm', 'scale', max(0.5 * np.nanmedian(np.abs(flux)), 1e-8))
+    host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
+    use_direct_host_amp = not (
+        decompose_host
+        and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}
+        and getattr(fsps_grid, "host_basis_jax", None) is not None
+    )
+
+    values = (
+        {
+            'gal_v_kms_std': 0.0,
+            'log_gal_sigma_kms_std': 0.0,
+        }
+        if standardized
+        else {
+            'gal_v_kms': 0.0,
+            'log_gal_sigma_kms': _optax_prior_field(
+                prior_config,
+                'log_gal_sigma_kms', 'loc', np.log(150.0)
+            ),
+        }
+    )
+    if decompose_host and use_direct_host_amp:
+        if standardized:
+            values['cont_norm_std'] = 0.0
+        else:
+            values['cont_norm'] = max(
+                np.exp(
+                    _optax_prior_field(
+                        prior_config,
+                        'log_cont_norm',
+                        'loc',
+                        np.log(max(np.nanmedian(np.abs(flux)), 1e-8)),
+                    )
+                ),
+                1e-8,
+            )
+        values['log_frac_host'] = _optax_prior_field(prior_config, 'log_frac_host', 'loc', 0.0)
+    if fit_pl:
+        if fit_reddening and bool(prior_config.get("residualize_reddening_geometry", False)):
+            values['PL_apparent_log_norm_std'] = np.array(0.0)
+            values['PL_apparent_slope_std'] = np.array(0.0)
+        elif standardized:
+            values['PL_norm_std'] = np.array(0.0)
+            values['PL_slope_std'] = np.array(0.0)
+        else:
+            values['PL_norm'] = max(pl_init, 1e-8)
+        if fit_reddening:
+            reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
+            if standardized:
+                values[f'{reddening_key}_std'] = np.array(0.0)
+            else:
+                values[reddening_key] = _optax_prior_field(prior_config, reddening_key, 'loc', np.log(0.1))
+
+    if decompose_host and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
+        values.update(
+            _build_delayed_host_init_values(prior_config, fsps_grid)
+        )
+        aperture_key = (
+            'log_host_aperture_scale_std'
+            if standardized
+            else 'log_host_aperture_scale'
+        )
+        values[aperture_key] = (
+            0.0
+            if standardized
+            else _optax_prior_field(prior_config, 'log_host_aperture_scale', 'value', 0.0)
+        )
+    return values
+
+
 def _build_line_init_values(tied_line_meta, prior_config, *, use_lines=True):
     """Initialize all tied-line latent coordinates at their prior locations."""
     values = {}
@@ -2162,6 +2299,67 @@ class JAXQSOFit:
                 f"FitConfig fields before calling fit(). Received: {', '.join(sorted(kwargs))}."
             )
 
+        prep = self._prepare_fit(verbose=verbose)
+        method = prep["method"]
+        run_kwargs = prep["run_kwargs"]
+        if kwargs_plot is None:
+            kwargs_plot = {}
+        if 'show_plot' not in kwargs_plot:
+            kwargs_plot['show_plot'] = prep["show_plot"]
+
+        if method == 'nuts':
+            self.run_fsps_numpyro_fit(**prep["nuts_kwargs"], **run_kwargs)
+        elif method == 'optax':
+            self.run_fsps_optax_fit(
+                num_steps=prep["optax_steps"],
+                learning_rate=prep["optax_lr"],
+                plot_init=prep["plot_init"],
+                **run_kwargs,
+            )
+        elif method == 'optax+nuts':
+            nuts_kwargs = dict(prep["nuts_kwargs"])
+            self.run_fsps_optax_nuts_fit(
+                optax_steps=prep["optax_steps"],
+                optax_learning_rate=prep["optax_lr"],
+                plot_init=prep["plot_init"],
+                **nuts_kwargs,
+                **run_kwargs,
+            )
+        else:
+            raise ValueError(f"Unknown inference method='{method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
+
+        posterior_bundle_path = None
+        if prep["save_result"]:
+            self.save_result(self.conti_result, self.conti_result_type, self.conti_result_name,
+                             self.line_result, self.line_result_type, self.line_result_name,
+                             prep["save_fits_name"])
+            posterior_bundle_path = self.save_posterior_bundle()
+        if prep["plot_fig"]:
+            self.plot_fig(**kwargs_plot)
+        return self._make_result(
+            method=method,
+            path=posterior_bundle_path,
+            figure=getattr(self, "fig", None),
+        )
+
+    def _prepare_fit(self, *, verbose=True):
+        """Preprocess the spectrum and build the inputs of one configured fit.
+
+        Runs the preprocessing and prior construction of :meth:`fit` without
+        inference and returns the settings :meth:`fit` dispatches on. Batched fits
+        (:func:`jaxqsofit.fit_batch`) use it to prepare many fitters.
+
+        Parameters
+        ----------
+        verbose : bool, optional
+            Verbose optimizer output where applicable.
+
+        Returns
+        -------
+        dict
+            ``method``, inference settings, ``run_kwargs`` shared by the
+            ``run_fsps_*`` drivers, and output settings.
+        """
         cfg = self.config
         obs_cfg = cfg.observation
         prep_cfg = cfg.preprocessing
@@ -2234,10 +2432,6 @@ class JAXQSOFit:
         custom_components = line_cfg.custom_components
         custom_line_components = line_cfg.custom_line_components
 
-        if kwargs_plot is None:
-            kwargs_plot = {}
-        if 'show_plot' not in kwargs_plot:
-            kwargs_plot['show_plot'] = show_plot
 
         # Persist fit configuration so posterior reconstructions can be built on
         # alternate wavelength grids after fitting.
@@ -2446,8 +2640,30 @@ class JAXQSOFit:
             use_psf_phot=use_psf_phot,
         )
 
-        if method == 'nuts':
-            self.run_fsps_numpyro_fit(
+        return {
+            "method": method,
+            "run_kwargs": dict(
+                age_grid_gyr=fsps_age_grid,
+                logzsol_grid=fsps_logzsol_grid,
+                prior_config=prior_config,
+                dsps_ssp_fn=dsps_ssp_fn,
+                use_lines=fit_lines,
+                decompose_host=decompose_host,
+                fit_pl=fit_pl,
+                fit_fe=fit_fe,
+                fit_bc=fit_bc,
+                fit_poly=fit_poly,
+                fit_reddening=fit_reddening,
+                fit_poly_order=fit_poly_order,
+                psf_mags=psf_mags_use,
+                psf_mag_errs=psf_mag_errs_use,
+                psf_filter_curves=psf_filter_curves_use,
+                use_psf_phot=use_psf_phot_use,
+                custom_components=self._fit_custom_components,
+                custom_line_components=self._fit_custom_line_components,
+                random_seed=random_seed,
+            ),
+            "nuts_kwargs": dict(
                 num_warmup=nuts_warmup,
                 num_samples=nuts_samples,
                 num_chains=nuts_chains,
@@ -2455,99 +2671,15 @@ class JAXQSOFit:
                 dense_mass=nuts_dense_mass,
                 max_tree_depth=nuts_max_tree_depth,
                 warmup_max_tree_depth=nuts_warmup_max_tree_depth,
-                age_grid_gyr=fsps_age_grid,
-                logzsol_grid=fsps_logzsol_grid,
-                prior_config=prior_config,
-                dsps_ssp_fn=dsps_ssp_fn,
-                use_lines=fit_lines,
-                decompose_host=decompose_host,
-                fit_pl=fit_pl,
-                fit_fe=fit_fe,
-                fit_bc=fit_bc,
-                fit_poly=fit_poly,
-                fit_reddening=fit_reddening,
-                fit_poly_order=fit_poly_order,
-                psf_mags=psf_mags_use,
-                psf_mag_errs=psf_mag_errs_use,
-                psf_filter_curves=psf_filter_curves_use,
-                use_psf_phot=use_psf_phot_use,
-                custom_components=self._fit_custom_components,
-                custom_line_components=self._fit_custom_line_components,
-                random_seed=random_seed,
-            )
-        elif method == 'optax':
-            self.run_fsps_optax_fit(
-                num_steps=optax_steps,
-                learning_rate=optax_lr,
-                age_grid_gyr=fsps_age_grid,
-                logzsol_grid=fsps_logzsol_grid,
-                prior_config=prior_config,
-                dsps_ssp_fn=dsps_ssp_fn,
-                use_lines=fit_lines,
-                decompose_host=decompose_host,
-                fit_pl=fit_pl,
-                fit_fe=fit_fe,
-                fit_bc=fit_bc,
-                fit_poly=fit_poly,
-                fit_reddening=fit_reddening,
-                fit_poly_order=fit_poly_order,
-                psf_mags=psf_mags_use,
-                psf_mag_errs=psf_mag_errs_use,
-                psf_filter_curves=psf_filter_curves_use,
-                use_psf_phot=use_psf_phot_use,
-                custom_components=self._fit_custom_components,
-                custom_line_components=self._fit_custom_line_components,
-                plot_init=plot_init,
-                random_seed=random_seed,
-            )
-        elif method == 'optax+nuts':
-            self.run_fsps_optax_nuts_fit(
-                optax_steps=optax_steps,
-                optax_learning_rate=optax_lr,
-                num_warmup=nuts_warmup,
-                num_samples=nuts_samples,
-                num_chains=nuts_chains,
-                target_accept_prob=nuts_target_accept,
-                dense_mass=nuts_dense_mass,
-                max_tree_depth=nuts_max_tree_depth,
-                warmup_max_tree_depth=nuts_warmup_max_tree_depth,
-                age_grid_gyr=fsps_age_grid,
-                logzsol_grid=fsps_logzsol_grid,
-                prior_config=prior_config,
-                dsps_ssp_fn=dsps_ssp_fn,
-                use_lines=fit_lines,
-                decompose_host=decompose_host,
-                fit_pl=fit_pl,
-                fit_fe=fit_fe,
-                fit_bc=fit_bc,
-                fit_poly=fit_poly,
-                fit_reddening=fit_reddening,
-                fit_poly_order=fit_poly_order,
-                psf_mags=psf_mags_use,
-                psf_mag_errs=psf_mag_errs_use,
-                psf_filter_curves=psf_filter_curves_use,
-                use_psf_phot=use_psf_phot_use,
-                custom_components=self._fit_custom_components,
-                custom_line_components=self._fit_custom_line_components,
-                plot_init=plot_init,
-                random_seed=random_seed,
-            )
-        else:
-            raise ValueError(f"Unknown inference method='{method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
-
-        posterior_bundle_path = None
-        if save_result:
-            self.save_result(self.conti_result, self.conti_result_type, self.conti_result_name,
-                             self.line_result, self.line_result_type, self.line_result_name,
-                             save_fits_name)
-            posterior_bundle_path = self.save_posterior_bundle()
-        if plot_fig:
-            self.plot_fig(**kwargs_plot)
-        return self._make_result(
-            method=method,
-            path=posterior_bundle_path,
-            figure=getattr(self, "fig", None),
-        )
+            ),
+            "optax_steps": optax_steps,
+            "optax_lr": optax_lr,
+            "plot_init": plot_init,
+            "save_result": save_result,
+            "plot_fig": plot_fig,
+            "show_plot": show_plot,
+            "save_fits_name": save_fits_name,
+        }
 
     def run_fsps_numpyro_fit(self, num_warmup=500, num_samples=1000, num_chains=1,
                              target_accept_prob=0.9,
@@ -3140,36 +3272,6 @@ class JAXQSOFit:
         )
         self.tied_line_meta = tied_line_meta
 
-        def _stage1_continuum_keep_mask(wave_in):
-            """Mask strong optical emission-line windows for continuum warm start.
-
-            Parameters
-            ----------
-            wave_in : object
-                wave_in value.
-            """
-            line_windows = (
-                (2700.0, 2900.0),   # Mg II
-                (3700.0, 3755.0),   # [O II]
-                (3850.0, 3895.0),   # [Ne III]
-                (4070.0, 4135.0),   # Hdelta
-                (4300.0, 4385.0),   # Hgamma + [O III] 4363
-                (4630.0, 5105.0),   # He II, Hbeta, [O III]
-                (5800.0, 5925.0),   # He I
-                (6250.0, 6405.0),   # [O I]
-                (6450.0, 6775.0),   # Halpha, [N II], [S II]
-                (7050.0, 7165.0),   # He I / [Ar III]
-                (7300.0, 7355.0),   # [O II]
-            )
-            wave_in = np.asarray(wave_in, dtype=float)
-            keep = np.isfinite(wave_in)
-            for lo, hi in line_windows:
-                keep &= ~((wave_in >= lo) & (wave_in <= hi))
-            min_keep = max(50, int(0.2 * wave_in.size))
-            if int(np.sum(keep)) < min_keep:
-                return np.isfinite(wave_in)
-            return keep
-
         def _subset_psf_filter_curves(curves, keep_mask):
             """Return PSF filter curves restricted to a wavelength subset.
 
@@ -3283,107 +3385,6 @@ class JAXQSOFit:
             )
             return svi, result
 
-        def _prior_field(key, field, default):
-            """Read a scalar field from a prior-config entry.
-
-            Parameters
-            ----------
-            key : object
-                key value.
-            field : object
-                field value.
-            default : object
-                default value.
-            """
-            cfg = prior_config.get(key, default)
-            if isinstance(cfg, dict):
-                value = cfg.get(field, cfg.get('value', cfg.get('loc', default)))
-            elif isinstance(cfg, dist.Distribution):
-                base_dist = getattr(cfg, 'base_dist', cfg)
-                value = getattr(cfg, field, getattr(base_dist, field, getattr(base_dist, 'loc', default)))
-            elif isinstance(cfg, (tuple, list)) and len(cfg) > 0:
-                value = cfg[0]
-            else:
-                value = cfg
-            try:
-                value = float(np.asarray(value, dtype=float))
-            except Exception:
-                value = float(default)
-            return value if np.isfinite(value) else float(default)
-
-        def _stage1_init_values():
-            """Build data-scale-aware constrained initial values for stage 1."""
-            standardized = bool(
-                prior_config.get("standardize_active_priors", False)
-            )
-            pl_init = _prior_field('PL_norm', 'scale', max(0.5 * np.nanmedian(np.abs(flux)), 1e-8))
-            host_sfh_model = str(prior_config.get("host_sfh_model", "flexible")).lower()
-            use_direct_host_amp = not (
-                decompose_host
-                and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}
-                and getattr(fsps_grid, "host_basis_jax", None) is not None
-            )
-
-            values = (
-                {
-                    'gal_v_kms_std': 0.0,
-                    'log_gal_sigma_kms_std': 0.0,
-                }
-                if standardized
-                else {
-                    'gal_v_kms': 0.0,
-                    'log_gal_sigma_kms': _prior_field(
-                        'log_gal_sigma_kms', 'loc', np.log(150.0)
-                    ),
-                }
-            )
-            if decompose_host and use_direct_host_amp:
-                if standardized:
-                    values['cont_norm_std'] = 0.0
-                else:
-                    values['cont_norm'] = max(
-                        np.exp(
-                            _prior_field(
-                                'log_cont_norm',
-                                'loc',
-                                np.log(max(np.nanmedian(np.abs(flux)), 1e-8)),
-                            )
-                        ),
-                        1e-8,
-                    )
-                values['log_frac_host'] = _prior_field('log_frac_host', 'loc', 0.0)
-            if fit_pl:
-                if fit_reddening and bool(prior_config.get("residualize_reddening_geometry", False)):
-                    values['PL_apparent_log_norm_std'] = np.array(0.0)
-                    values['PL_apparent_slope_std'] = np.array(0.0)
-                elif standardized:
-                    values['PL_norm_std'] = np.array(0.0)
-                    values['PL_slope_std'] = np.array(0.0)
-                else:
-                    values['PL_norm'] = max(pl_init, 1e-8)
-                if fit_reddening:
-                    reddening_key = 'log_ebv' if 'log_ebv' in prior_config else 'log_reddening_a2500'
-                    if standardized:
-                        values[f'{reddening_key}_std'] = np.array(0.0)
-                    else:
-                        values[reddening_key] = _prior_field(reddening_key, 'loc', np.log(0.1))
-
-            if decompose_host and host_sfh_model in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
-                values.update(
-                    _build_delayed_host_init_values(prior_config, fsps_grid)
-                )
-                aperture_key = (
-                    'log_host_aperture_scale_std'
-                    if standardized
-                    else 'log_host_aperture_scale'
-                )
-                values[aperture_key] = (
-                    0.0
-                    if standardized
-                    else _prior_field('log_host_aperture_scale', 'value', 0.0)
-                )
-            return values
-
         # Stage 1: warm start on the continuum/host landscape. Keep reddening
         # active when requested so the stage-1 and stage-2 power-law latent
         # parameterizations match and the continuum MAP transfers correctly.
@@ -3391,7 +3392,14 @@ class JAXQSOFit:
         stage1_keep = _stage1_continuum_keep_mask(wave)
         self.init_stage1_keep_mask = stage1_keep
         psf_filter_curves_stage1 = _subset_psf_filter_curves(psf_filter_curves, stage1_keep)
-        stage1_init_values = _stage1_init_values()
+        stage1_init_values = _optax_stage1_init_values(
+            prior_config,
+            flux,
+            fsps_grid,
+            decompose_host=decompose_host,
+            fit_pl=fit_pl,
+            fit_reddening=fit_reddening,
+        )
         guide1 = AutoDelta(
             qso_fsps_joint_model,
             init_loc_fn=init_to_value(values=stage1_init_values),

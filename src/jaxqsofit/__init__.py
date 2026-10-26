@@ -24,6 +24,7 @@ from .config import (
 
 __all__ = [
     "JAXQSOFit",
+    "fit_batch",
     "FitConfig",
     "FitResult",
     "Observation",
@@ -78,6 +79,10 @@ def __getattr__(name):
         from .core import JAXQSOFit
 
         return JAXQSOFit
+    if name == "fit_batch":
+        from .batch import fit_batch
+
+        return fit_batch
     if name in {"FitResult", "PredictionResult"}:
         from . import results as _results
 

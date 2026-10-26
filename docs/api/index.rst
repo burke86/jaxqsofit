@@ -9,6 +9,7 @@ Primary Interface
 -----------------
 
 - :class:`jaxqsofit.JAXQSOFit`
+- :func:`jaxqsofit.fit_batch`
 - :class:`jaxqsofit.FitConfig`
 - :class:`jaxqsofit.FitResult`
 - :func:`jaxqsofit.load_from_samples`
