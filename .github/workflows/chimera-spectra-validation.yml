@@ -38,9 +38,9 @@ jobs:
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PLOT_BRANCH: chimera-spectra-validation-plots
-      # jaxsedfit commits holding the Chimera spectra and the photometric truths.
-      SPECTRA_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/7a6d6a3deefc69bb12ba1baac1b9888af15c61d5/benchmarks/data/chimera_validation_spectra.fits
-      SAMPLE_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/f8a13f63b385f7a6201ac87da758df5847c0e8ff/benchmarks/data/chimera_validation_sample.csv
+      # jaxsedfit main commit holding the Chimera spectra and the photometric truths.
+      SPECTRA_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/31a827491d2c2758b3881a33ba1485bd80b36cd9/benchmarks/data/chimera_validation_spectra.fits
+      SAMPLE_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/31a827491d2c2758b3881a33ba1485bd80b36cd9/benchmarks/data/chimera_validation_sample.csv
 
     steps:
       - name: Check out repository

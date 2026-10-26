@@ -24,11 +24,18 @@ def test_log_sfr_matches_jaxsedfit_delayed_sfh():
     age, tau, formed = 5.0, 2.0, 3.0e10
     pred = {"sfh_age_gyr": np.array([age]), "sfh_tau_gyr": np.array([tau]), "formed_stellar_mass": np.array([formed])}
     expected = formed * float(_cigale_delayed_sfh_shape(age, tau, age)) / (float(_delayed_sfh_cumulative_mass(age, tau)) * 1.0e9)
-    assert np.isclose(validation._log_sfr(pred), np.log10(expected))
+    assert np.allclose(validation._log_sfr(pred), np.log10(expected))
 
 
 def test_log_lbol_uses_shen11_corrections():
     pred = {f"log_lambda_Llambda_{w}_agn": np.array([44.0 + i]) for i, w in enumerate((5100, 3000, 1350))}
-    assert np.isclose(validation._log_lbol(pred, 0.5), 44.0 + np.log10(9.26))
-    assert np.isclose(validation._log_lbol(pred, 1.0), 45.0 + np.log10(5.15))
-    assert np.isclose(validation._log_lbol(pred, 2.5), 46.0 + np.log10(3.81))
+    assert np.allclose(validation._log_lbol(pred, 0.5), 44.0 + np.log10(9.26))
+    assert np.allclose(validation._log_lbol(pred, 1.0), 45.0 + np.log10(5.15))
+    assert np.allclose(validation._log_lbol(pred, 2.5), 46.0 + np.log10(3.81))
+
+
+def test_summary_uses_draw_percentiles():
+    out = validation._summary(np.linspace(0.0, 1.0, 1001), "x")
+    assert np.isclose(out["x_fit"], 0.5)
+    assert np.isclose(out["x_p02275"], 0.02275) and np.isclose(out["x_p97725"], 0.97725)
+    assert np.isnan(validation._summary([np.nan], "y")["y_fit"])

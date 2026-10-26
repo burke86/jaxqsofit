@@ -25,9 +25,10 @@ Emission lines
     its photometry (moving the quasar to the host redshift leaves line fluxes
     unchanged); the FWHM does not depend on either.
 
-Point estimates are MAPs. The fitted SFR is the current SFR of the delayed-tau
-SFH; line FWHM and flux are measured on the sum of the line's broad and narrow
-components.
+Each quantity is computed for every Laplace draw (``fit_batch(method="laplace")``);
+the point estimate is the median of the draws and the interval spans their 2.3rd to
+97.7th percentiles. The fitted SFR is the current SFR of the delayed-tau SFH; line
+FWHM and flux are measured on the sum of the line's broad and narrow components.
 
 Subcommands
 -----------
@@ -208,42 +209,57 @@ def build_fitter(row, *, resolving_power, dsps_ssp_fn, steps):
 
 
 def _line(q, prefix, rest_wave):
-    """MAP FWHM [km/s] and flux [1e-17 erg/s/cm2] of a whole (broad + narrow) line, or NaNs if not covered."""
+    """FWHM [km/s] and flux [1e-17 erg/s/cm2] of a whole (broad + narrow) line per draw, or None if not covered."""
     lnw = np.log(np.asarray(q.wave, dtype=float))
     window = np.abs(lnw - np.log(rest_wave)) < LINE_WINDOW_LN
     step = float(np.median(np.diff(lnw)))
     if window.sum() < LINE_COVERAGE * 2 * LINE_WINDOW_LN / step:
-        return np.nan, np.nan
+        return None
     names = [str(n) for n in q.tied_line_meta["names"]]
     members = [i for i, n in enumerate(names) if n.split("_", 1)[0] == prefix]
     if not members:
-        return np.nan, np.nan
+        return None
     po = q.pred_out
-    amp, mu, sig = (np.asarray(po[f"line_{k}_per_component"], dtype=float).reshape(-1, len(names))[0, members]
+    amp, mu, sig = (np.asarray(po[f"line_{k}_per_component"], dtype=float).reshape(-1, len(names))[:, members]
                     for k in ("amp", "mu", "sig"))
     grid = np.log(rest_wave) + np.linspace(-0.1, 0.1, 20001)
-    profile = np.sum(amp[:, None] * np.exp(-0.5 * ((grid[None, :] - mu[:, None]) / sig[:, None]) ** 2), axis=0)
-    # The fitted flux is in rest-frame units ((1 + z) f_lambda), so its rest-frame integral is the observed flux.
-    fwhm, flux = q.line_props(profile, np.exp(grid))
-    return float(fwhm), float(flux)
+    fwhm, flux = [], []
+    for a_d, m_d, s_d in zip(amp, mu, sig):
+        profile = np.sum(a_d[:, None] * np.exp(-0.5 * ((grid[None, :] - m_d[:, None]) / s_d[:, None]) ** 2), axis=0)
+        # The fitted flux is in rest-frame units ((1 + z) f_lambda), so its rest-frame integral is the observed flux.
+        f, area = q.line_props(profile, np.exp(grid))
+        fwhm.append(f)
+        flux.append(area)
+    return np.asarray(fwhm, dtype=float), np.asarray(flux, dtype=float)
 
 
 def _log_sfr(po):
-    """Current SFR [Msun/yr] of the delayed-tau SFH at the MAP: SFR(t) = t exp(-t/tau) / tau^2."""
-    age = float(np.ravel(po["sfh_age_gyr"])[0])
-    tau = float(np.ravel(po["sfh_tau_gyr"])[0])
-    formed = float(np.ravel(po["formed_stellar_mass"])[0])
+    """Current SFR [Msun/yr] of the delayed-tau SFH per draw: SFR(t) = t exp(-t/tau) / tau^2."""
+    age = np.ravel(np.asarray(po["sfh_age_gyr"], dtype=float))
+    tau = np.ravel(np.asarray(po["sfh_tau_gyr"], dtype=float))
+    formed = np.ravel(np.asarray(po["formed_stellar_mass"], dtype=float))
     x = age / tau
     shape = x * np.exp(-x) / tau            # SFR(age) for unit formed mass, per Gyr
     total = -np.expm1(-x) - x * np.exp(-x)  # formed mass for unit normalization
-    return float(np.log10(formed * shape / total / 1.0e9))
+    return np.log10(formed * shape / total / 1.0e9)
 
 
 def _log_lbol(po, z):
+    """AGN bolometric luminosity per draw with the Shen et al. (2011) corrections."""
     for wave, correction, z_max in BOLOMETRIC_CORRECTIONS:
         if z < z_max:
-            return float(np.ravel(po[f"log_lambda_Llambda_{wave}_agn"])[0] + np.log10(correction))
-    return np.nan
+            return np.ravel(np.asarray(po[f"log_lambda_Llambda_{wave}_agn"], dtype=float)) + np.log10(correction)
+    return np.array([np.nan])
+
+
+def _summary(values, prefix):
+    """Median and 2.3/97.7 percentiles of the draws, keyed ``{prefix}_fit``/``_p02275``/``_p97725``."""
+    values = np.asarray(values, dtype=float)
+    values = values[np.isfinite(values)]
+    if values.size == 0:
+        return {f"{prefix}_fit": np.nan, f"{prefix}_p02275": np.nan, f"{prefix}_p97725": np.nan}
+    lo, med, hi = np.percentile(values, [2.275, 50.0, 97.725])
+    return {f"{prefix}_fit": float(med), f"{prefix}_p02275": float(lo), f"{prefix}_p97725": float(hi)}
 
 
 def _release_memory() -> None:
@@ -256,7 +272,7 @@ def _release_memory() -> None:
             pass
 
 
-def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk, slice_size):
+def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk, slice_size, num_samples):
     """Fit in redshift-ordered slices, keeping only the measured values of each slice.
 
     A fitted ``JAXQSOFit`` holds its host template grid (about 40 MB), so fitting
@@ -274,7 +290,7 @@ def fit_sample(spectra, sample, lines, *, dsps_ssp_fn, steps, chunk, slice_size)
             fitters = [build_fitter(r, resolving_power=spectra.meta["SPEC_RES"], dsps_ssp_fn=dsps_ssp_fn,
                                     steps=steps) for r in part]
             t0 = time.time()
-            fits = fit_batch(fitters, method="map", chunk_size=chunk)
+            fits = fit_batch(fitters, method="laplace", chunk_size=chunk, num_samples=num_samples)
             elapsed += time.time() - t0
         results += [_measure(row, q, fit, sample, lines) for row, q, fit in zip(part, fitters, fits)]
         del fitters, fits
@@ -296,20 +312,23 @@ def _measure(row, q, fit, sample, lines):
         "chimera_QSO_weight": float(row["chimera_QSO_weight"]),
         "luminosity_bin_index": int(truth["luminosity_bin_index"]),
         "log_stellar_mass_truth": float(truth["log_stellar_mass_truth"]),
-        "log_stellar_mass_fit": float(np.ravel(fit.samples["log_stellar_mass"])[0]),
+        "log_stellar_mass_map": float(np.ravel(q.optax_map_point["log_stellar_mass"])[0]),
+        **_summary(np.ravel(fit.samples["log_stellar_mass"]), "log_stellar_mass"),
         "log_lbol_agn_truth": float(truth["log_lbol_chimera_truth"]),
-        "log_lbol_agn_fit": _log_lbol(po, z),
+        **_summary(_log_lbol(po, z), "log_lbol_agn"),
         "log_sfr_truth": float(truth["log_sfr_truth"]),
-        "log_sfr_fit": _log_sfr(po),
+        **_summary(_log_sfr(po), "log_sfr"),
         "map_loss": float(q.batch_diagnostics["loss"]),
+        "hessian_min_eigenvalue": q.batch_diagnostics["hessian_min_eigenvalue"],
     }
     line_truth = lines.get(result["sdss_name"], {})
     # Chimera line flux = quasar line flux x QSO weight x scale of the quasar spectrum to its photometry.
     flux_scale = float(row["chimera_QSO_weight"]) * float(row["qso_scale"])
     for prefix, base, rest_wave, _ in LINES:
-        fwhm, flux = _line(q, prefix, rest_wave)
+        measured = _line(q, prefix, rest_wave)
         key = base.lower()
-        result[f"{key}_fwhm_fit"], result[f"{key}_flux_fit"] = fwhm, flux
+        for kind, values in zip(("fwhm", "flux"), measured if measured is not None else ([np.nan], [np.nan])):
+            result.update(_summary(values, f"{key}_{kind}"))
         result[f"{key}_fwhm_truth"] = float(line_truth.get(f"{key}_fwhm_kms", np.nan))
         result[f"{key}_flux_truth"] = float(line_truth.get(f"{key}_flux_1e17", np.nan)) * flux_scale
     return result
@@ -342,6 +361,13 @@ def _scored(result, name) -> bool:
     return True
 
 
+def _coverage(rows, prefix):
+    """Fraction of rows whose truth lies inside the 95% interval of ``prefix``."""
+    inside = [r[f"{prefix}_p02275"] <= r[f"{prefix}_truth"] <= r[f"{prefix}_p97725"] for r in rows
+              if np.isfinite(r[f"{prefix}_p02275"])]
+    return float(np.mean(inside)) if inside else np.nan
+
+
 def _line_pairs(results, base, kind):
     """(truth, fit, result) for chimeras whose line is covered and has a Wu & Shen value."""
     key = base.lower()
@@ -358,17 +384,18 @@ def compute_metrics(results) -> dict:
     for name in QUANTITIES:
         metrics[name] = []
         for b, label in enumerate(LUMINOSITY_BIN_LABELS):
-            res = [r[f"{name}_fit"] - r[f"{name}_truth"] for r in results
-                   if r["luminosity_bin_index"] == b and _scored(r, name)]
-            metrics[name].append({"bin": b, "label": label, **_stats(res)})
+            rows = [r for r in results if r["luminosity_bin_index"] == b and _scored(r, name)]
+            res = [r[f"{name}_fit"] - r[f"{name}_truth"] for r in rows]
+            metrics[name].append({"bin": b, "label": label, **_stats(res), "coverage": _coverage(rows, name)})
     for kind in LINE_PLOTS:
         metrics[f"line_{kind}"] = []
         for _, base, _, _ in LINES:
             for b, bin_label in enumerate(LUMINOSITY_BIN_LABELS):
-                pairs = [(t, f) for t, f, r in _line_pairs(results, base, kind) if r["luminosity_bin_index"] == b]
-                res = [np.log10(f / t) for t, f in pairs]
+                pairs = [(t, f, r) for t, f, r in _line_pairs(results, base, kind) if r["luminosity_bin_index"] == b]
+                res = [np.log10(f / t) for t, f, _ in pairs]
                 metrics[f"line_{kind}"].append({"line": base, "line_label": LINE_NAMES[base], "bin": b,
-                                                "label": bin_label, **_stats(res)})
+                                                "label": bin_label, **_stats(res),
+                                                "coverage": _coverage([r for _, _, r in pairs], f"{base.lower()}_{kind}")})
     return metrics
 
 
@@ -392,6 +419,8 @@ def plot_quantity(results, metrics, name, path: Path) -> None:
     ylim = 3.0
     truth = np.array([r[f"{name}_truth"] for r in results])
     resid = np.array([r[f"{name}_fit"] for r in results]) - truth
+    lo95 = np.array([r[f"{name}_p02275"] for r in results]) - truth
+    hi95 = np.array([r[f"{name}_p97725"] for r in results]) - truth
     weight = np.array([r["chimera_QSO_weight"] for r in results])
     bins = np.array([r["luminosity_bin_index"] for r in results])
     scored = np.array([_scored(r, name) for r in results])
@@ -406,6 +435,11 @@ def plot_quantity(results, metrics, name, path: Path) -> None:
         ax.axhline(0.0, color="black", lw=1.0, ls="--", zorder=0)
         for y in (OUTLIER_DEX, -OUTLIER_DEX):
             ax.axhline(y, color="0.55", lw=0.9, ls=":", zorder=0)
+        bars = sel & scored & ~clipped
+        # The median can fall outside a skewed interval's percentiles only by rounding; clip at zero.
+        yerr = np.clip(np.vstack([resid[bars] - lo95[bars], hi95[bars] - resid[bars]]), 0.0, None)
+        ax.errorbar(truth[bars], resid[bars], yerr=yerr, fmt="none", ecolor="0.55", elinewidth=0.8, capsize=1.5,
+                    alpha=0.55, zorder=1)
         for subset, marker in ((sel & scored & ~clipped, "o"), (sel & scored & clipped, "^")):
             scatter = ax.scatter(truth[subset], shown[subset], c=weight[subset], cmap="viridis", norm=norm, s=42,
                                  alpha=0.9, marker=marker, edgecolor="black", linewidth=0.35, zorder=2)
@@ -446,9 +480,17 @@ def plot_lines(results, kind, path: Path) -> None:
         for factor in (10**OUTLIER_DEX, 10**-OUTLIER_DEX):
             ax.plot([lo, hi], [lo * factor, hi * factor], color="0.55", lw=0.9, ls=":", zorder=0)
         for b, bin_label in enumerate(LUMINOSITY_BIN_LABELS):
-            sel = [(t, f) for t, f, r in pairs if r["luminosity_bin_index"] == b]
+            sel = [(t, f, r) for t, f, r in pairs if r["luminosity_bin_index"] == b]
             if sel:
-                t, f = np.array(sel).T
+                key = f"{base.lower()}_{kind}"
+                t = np.array([x[0] for x in sel])
+                f = np.array([x[1] for x in sel])
+                f_lo = np.array([x[2][f"{key}_p02275"] for x in sel])
+                f_hi = np.array([x[2][f"{key}_p97725"] for x in sel])
+                inside = (f > lo) & (f < hi)
+                yerr = np.clip(np.vstack([f - f_lo, f_hi - f]), 0.0, None)[:, inside]
+                ax.errorbar(t[inside], f[inside], yerr=yerr, fmt="none", ecolor=colors[b], elinewidth=0.8,
+                            alpha=0.45, zorder=1)
                 ax.scatter(t, np.clip(f, lo, hi), s=36, color=colors[b], edgecolor="black", linewidth=0.35,
                            alpha=0.9, label=bin_label, zorder=2)
         res = [np.log10(f / t) for t, f, _ in pairs]
@@ -469,12 +511,12 @@ def plot_lines(results, kind, path: Path) -> None:
 
 
 def _table(rows, first_col, first_key):
-    lines = [f"| {first_col} | N | median Δ | NMAD | RMS | outliers |", "|---|---:|---:|---:|---:|---:|"]
+    lines = [f"| {first_col} | N | median Δ | NMAD | RMS | outliers | in 95% |", "|---|---:|---:|---:|---:|---:|---:|"]
     for m in rows:
         if m["n"] == 0:
             continue
         lines.append(f"| {m[first_key]} | {m['n']} | {m['median']:+.3f} | {m['nmad']:.3f} | {m['rms']:.3f} | "
-                     f"{100 * m['outlier_fraction']:.1f}% |")
+                     f"{100 * m['outlier_fraction']:.1f}% | {100 * m['coverage']:.0f}% |")
     return lines
 
 
@@ -485,10 +527,11 @@ def write_comment(path: Path, metrics, *, n_objects, sha, elapsed, image_base_ur
     lines = [
         f"## {COMMENT_MARKER}",
         "",
-        f"Commit `{sha}` · {n_objects} Chimera spectra · spectrum-only MAP (`fit_batch`) in {elapsed / 60:.1f} min · "
+        f"Commit `{sha}` · {n_objects} Chimera spectra · spectrum-only MAP + Laplace (`fit_batch`) in {elapsed / 60:.1f} min · "
         "reported, not gated",
         "",
-        f"Residual = MAP − truth in bins of injected AGN luminosity (log erg/s); outlier: |Δ| > {OUTLIER_DEX} dex.",
+        f"Residual = posterior median − truth in bins of injected AGN luminosity (log erg/s); outlier: |Δ| > {OUTLIER_DEX} dex; "
+        "“in 95%”: fraction of truths inside the Laplace 95% interval (statistical errors only).",
     ]
     for name, q in QUANTITIES.items():
         lines += ["", f"### {q['title']}", ""]
@@ -522,7 +565,7 @@ def run(args) -> int:
     print(f"[chimera-spectra] fitting {len(spectra)} spectra", flush=True)
 
     results, elapsed = fit_sample(spectra, sample, lines, dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps,
-                                  chunk=args.chunk, slice_size=args.slice)
+                                  chunk=args.chunk, slice_size=args.slice, num_samples=args.samples)
     metrics = compute_metrics(results)
     (out / "results.json").write_text(json.dumps(results, indent=1))
     (out / "metrics.json").write_text(json.dumps({**metrics, "elapsed_s": elapsed}, indent=2))
@@ -557,6 +600,7 @@ def main(argv=None) -> int:
     p.add_argument("--slice", type=int, default=32,
                    help="Spectra per fit_batch call; fitters are released after each slice to bound memory.")
     p.add_argument("--steps", type=int, default=2000, help="MAP steps.")
+    p.add_argument("--samples", type=int, default=100, help="Laplace draws per spectrum.")
     p.add_argument("--limit", type=int, default=None, help="Fit only the first N spectra (quick look).")
     p.add_argument("--sha", default="local")
     p.add_argument("--image-base-url", default=None, help="URL of the directory holding the plots.")

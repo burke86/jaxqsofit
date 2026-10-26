@@ -31,7 +31,7 @@ galaxy spectrum from DESI DR1 or LEGA-C plus a weighted SDSS DR7 quasar spectrum
 with `jaxqsofit.fit_batch`, spectrum only, and compares the recovered values with
 the truths:
 
-| Quantity | Fitted (MAP) | Truth |
+| Quantity | Fitted (median of Laplace draws) | Truth |
 |---|---|---|
 | Stellar mass | `log_stellar_mass` | COSMOS2015 LePhare mass of the host |
 | AGN bolometric luminosity | power-law λLλ × Shen et al. (2011) correction (9.26 at 5100 Å below z = 0.7, 5.15 at 3000 Å below z = 1.9, else 3.81 at 1350 Å) | Shen et al. (2011) `logLbol` + log10(QSO weight) |
@@ -41,10 +41,11 @@ the truths:
 The spectra and the photometric truths come from jaxsedfit's Chimera validation
 sample (`benchmarks/data/chimera_validation_spectra.fits` and
 `chimera_validation_sample.csv`); the workflow downloads them from fixed jaxsedfit
-commits. The host aperture scale is fixed at one, because the spectra are scaled
-to the total photometry. Point estimates are MAPs: `fit_batch`'s Laplace step gave
-non-positive-definite Hessians for many of these spectra, so its draws are not
-used. Spectra are fitted in redshift-ordered slices (`--slice`, default 32) and
+commit. The host aperture scale is fixed at one, because the spectra are scaled
+to the total photometry. The fits use `fit_batch(method="laplace")`: every quantity
+is computed per draw, the point estimate is the median and the interval spans the
+2.3rd to 97.7th percentiles. The tables also give the fraction of truths inside
+that interval; Laplace errors are statistical only, so expect it below 95%. Spectra are fitted in redshift-ordered slices (`--slice`, default 32) and
 each slice's fitters are released before the next, because a fitted `JAXQSOFit`
 holds about 40 MB.
 
