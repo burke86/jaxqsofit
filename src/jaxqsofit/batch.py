@@ -27,7 +27,7 @@ from typing import Any, Sequence
 import jax
 import jax.numpy as jnp
 import numpy as np
-from numpyro.infer import Predictive
+from numpyro import handlers
 
 from jaxsedfit.batched import BatchedInputs, make_batched_fitter
 from jaxsedfit.config import serialize_config
@@ -62,6 +62,62 @@ def _batch_model(*, pixel_mask, stage1_pixel_mask, stage1=False, **kwargs):
         kwargs.update(_STAGE1_FLAGS)
         pixel_mask = stage1_pixel_mask
     return qso_fsps_joint_model(pixel_mask=pixel_mask, **kwargs)
+
+
+def _make_predictive(layout: BatchedInputs, return_sites: Sequence[str]):
+    """Compiled posterior predictive of ``return_sites`` for one chunk layout.
+
+    The counterpart of ``numpyro.infer.Predictive`` for a whole chunk: it loops over
+    draws and vmaps over spectra (vmapping over both would hold every draw's model
+    spectra at once). ``predict(samples, arrays, redshift, keys)`` takes the batched
+    fit's ``samples`` (leading object and draw axes) and returns each site with the
+    same leading axes, on the padded pixel grid.
+    """
+    # The fit switches the per-component outputs off; Predictive gets them, as in JAXQSOFit.fit.
+    model = layout.model(flux=None, return_line_components=True, emit_deterministics=True)
+
+    def one(draw, arrays, redshift, key):
+        tr = handlers.trace(handlers.seed(handlers.substitute(model, data=draw), key)).get_trace(arrays, redshift)
+        return {k: tr[k]["value"] for k in return_sites if k in tr}
+
+    objects = jax.vmap(one)
+
+    @jax.jit
+    def predict(samples, arrays, redshift, keys):
+        n_draws = next(iter(samples.values())).shape[1]
+        by_draw = {k: jnp.swapaxes(v, 0, 1) for k, v in samples.items()}
+        draw_keys = jnp.swapaxes(jax.vmap(lambda k: jax.random.split(k, n_draws))(keys), 0, 1)
+        out = jax.lax.map(lambda x: objects(x[0], arrays, redshift, x[1]), (by_draw, draw_keys))
+        return {k: jnp.swapaxes(v, 0, 1) for k, v in out.items()}
+
+    return predict
+
+
+def _window_layout(fitters, preps, window, table_range, n_pixels) -> BatchedInputs:
+    """Input layout of a redshift window, with every leaf that varies anywhere in it stacked.
+
+    Calibrating on the first chunk alone bakes leaves that happen to agree within it
+    into the compiled program, and a later chunk where they differ forces a
+    recompile (9 of 25 programs on the 241 Chimera spectra in slices of 16). Each
+    spectrum's inputs are built once here and compared with the first, without
+    holding them all.
+    """
+    first = _model_inputs(fitters[window[0]], preps[window[0]], table_range, n_pixels)
+    varying: set[int] = set()
+    for i in window[1:]:
+        other = _model_inputs(fitters[i], preps[i], table_range, n_pixels)
+        varying.update(BatchedInputs(_batch_model, [first, other]).varying)
+    layout = BatchedInputs(_batch_model, [first])
+    layout.varying = sorted(varying)
+    layout._varying_set = varying
+    return layout
+
+
+def _trim_pixels(values: np.ndarray, n_pixels: int, n_real: int) -> np.ndarray:
+    """Drop the padding from a per-pixel site (pixel axis last)."""
+    if n_real < n_pixels and values.ndim and values.shape[-1] == n_pixels:
+        return values[..., :n_real]
+    return values
 
 
 def _signature(q: JAXQSOFit, prep: dict[str, Any]) -> str:
@@ -270,8 +326,7 @@ def fit_batch(
         steps = int(preps[window[0]]["optax_steps"])
         stage1_steps = max(100, steps // 3)
 
-        def new_fitter(inputs):
-            layout = BatchedInputs(_batch_model, inputs)
+        def new_fitter(layout):
             return layout, make_batched_fitter(
                 layout,
                 method=kind,
@@ -283,27 +338,35 @@ def fit_batch(
                 continuum_model_kwargs={"stage1": True},
             )
 
-        layout = fit = None
+        layout = fit = predict = None
+        q0, run0 = fitters[window[0]], preps[window[0]]["run_kwargs"]
+        return_sites = q0._predictive_return_sites(custom_components=run0["custom_components"],
+                                                   custom_line_components=run0["custom_line_components"])
         for start in range(0, len(window), chunk_size):
             chunk = window[start:start + chunk_size]
             padded = list(chunk) + [chunk[-1]] * (chunk_size - len(chunk))
             inputs = [_model_inputs(fitters[i], preps[i], table_range, n_pixels) for i in padded]
             if layout is None:
-                layout, fit = new_fitter(inputs)
+                layout, fit = new_fitter(_window_layout(fitters, preps, window, table_range, n_pixels))
+                predict = _make_predictive(layout, return_sites)
             try:
                 arrays, redshift = layout.stack(inputs)
             except ValueError:
-                # A leaf that was constant in the first chunk varies here: recalibrate.
-                layout, fit = new_fitter(inputs)
+                # Not expected after calibrating on the whole window; recalibrate on this chunk.
+                layout, fit = new_fitter(BatchedInputs(_batch_model, inputs))
+                predict = _make_predictive(layout, return_sites)
                 arrays, redshift = layout.stack(inputs)
             init = [_init_values(fitters[i], preps[i], x) for i, x in zip(padded, inputs)]
             init_values = {k: np.stack([v[k] for v in init]) for k in init[0]}
             keys = jnp.stack([jax.random.fold_in(base_key, i) for i in padded])
             out = fit(arrays, redshift, keys, init_values=init_values)
+            pred_keys = jnp.stack([jax.random.fold_in(base_key, len(fitters) + i) for i in padded])
+            pred = jax.tree_util.tree_map(np.asarray, predict(out["samples"], arrays, redshift, pred_keys))
             for j, i in enumerate(chunk):
                 samples = {site: np.asarray(v[j]) for site, v in out["samples"].items()}
                 map_point = {site: np.asarray(v[j]) for site, v in out["map"].items()}
-                results[i] = _load_result(fitters[i], preps[i], table_range, samples, map_point, kind,
+                pred_out = {site: _trim_pixels(v[j], n_pixels, len(fitters[i].wave)) for site, v in pred.items()}
+                results[i] = _load_result(fitters[i], preps[i], table_range, samples, map_point, pred_out, kind,
                                           float(out["loss"][j]), out.get("hessian_min_eigenvalue", [None] * len(padded))[j])
             if progress is not None:
                 progress.update(1)
@@ -312,23 +375,14 @@ def fit_batch(
     return results
 
 
-def _load_result(q, prep, table_range, samples, map_point, kind, loss, min_eigenvalue):
-    """Leave ``q`` in its fitted state from batch draws, as ``run_fsps_optax_fit`` does."""
+def _load_result(q, prep, table_range, samples, map_point, pred_out, kind, loss, min_eigenvalue):
+    """Leave ``q`` in its fitted state from batch draws, as ``run_fsps_optax_fit`` does.
+
+    ``pred_out`` holds the posterior predictive sites of ``q``'s draws on its own
+    (unpadded) pixels.
+    """
     run = prep["run_kwargs"]
     inputs = _model_inputs(q, prep, table_range)  # unpadded, same line table
-    inputs.pop("stage1_pixel_mask")
-    inputs.pop("pixel_mask")
-    for key in ("flux", "return_line_components", "emit_deterministics"):
-        inputs.pop(key)
-    pred = Predictive(
-        qso_fsps_joint_model,
-        posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
-        return_sites=q._predictive_return_sites(
-            custom_components=run["custom_components"],
-            custom_line_components=run["custom_line_components"],
-        ),
-    )
-    pred_out = pred(jax.random.PRNGKey(int(run["random_seed"])), flux=None, **inputs)
     q._clear_nuts_run_state()
     q.numpyro_mcmc = None
     q.svi = q.svi_state = q.svi_params = None
