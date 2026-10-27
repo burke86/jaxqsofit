@@ -61,6 +61,7 @@ HERE = Path(__file__).resolve().parent
 DEFAULT_TRUTH = HERE / "data" / "chimera_line_truth.csv"
 LUMINOSITY_BIN_LABELS = ["L < 42", "42 ≤ L < 43", "43 ≤ L < 44", "44 ≤ L < 45"]
 OUTLIER_DEX = 0.5
+REDSHIFT_WINDOW = 0.25  # fit_batch's default redshift_window
 SFR_MIN_LOG_SSFR = -11.0
 COMMENT_MARKER = "jaxqsofit Chimera spectral validation"
 C_AA = 2.99792458e18
@@ -281,6 +282,25 @@ def _sorted_rows(spectra, limit=None):
     return sorted(rows, key=lambda r: float(r["redshift"]))
 
 
+def _slices(rows, max_size):
+    """(start, stop) of each slice of the redshift-sorted ``rows``.
+
+    Slices follow the redshift windows ``fit_batch`` forms (ln(1 + z) no wider than
+    REDSHIFT_WINDOW), so each slice compiles one fit program and one predictive;
+    windows with more than ``max_size`` spectra are split evenly.
+    """
+    lnz = [np.log1p(max(float(r["redshift"]), 0.0)) for r in rows]
+    bounds, start = [], 0
+    while start < len(rows):
+        stop = start + 1
+        while stop < len(rows) and lnz[stop] - lnz[start] <= REDSHIFT_WINDOW:
+            stop += 1
+        edges = np.linspace(start, stop, -(-(stop - start) // max_size) + 1).round().astype(int)
+        bounds += [(int(a), int(b)) for a, b in zip(edges[:-1], edges[1:])]
+        start = stop
+    return bounds
+
+
 def fit_rows(rows, sample, lines, *, resolving_power, dsps_ssp_fn, steps, chunk, num_samples):
     """Fit ``rows`` with one ``fit_batch`` call and return the measured values and the fit time."""
     from jaxqsofit import fit_batch
@@ -296,19 +316,19 @@ def fit_rows(rows, sample, lines, *, resolving_power, dsps_ssp_fn, steps, chunk,
 
 
 def fit_sample(args, spectra, sample, lines):
-    """Fit in redshift-ordered slices, keeping only the measured values of each slice.
+    """Fit in redshift-window slices, keeping only the measured values of each slice.
 
-    A fitted ``JAXQSOFit`` holds its host template grid and predictive draws (about
-    80 MB), and ``fit_batch`` keeps every fitter until it returns, so the spectra are
-    fitted ``--slice`` at a time. With ``--isolate-slices`` each slice runs in its own
-    Python process, which returns all of its memory to the OS when it exits; within
-    one process, compiled programs and glibc's allocator kept the memory floor rising
-    from slice to slice on CI runners.
+    ``fit_batch`` keeps every fitter until it returns (about 16 MB each at 50 draws),
+    so spectra are fitted one redshift window, of at most ``--slice`` spectra, at a
+    time. Each window compiles its own programs anyway, so slicing along them adds
+    no compiles. With ``--isolate-slices`` each slice runs in its own Python process,
+    which returns all of its memory to the OS when it exits; within one process,
+    compiled programs and glibc's allocator kept the memory floor rising from slice
+    to slice on CI runners.
     """
     rows = _sorted_rows(spectra, args.limit)
     results, elapsed = [], 0.0
-    for start in range(0, len(rows), args.slice):
-        stop = min(start + args.slice, len(rows))
+    for start, stop in _slices(rows, args.slice):
         print(f"[chimera-spectra] spectra {start + 1}-{stop} of {len(rows)}", flush=True)
         if args.isolate_slices:
             out = Path(args.output_dir) / f"slice_{start:04d}.json"
@@ -319,12 +339,14 @@ def fit_sample(args, spectra, sample, lines):
             out.unlink()
             results += part["results"]
             elapsed += part["elapsed_s"]
+            print(f"[chimera-spectra] fitted in {part['elapsed_s']:.0f} s", flush=True)
         else:
             part, t = fit_rows(rows[start:stop], sample, lines, resolving_power=spectra.meta["SPEC_RES"],
                                dsps_ssp_fn=args.dsps_ssp_fn, steps=args.steps, chunk=args.chunk,
                                num_samples=args.samples)
             results += part
             elapsed += t
+            print(f"[chimera-spectra] fitted in {t:.0f} s", flush=True)
             _release_memory()
     return results, elapsed
 
@@ -652,7 +674,8 @@ def main(argv=None) -> int:
     p = sub.add_parser("run", help="Fit the spectra and write metrics, plots and the comment.")
     p.add_argument("--output-dir", required=True)
     add_fit_args(p)
-    p.add_argument("--slice", type=int, default=32, help="Spectra per fit_batch call (see --isolate-slices).")
+    p.add_argument("--slice", type=int, default=128,
+                   help="Most spectra per fit_batch call; slices follow fit_batch's redshift windows (see --isolate-slices).")
     p.add_argument("--isolate-slices", action="store_true",
                    help="Fit each slice in its own process, so its memory is returned to the OS (for CI runners).")
     p.add_argument("--sha", default="local")
