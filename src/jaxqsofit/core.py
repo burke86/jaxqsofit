@@ -1241,6 +1241,16 @@ class JAXQSOFit:
         ):
             wave_label = _format_wave_label(wave_lum)
             return_sites.append(f"log_lambda_Llambda_{wave_label}_agn")
+        if bool(getattr(self, "_fit_decompose_host", False)) and str(
+            getattr(self, "_fit_host_sfh_model", "flexible")
+        ).lower() in {"delayed", "sfhdelayed", "delayed_tau", "delayed-tau"}:
+            # Delayed-tau SFH state, e.g. to derive the current SFR.
+            return_sites += [
+                'sfh_age_gyr',
+                'sfh_tau_gyr',
+                'formed_stellar_mass',
+                'surviving_mass_fraction',
+            ]
         return_sites += custom_component_site_names(custom_components)
         return_sites += custom_line_component_site_names(custom_line_components)
         return return_sites

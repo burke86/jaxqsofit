@@ -1,0 +1,148 @@
+name: Chimera spectral validation
+
+# Spectrum-only recovery of stellar mass, AGN bolometric luminosity, SFR and broad
+# emission-line FWHM and flux on the Chimera composite spectra with batched MAP + Laplace fits
+# (benchmarks/chimera_spectra_validation.py). The spectra and the photometric
+# truths come from jaxsedfit's Chimera validation sample; the line truths
+# (Wu & Shen 2022) are in benchmarks/data/chimera_line_truth.csv. Nothing is
+# gated yet. For pull requests from branches of this repository the job posts (and
+# updates) a PR comment with the metrics and plots; the plots are stored on the
+# chimera-spectra-validation-plots branch so the comment can embed them. Pull
+# requests from forks get a read-only token, so they only upload the plots as an
+# artifact and write the job summary.
+
+on:
+  pull_request:
+    paths:
+      - "src/**"
+      - "benchmarks/chimera_spectra_validation.py"
+      - "benchmarks/data/chimera_line_truth.csv"
+      - "pyproject.toml"
+      - ".github/workflows/chimera-spectra-validation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: chimera-spectra-validation-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  chimera-spectra-validation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    env:
+      SAME_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      PR: ${{ github.event.pull_request.number }}
+      SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+      PLOT_BRANCH: chimera-spectra-validation-plots
+      # jaxsedfit main commit holding the Chimera spectra and the photometric truths.
+      SPECTRA_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/31a827491d2c2758b3881a33ba1485bd80b36cd9/benchmarks/data/chimera_validation_spectra.fits
+      SAMPLE_URL: https://raw.githubusercontent.com/burke86/jaxsedfit/31a827491d2c2758b3881a33ba1485bd80b36cd9/benchmarks/data/chimera_validation_sample.csv
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e .
+
+      - name: Restore DSPS SSP template cache
+        id: cache-dsps-ssp
+        uses: actions/cache@v4
+        with:
+          path: tempdata.h5
+          key: dsps-ssp-fsps-v3.2-lgmet-age-v1
+
+      - name: Download DSPS SSP template on cache miss
+        if: steps.cache-dsps-ssp.outputs.cache-hit != 'true'
+        run: |
+          curl --fail --location --retry 3 --retry-delay 2 --connect-timeout 20 --max-time 300 \
+            https://portal.nersc.gov/project/hacc/aphearin/DSPS_data/ssp_data_fsps_v3.2_lgmet_age.h5 \
+            --output tempdata.h5
+          test -s tempdata.h5
+
+      - name: Download the Chimera spectra and truths from jaxsedfit
+        run: |
+          mkdir -p chimera-data
+          curl --fail --location --retry 3 --output chimera-data/chimera_validation_spectra.fits "${SPECTRA_URL}"
+          curl --fail --location --retry 3 --output chimera-data/chimera_validation_sample.csv "${SAMPLE_URL}"
+
+      - name: Run Chimera spectral validation
+        env:
+          MPLCONFIGDIR: ${{ runner.temp }}/matplotlib
+          # glibc keeps a memory pool per thread and rarely returns freed memory (as in
+          # jaxsedfit's Chimera validation); two pools cap it.
+          MALLOC_ARENA_MAX: "2"
+        run: |
+          image_base_url=""
+          if [ "${SAME_REPO}" = "true" ]; then
+            image_base_url="https://raw.githubusercontent.com/${{ github.repository }}/${PLOT_BRANCH}/pr-${PR}/${SHA}"
+          fi
+          # Log memory use while fitting (GitHub runners have 16 GB).
+          ( while sleep 30; do free -m | awk '/Mem/ {print "[mem] used " $3 " MB of " $2 " MB"}'; done ) &
+          python benchmarks/chimera_spectra_validation.py run \
+            --output-dir chimera-spectra-validation \
+            --dsps-ssp-fn tempdata.h5 \
+            --spectra chimera-data/chimera_validation_spectra.fits \
+            --sample chimera-data/chimera_validation_sample.csv \
+            --chunk 4 \
+            --slice 128 \
+            --isolate-slices \
+            --samples 50 \
+            --sha "${SHA::7}" \
+            ${image_base_url:+--image-base-url "${image_base_url}"}
+          cat chimera-spectra-validation/output >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload validation artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chimera-spectra-validation
+          path: chimera-spectra-validation/
+          if-no-files-found: ignore
+
+      - name: Push plots for the PR comment
+        if: env.SAME_REPO == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          git init -q plots && cd plots
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          if git fetch -q --depth 1 origin "${PLOT_BRANCH}"; then
+            git checkout -q -b "${PLOT_BRANCH}" FETCH_HEAD
+          else
+            git checkout -q --orphan "${PLOT_BRANCH}"
+          fi
+          mkdir -p "pr-${PR}/${SHA}"
+          cp ../chimera-spectra-validation/*.png "pr-${PR}/${SHA}/"
+          git add "pr-${PR}/${SHA}"
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -q -m "Chimera spectral validation plots for PR #${PR} (${SHA::7})"
+          git push -q origin "${PLOT_BRANCH}"
+
+      - name: Create or update the PR comment
+        if: env.SAME_REPO == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          marker="jaxqsofit Chimera spectral validation"
+          comment_id="$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate \
+            --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\")))][0].id // empty")"
+          if [ -n "${comment_id}" ]; then
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${comment_id}" -F body=@chimera-spectra-validation/output > /dev/null
+          else
+            gh pr comment "${PR}" --repo "${{ github.repository }}" --body-file chimera-spectra-validation/output
+          fi
