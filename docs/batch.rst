@@ -116,15 +116,19 @@ about 3,300 pixels with the host, Fe II, Balmer continuum and emission lines, on
 
 * the fit itself (2,000 MAP steps plus the Laplace Hessian and 50 draws) takes
   about 3 s per spectrum in chunks of 4, and about 6 s for a spectrum fitted alone;
-* each redshift window compiles its program once, which takes 30–60 s;
-* filling in each fitter's results (posterior predictive spectra and line
-  components for every draw) takes another 15–20 s per spectrum.
+* each redshift window compiles two programs once, the fit (about 30 s) and the
+  posterior predictive that fills in each fitter's results (a few seconds);
+* filling in the results then takes about 0.1 s per chunk.
 
-The compiled program is reused for every chunk of a window, so larger windows and
-catalogs amortize the compile time.
+The compiled programs are reused for every chunk of a window, so larger windows and
+catalogs amortize the compile time. On CPU they are compiled without two XLA
+passes (``constant_folding`` and ``simplify-while-loops``) that otherwise dominate
+the compile; see ``jaxsedfit.batched.BATCH_COMPILER_OPTIONS``.
 
-Each fitted :class:`jaxqsofit.JAXQSOFit` keeps its host template grid and predictive draws,
-roughly 40–80 MB with the default configuration, and ``fit_batch`` keeps every
-fitter until it returns. For catalogs of more than a few hundred spectra, call
-``fit_batch`` on slices sorted by redshift and keep only the quantities you need
-from each slice.
+Each fitted :class:`jaxqsofit.JAXQSOFit` keeps its predictive draws, about 16 MB at
+50 draws with the default configuration, and ``fit_batch`` keeps every fitter until
+it returns. Batched results do not keep the per-draw line profiles (line results
+come from the component amplitudes, centers and widths) or the host template grid
+(``predict`` rebuilds it). For large catalogs, call ``fit_batch`` one redshift
+window at a time and keep only the quantities you need from each call; that adds
+no compiles, since each window compiles its own programs anyway.
