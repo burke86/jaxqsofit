@@ -36,7 +36,7 @@ the truths:
 | Stellar mass | `log_stellar_mass` | COSMOS2015 LePhare mass of the host |
 | AGN bolometric luminosity | power-law λLλ × Shen et al. (2011) correction (9.26 at 5100 Å below z = 0.7, 5.15 at 3000 Å below z = 1.9, else 3.81 at 1350 Å) | Shen et al. (2011) `logLbol` + log10(QSO weight) |
 | SFR | current SFR of the delayed-τ SFH | COSMOS2015 LePhare SFR (star-forming hosts only) |
-| Hα, Hβ, Mg II FWHM and flux | sum of each line's broad and narrow components | Wu & Shen (2022) whole-line values; flux × QSO weight × the quasar's photometric scale |
+| Broad Hα, Hβ, Mg II FWHM and flux | sum of each line's broad components | Wu & Shen (2022) broad-line values; flux × QSO weight × the quasar's photometric scale |
 
 The spectra and the photometric truths come from jaxsedfit's Chimera validation
 sample (`benchmarks/data/chimera_validation_spectra.fits` and
@@ -59,8 +59,13 @@ python benchmarks/chimera_spectra_validation.py run \
   --sample <jaxsedfit>/benchmarks/data/chimera_validation_sample.csv   # add --limit 16 for a quick look
 ```
 
-`data/chimera_line_truth.csv` holds the Wu & Shen (2022) whole-line (broad +
-narrow) FWHM and flux of Hα, Hβ and Mg II for the sample quasars, matched within
+Narrow lines are left out of the line comparison: a strong narrow peak sets the
+half maximum of a whole line, and the host's own narrow lines are not in the
+quasar truth. jaxqsofit's broad Gaussians have σ ≥ 0.004 in ln λ (FWHM ≥ 2,800
+km/s), so narrower Wu & Shen broad lines cannot be matched.
+
+`data/chimera_line_truth.csv` holds the Wu & Shen (2022) broad-line FWHM and
+flux of Hα, Hβ and Mg II for the sample quasars, matched within
 1″ to the position in their SDSS name (226 of 227). Wu & Shen measured 203 of them
 on the same SDSS DR7 spectrum the Chimeras use and 23 on a later SDSS spectrum, so
 line fluxes of those 23 can differ through variability. Their broad-line widths and

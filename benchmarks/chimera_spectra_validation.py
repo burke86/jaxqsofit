@@ -18,8 +18,8 @@ AGN luminosity
     power-law continuum: 9.26 L5100 (z < 0.7), 5.15 L3000 (z < 1.9), else
     3.81 L1350.
 Emission lines
-    FWHM and flux of the whole (broad + narrow) H-alpha, H-beta and MgII lines
-    from Wu & Shen (2022), matched by the quasar's SDSS name (the prefix of the
+    FWHM and flux of the broad H-alpha, H-beta and MgII lines from Wu & Shen
+    (2022), matched by the quasar's SDSS name (the prefix of the
     chimera id); ``data/chimera_line_truth.csv``. The chimera line flux is their
     flux times the QSO weight and the factor that scaled the quasar spectrum to
     its photometry (moving the quasar to the host redshift leaves line fluxes
@@ -28,7 +28,9 @@ Emission lines
 Each quantity is computed for every Laplace draw (``fit_batch(method="laplace")``);
 the point estimate is the median of the draws and the interval spans their 2.3rd to
 97.7th percentiles. The fitted SFR is the current SFR of the delayed-tau SFH; line
-FWHM and flux are measured on the sum of the line's broad and narrow components.
+FWHM and flux are measured on the sum of the line's broad components. Narrow lines are left out:
+a strong narrow peak sets the half maximum of the whole line, and the host galaxy
+adds its own narrow lines, which the quasar truth does not include.
 
 Subcommands
 -----------
@@ -64,13 +66,13 @@ COMMENT_MARKER = "jaxqsofit Chimera spectral validation"
 C_AA = 2.99792458e18
 # Shen et al. (2011) bolometric corrections: (rest wavelength [A], correction, upper redshift).
 BOLOMETRIC_CORRECTIONS = ((5100, 9.26, 0.7), (3000, 5.15, 1.9), (1350, 3.81, np.inf))
-# Lines: jaxqsofit component prefix, Wu & Shen (2022) whole-line column, rest wavelength [A], plot label.
+# Broad lines: jaxqsofit component prefix, Wu & Shen (2022) broad-line column, rest wavelength [A], plot label.
 LINES = (
-    ("Ha", "HALPHA", 6564.61, r"H$\alpha$"),
-    ("Hb", "HBETA", 4862.68, r"H$\beta$"),
-    ("MgII", "MGII", 2798.75, "Mg II"),
+    ("Ha_br", "HALPHA_BR", 6564.61, r"H$\alpha$"),
+    ("Hb_br", "HBETA_BR", 4862.68, r"H$\beta$"),
+    ("MgII_br", "MGII_BR", 2798.75, "Mg II"),
 )
-LINE_NAMES = {"HALPHA": "Hα", "HBETA": "Hβ", "MGII": "Mg II"}
+LINE_NAMES = {"HALPHA_BR": "Hα", "HBETA_BR": "Hβ", "MGII_BR": "Mg II"}
 # A line is scored when this fraction of the pixels within +-3000 km/s is unmasked.
 LINE_COVERAGE = 0.8
 LINE_WINDOW_LN = 0.01
@@ -210,14 +212,14 @@ def build_fitter(row, *, resolving_power, dsps_ssp_fn, steps):
 
 
 def _line(q, prefix, rest_wave):
-    """FWHM [km/s] and flux [1e-17 erg/s/cm2] of a whole (broad + narrow) line per draw, or None if not covered."""
+    """FWHM [km/s] and flux [1e-17 erg/s/cm2] of a broad line per draw, or None if not covered."""
     lnw = np.log(np.asarray(q.wave, dtype=float))
     window = np.abs(lnw - np.log(rest_wave)) < LINE_WINDOW_LN
     step = float(np.median(np.diff(lnw)))
     if window.sum() < LINE_COVERAGE * 2 * LINE_WINDOW_LN / step:
         return None
     names = [str(n) for n in q.tied_line_meta["names"]]
-    members = [i for i, n in enumerate(names) if n.split("_", 1)[0] == prefix]
+    members = [i for i, n in enumerate(names) if n == prefix or n.startswith(f"{prefix}_")]
     if not members:
         return None
     po = q.pred_out
@@ -588,11 +590,11 @@ def write_comment(path: Path, metrics, *, n_objects, sha, elapsed, image_base_ur
         if q.get("note"):
             lines += [q["note"], ""]
         lines += _table(metrics[name], "AGN luminosity bin", "label") + ["", image(q["plot"], q["title"])]
-    for kind, title in (("fwhm", "Line FWHM (broad + narrow)"), ("flux", "Line flux (broad + narrow)")):
+    for kind, title in (("fwhm", "Broad-line FWHM"), ("flux", "Broad-line flux")):
         lines += ["", f"### {title} vs Wu & Shen (2022)", "",
                   "Δ = log10(fit / truth), for chimeras whose line is covered and measured by Wu & Shen; "
-                  "the true flux is theirs × QSO weight × the quasar's photometric scale. The truth counts only the "
-                  "quasar's lines, so where the AGN is faint the host's own emission lines dominate the fit.", ""]
+                  "the true flux is theirs × QSO weight × the quasar's photometric scale. jaxqsofit's broad Gaussians "
+                  "have FWHM ≥ 2,800 km/s, so narrower Wu & Shen broad lines cannot be matched.", ""]
         rows = [{**m, "name": f"{m['line_label']}, {m['label']}"} for m in metrics[f"line_{kind}"]]
         lines += _table(rows, "Line, AGN luminosity bin", "name") + ["", image(LINE_PLOTS[kind], title)]
     workflow_url = os.environ.get("GITHUB_SERVER_URL", "") and (

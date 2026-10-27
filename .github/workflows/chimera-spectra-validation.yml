@@ -1,6 +1,6 @@
 name: Chimera spectral validation
 
-# Spectrum-only recovery of stellar mass, AGN bolometric luminosity, SFR and
+# Spectrum-only recovery of stellar mass, AGN bolometric luminosity, SFR and broad
 # emission-line FWHM and flux on the Chimera composite spectra with batched MAP fits
 # (benchmarks/chimera_spectra_validation.py). The spectra and the photometric
 # truths come from jaxsedfit's Chimera validation sample; the line truths
@@ -32,7 +32,7 @@ concurrency:
 jobs:
   chimera-spectra-validation:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     env:
       SAME_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
       PR: ${{ github.event.pull_request.number }}
