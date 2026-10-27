@@ -390,6 +390,7 @@ def _load_result(q, prep, table_range, samples, map_point, pred_out, kind, loss,
     q.optax_map_point = map_point
     q.optax_losses = np.asarray([loss])
     q.batch_diagnostics = {"loss": loss, "hessian_min_eigenvalue": None if min_eigenvalue is None else float(min_eigenvalue)}
+    q.approx_result = None if min_eigenvalue is None else {"hessian_min_eigenvalue": float(min_eigenvalue)}
     q._consume_posterior_outputs(
         samples=samples,
         pred_out=pred_out,

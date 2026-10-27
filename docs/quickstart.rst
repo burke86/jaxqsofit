@@ -523,7 +523,8 @@ calculated directly from the grouped flux draws:
 Fast mode
 ---------
 
-For a fast MAP-style fit, use:
+For a fast MAP-style fit, use the following (see :doc:`inference` for all methods
+and :doc:`batch` for fitting many spectra at once):
 
 .. code-block:: python
 
