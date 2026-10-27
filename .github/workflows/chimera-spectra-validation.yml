@@ -1,7 +1,7 @@
 name: Chimera spectral validation
 
 # Spectrum-only recovery of stellar mass, AGN bolometric luminosity, SFR and broad
-# emission-line FWHM and flux on the Chimera composite spectra with batched MAP fits
+# emission-line FWHM and flux on the Chimera composite spectra with batched MAP + Laplace fits
 # (benchmarks/chimera_spectra_validation.py). The spectra and the photometric
 # truths come from jaxsedfit's Chimera validation sample; the line truths
 # (Wu & Shen 2022) are in benchmarks/data/chimera_line_truth.csv. Nothing is
@@ -99,7 +99,7 @@ jobs:
             --spectra chimera-data/chimera_validation_spectra.fits \
             --sample chimera-data/chimera_validation_sample.csv \
             --chunk 4 \
-            --slice 16 \
+            --slice 128 \
             --isolate-slices \
             --samples 50 \
             --sha "${SHA::7}" \

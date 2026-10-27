@@ -45,11 +45,13 @@ commit. The host aperture scale is fixed at one, because the spectra are scaled
 to the total photometry. The fits use `fit_batch(method="laplace")`: every quantity
 is computed per draw, the point estimate is the median and the interval spans the
 2.3rd to 97.7th percentiles. The tables also give the fraction of truths inside
-that interval; Laplace errors are statistical only, so expect it below 95%. Spectra are fitted in redshift-ordered slices (`--slice`, default 32) and
-each slice's fitters are released before the next, because a fitted `JAXQSOFit`
-holds its host template grid and predictive draws (about 80 MB). With
-`--isolate-slices`, as in CI, each slice runs in its own process: within one
-process the memory floor still rose from slice to slice on the 16 GB runners.
+that interval; Laplace errors are statistical only, so expect it below 95%. Spectra are fitted one redshift window at a time, the windows `fit_batch` forms
+(at most `--slice` spectra, default 128), and each slice's fitters are released
+before the next, because `fit_batch` keeps every fitter until it returns (about
+16 MB each at 50 draws). Each window compiles its own programs anyway, so this
+adds no compiles. With `--isolate-slices`, as in CI, each slice runs in its own
+process: within one process the memory floor still rose from slice to slice on
+the 16 GB runners.
 
 ```bash
 python benchmarks/chimera_spectra_validation.py run \

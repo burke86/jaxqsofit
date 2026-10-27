@@ -94,3 +94,47 @@ def test_fit_batch_returns_fitted_fitters():
         # One shared line table across the batch.
         names = names or list(q.tied_line_meta["names"])
         assert list(q.tied_line_meta["names"]) == names
+        # Results stay usable without the per-draw line profiles and the template grid.
+        assert "line_component_profiles" not in q.pred_out and not hasattr(q, "fsps_grid")
+    assert results[0].spectrum.line_groups
+    assert results[0].predict(n_draws=1).spectrum is not None
+
+
+def test_compiled_predictive_matches_numpyro_predictive(monkeypatch):
+    import jax.numpy as jnp
+    from numpyro.infer import Predictive
+
+    import jaxqsofit.batch as batch
+    from jaxqsofit.model import qso_fsps_joint_model
+
+    captured = []
+    load = batch._load_result
+
+    def capture(q, prep, table_range, samples, map_point, pred_out, *args):
+        captured.append((q, prep, table_range, samples, pred_out))
+        return load(q, prep, table_range, samples, map_point, pred_out, *args)
+
+    monkeypatch.setattr(batch, "_load_result", capture)
+    fitters = _fitters()
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        fit_batch(fitters, method="laplace", chunk_size=2, num_samples=8, redshift_window=None, progress_bar=False)
+    assert len(captured) == len(fitters)
+    for q, prep, table_range, samples, new in captured:
+        run = prep["run_kwargs"]
+        inputs = _model_inputs(q, prep, table_range)
+        for key in ("stage1_pixel_mask", "pixel_mask", "flux", "return_line_components", "emit_deterministics"):
+            inputs.pop(key)
+        old = Predictive(
+            qso_fsps_joint_model,
+            posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
+            return_sites=q._predictive_return_sites(custom_components=run["custom_components"],
+                                                    custom_line_components=run["custom_line_components"]),
+        )(jax.random.PRNGKey(0), flux=None, **inputs)
+        old = {k: v for k, v in old.items() if k != "line_component_profiles"}  # not kept by fit_batch
+        assert set(old) == set(new)
+        for site, value in old.items():
+            value = np.asarray(value)
+            assert new[site].shape == value.shape, site
+            scale = max(float(np.nanmax(np.abs(value))), 1e-30)
+            assert np.nanmax(np.abs(new[site] - value)) <= 1e-6 * scale, site
