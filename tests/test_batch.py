@@ -94,6 +94,10 @@ def test_fit_batch_returns_fitted_fitters():
         # One shared line table across the batch.
         names = names or list(q.tied_line_meta["names"])
         assert list(q.tied_line_meta["names"]) == names
+        # Results stay usable without the per-draw line profiles and the template grid.
+        assert "line_component_profiles" not in q.pred_out and not hasattr(q, "fsps_grid")
+    assert results[0].spectrum.line_groups
+    assert results[0].predict(n_draws=1).spectrum is not None
 
 
 def test_compiled_predictive_matches_numpyro_predictive(monkeypatch):
@@ -127,6 +131,7 @@ def test_compiled_predictive_matches_numpyro_predictive(monkeypatch):
             return_sites=q._predictive_return_sites(custom_components=run["custom_components"],
                                                     custom_line_components=run["custom_line_components"]),
         )(jax.random.PRNGKey(0), flux=None, **inputs)
+        old = {k: v for k, v in old.items() if k != "line_component_profiles"}  # not kept by fit_batch
         assert set(old) == set(new)
         for site, value in old.items():
             value = np.asarray(value)
