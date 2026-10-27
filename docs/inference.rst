@@ -1,7 +1,7 @@
 Inference methods
 =================
 
-``jaxqsofit`` offers three ways to fit one spectrum. Choose one with
+``jaxqsofit`` offers four ways to fit one spectrum. Choose one with
 ``cfg.inference.method`` and call :meth:`jaxqsofit.JAXQSOFit.fit`. Every method
 returns a :class:`jaxqsofit.FitResult`. ``result.samples`` maps each model
 parameter to an array whose first axis indexes draws, so summaries,
@@ -20,6 +20,10 @@ whichever method produced them.
      - the MAP (one point)
      - seconds, plus compilation
      - quick looks, smoke tests, starting points
+   * - ``"laplace"``
+     - Gaussian draws at the MAP
+     - MAP + one Hessian
+     - fast uncertainties for well-constrained, near-Gaussian posteriors; catalogs
    * - ``"nuts"``
      - MCMC draws
      - minutes
@@ -29,8 +33,7 @@ whichever method produced them.
      - minutes
      - accurate posteriors (recommended default)
 
-A Laplace approximation (Gaussian draws at the MAP) is available for many spectra
-at once through :func:`jaxqsofit.fit_batch`; see :doc:`batch`.
+To fit many spectra at once with ``"optax"`` or ``"laplace"``, see :doc:`batch`.
 
 How to choose
 -------------
@@ -41,8 +44,8 @@ How to choose
   be multimodal, strongly non-Gaussian or pushed against a prior bound. Broad-line
   decompositions often are: the split between broad and narrow components, Fe II
   and the host can trade off against each other.
-* Use :func:`jaxqsofit.fit_batch` with ``method="laplace"`` when you need fast
-  uncertainties for a catalog. Check them against ``"optax+nuts"`` on a few
+* Use ``"laplace"`` when you need fast uncertainties, for example for a catalog
+  with :func:`jaxqsofit.fit_batch`. Check them against ``"optax+nuts"`` on a few
   representative spectra before relying on them for a new kind of data.
 
 MAP (``"optax"``)
@@ -90,14 +93,26 @@ complex (``dense_mass=False``, ``line_block_dense_mass=True``, the defaults).
 ``max_tree_depth`` and ``warmup_max_tree_depth`` limit the trajectory length; see
 :doc:`quickstart` for tuning a difficult tied-line spectrum.
 
-Laplace approximation (batched fits only)
------------------------------------------
+Laplace approximation (``"laplace"``)
+-------------------------------------
 
-``fit_batch(..., method="laplace")`` finds the MAP as above, then draws from a
-Gaussian centered on it whose covariance is the inverse Hessian (the curvature) of
-the negative log posterior. The Gaussian lives in NumPyro's unconstrained parameter
-space, so draws of bounded parameters stay inside their priors. ``num_samples``
-sets the number of draws. The Hessian costs little next to the optimization.
+The MAP as above, followed by a Gaussian centered on it whose covariance is the
+inverse Hessian (the curvature) of the negative log posterior. The Gaussian lives
+in NumPyro's unconstrained parameter space, so draws of bounded parameters stay
+inside their priors. ``num_samples`` sets the number of draws. The Hessian costs
+little next to the optimization.
+
+.. code-block:: python
+
+   cfg.inference.method = "laplace"
+   cfg.inference.map_steps = 2000
+   cfg.inference.num_samples = 400
+   q = JAXQSOFit(cfg)
+   result = q.fit()
+   q.approx_result["hessian_min_eigenvalue"]
+
+:func:`jaxqsofit.fit_batch` with ``method="laplace"`` does the same for many
+spectra at once.
 
 It is accurate when the posterior is close to Gaussian around its peak. It is
 unreliable when:
@@ -107,9 +122,10 @@ unreliable when:
 * parameters are tied together by a strongly curved degeneracy, such as the
   broad/narrow split of a line.
 
-Each fitted spectrum records ``q.batch_diagnostics["hessian_min_eigenvalue"]``. If it
-is zero or negative, the Hessian was not positive definite: the flat or non-convex
-directions were given a very wide Gaussian, so treat that spectrum's uncertainties
-as unreliable. Laplace intervals also reflect only the statistical noise of the
+Each fit records ``q.approx_result["hessian_min_eigenvalue"]``. Below one, some
+directions were flat or non-convex (or the MAP had not converged): their curvature
+is raised to one, a Gaussian of roughly the prior's width in unconstrained
+coordinates, so treat uncertainties along them as unreliable. Zero or negative means
+the Hessian was not positive definite at all. Laplace intervals also reflect only the statistical noise of the
 spectrum, not the systematic errors of the model (templates, line profiles,
 host-AGN degeneracies), which often dominate.

@@ -8,7 +8,8 @@ with a single compiled program. Fitting spectra one at a time with
 of them together with ``jax.vmap``, using ``jaxsedfit.batched``. Use it when you
 have a catalog of spectra.
 
-Supported methods are ``"map"`` (``"optax"`` is accepted) and ``"laplace"`` (see
+Supported methods are ``"map"`` (``"optax"`` is accepted) and ``"laplace"``, the
+batched counterparts of the single-spectrum ``"optax"`` and ``"laplace"`` (see
 :doc:`inference`). For NUTS, loop over spectra with :meth:`jaxqsofit.JAXQSOFit.fit`.
 PSF photometry is not supported yet.
 
@@ -99,8 +100,9 @@ Each returned :class:`jaxqsofit.FitResult` works like one from
 * ``fitter.optax_map_point``: the MAP of every parameter (both methods start from
   it).
 * ``fitter.batch_diagnostics``: ``loss`` (the negative log posterior at the MAP)
-  and, for Laplace, ``hessian_min_eigenvalue``. A zero or negative value marks
-  unreliable Laplace uncertainties (see :doc:`inference`).
+  and, for Laplace, ``hessian_min_eigenvalue``, which is also in
+  ``fitter.approx_result`` as after a single ``"laplace"`` fit. Values below one
+  mark directions with unreliable Laplace uncertainties (see :doc:`inference`).
 
 Random starting points come from ``seed`` (default: the first fitter's
 ``inference.random_seed``) and each spectrum's position in ``fitters``.
