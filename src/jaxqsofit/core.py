@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 from astropy import units as u
 from astropy.coordinates import SkyCoord
+from jaxsedfit.approximate import laplace_draws, latent_sites, site_transforms
 from jaxsedfit.filters import load_filter_curves
 from jaxsedfit.inference import (
     nuts_metric_diagnostics,
@@ -2316,6 +2317,14 @@ class JAXQSOFit:
                 plot_init=prep["plot_init"],
                 **run_kwargs,
             )
+        elif method == 'laplace':
+            self.run_fsps_optax_fit(
+                num_steps=prep["optax_steps"],
+                learning_rate=prep["optax_lr"],
+                plot_init=prep["plot_init"],
+                laplace_samples=prep["nuts_kwargs"]["num_samples"],
+                **run_kwargs,
+            )
         elif method == 'optax+nuts':
             nuts_kwargs = dict(prep["nuts_kwargs"])
             self.run_fsps_optax_nuts_fit(
@@ -2326,7 +2335,7 @@ class JAXQSOFit:
                 **run_kwargs,
             )
         else:
-            raise ValueError(f"Unknown inference method='{method}'. Use 'nuts', 'optax', or 'optax+nuts'.")
+            raise ValueError(f"Unknown inference method='{method}'. Use 'nuts', 'optax', 'laplace', or 'optax+nuts'.")
 
         posterior_bundle_path = None
         if prep["save_result"]:
@@ -3170,8 +3179,14 @@ class JAXQSOFit:
                            use_psf_phot=False,
                            custom_components=None,
                            custom_line_components=None,
-                           plot_init=False, random_seed=0):
+                           plot_init=False, random_seed=0, laplace_samples=None):
         """Fit a MAP approximation using staged SVI with an Optax optimizer.
+
+        With ``laplace_samples``, the MAP is followed by a Laplace approximation:
+        that many draws from a Gaussian at the MAP whose covariance is the inverse
+        Hessian of the negative log posterior in unconstrained space
+        (:func:`jaxsedfit.approximate.laplace_draws`). The smallest Hessian
+        eigenvalue is stored in ``self.approx_result``.
 
         Parameters
         ----------
@@ -3194,6 +3209,8 @@ class JAXQSOFit:
         plot_init : bool, optional
             If True, plot and store the stage-1 continuum/host warm-start
             model before starting the full model stage.
+        laplace_samples : int or None, optional
+            Number of Laplace draws at the MAP; None returns the MAP alone.
 
         psf_mags : object
             psf_mags value.
@@ -3502,16 +3519,8 @@ class JAXQSOFit:
         map_point = guide2.median(svi_params)
         samples = {k: np.asarray(v)[None, ...] for k, v in map_point.items()}
         rng_key = jax.random.PRNGKey(int(random_seed))
-
-        pred = Predictive(
-            qso_fsps_joint_model,
-            posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
-            return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
-        )
-        pred_out = pred(
-            rng_key,
+        model_kwargs = dict(
             wave=wave,
-            flux=None,
             err=err,
             conti_priors=conti_priors,
             tied_line_meta=tied_line_meta,
@@ -3538,6 +3547,26 @@ class JAXQSOFit:
             custom_components=custom_components,
             custom_line_components=custom_line_components,
         )
+        self.approx_result = None
+        if laplace_samples:
+            # The same model call as the MAP stage, so the Hessian is of the posterior it optimized.
+            def laplace_model():
+                return qso_fsps_joint_model(flux=flux, return_line_components=False, emit_deterministics=False,
+                                            **model_kwargs)
+
+            transforms = site_transforms(latent_sites(laplace_model))
+            draws, min_eigenvalue = jax.jit(
+                lambda values, key: laplace_draws(laplace_model, (), values, transforms, int(laplace_samples), key)
+            )({k: jnp.asarray(map_point[k]) for k in transforms}, jax.random.fold_in(rng_key, 1))
+            samples = {k: np.asarray(v) for k, v in draws.items()}
+            self.approx_result = {"hessian_min_eigenvalue": float(min_eigenvalue)}
+
+        pred = Predictive(
+            qso_fsps_joint_model,
+            posterior_samples={k: jnp.asarray(v) for k, v in samples.items()},
+            return_sites=self._predictive_return_sites(custom_components=custom_components, custom_line_components=custom_line_components),
+        )
+        pred_out = pred(rng_key, flux=None, **model_kwargs)
         if plot_init:
             self._plot_stage2_initialization(
                 wave=wave,
