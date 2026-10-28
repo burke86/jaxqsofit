@@ -4,18 +4,28 @@ name: Chimera spectral validation
 # emission-line FWHM and flux on the Chimera composite spectra with batched MAP + Laplace fits
 # (benchmarks/chimera_spectra_validation.py). The spectra and the photometric
 # truths come from jaxsedfit's Chimera validation sample; the line truths
-# (Wu & Shen 2022) are in benchmarks/data/chimera_line_truth.csv. Nothing is
-# gated yet. For pull requests from branches of this repository the job posts (and
-# updates) a PR comment with the metrics and plots; the plots are stored on the
-# chimera-spectra-validation-plots branch so the comment can embed them. Pull
-# requests from forks get a read-only token, so they only upload the plots as an
-# artifact and write the job summary.
+# (Wu & Shen 2022) are in benchmarks/data/chimera_line_truth.csv. The job fails if
+# any bin with enough objects is past its limit in
+# benchmarks/chimera_spectra_validation_thresholds.json. For pull requests from
+# branches of this repository it posts (and updates) one compact PR comment with
+# the change from main's last run, and the plots behind a fold; runs on main store
+# their metrics on the chimera-spectra-validation-plots branch as that baseline.
+# Pull requests from forks get a read-only token, so they only get the job summary
+# and artifacts.
 
 on:
   pull_request:
     paths:
       - "src/**"
-      - "benchmarks/chimera_spectra_validation.py"
+      - "benchmarks/chimera_spectra_validation*"
+      - "benchmarks/data/chimera_line_truth.csv"
+      - "pyproject.toml"
+      - ".github/workflows/chimera-spectra-validation.yml"
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "benchmarks/chimera_spectra_validation*"
       - "benchmarks/data/chimera_line_truth.csv"
       - "pyproject.toml"
       - ".github/workflows/chimera-spectra-validation.yml"
@@ -34,7 +44,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 240
     env:
-      SAME_REPO: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository }}
+      SAME_REPO: ${{ github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository }}
       PR: ${{ github.event.pull_request.number }}
       SHA: ${{ github.event.pull_request.head.sha || github.sha }}
       PLOT_BRANCH: chimera-spectra-validation-plots
@@ -87,10 +97,6 @@ jobs:
           # jaxsedfit's Chimera validation); two pools cap it.
           MALLOC_ARENA_MAX: "2"
         run: |
-          image_base_url=""
-          if [ "${SAME_REPO}" = "true" ]; then
-            image_base_url="https://raw.githubusercontent.com/${{ github.repository }}/${PLOT_BRANCH}/pr-${PR}/${SHA}"
-          fi
           # Log memory use while fitting (GitHub runners have 16 GB).
           ( while sleep 30; do free -m | awk '/Mem/ {print "[mem] used " $3 " MB of " $2 " MB"}'; done ) &
           python benchmarks/chimera_spectra_validation.py run \
@@ -102,9 +108,7 @@ jobs:
             --slice 128 \
             --isolate-slices \
             --samples 50 \
-            --sha "${SHA::7}" \
-            ${image_base_url:+--image-base-url "${image_base_url}"}
-          cat chimera-spectra-validation/output >> "${GITHUB_STEP_SUMMARY}"
+            --sha "${SHA::7}"
 
       - name: Upload validation artifacts
         if: always()
@@ -114,7 +118,7 @@ jobs:
           path: chimera-spectra-validation/
           if-no-files-found: ignore
 
-      - name: Push plots for the PR comment
+      - name: Check out the plots branch
         if: env.SAME_REPO == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
@@ -126,15 +130,42 @@ jobs:
           else
             git checkout -q --orphan "${PLOT_BRANCH}"
           fi
-          mkdir -p "pr-${PR}/${SHA}"
-          cp ../chimera-spectra-validation/*.png "pr-${PR}/${SHA}/"
-          git add "pr-${PR}/${SHA}"
+
+      - name: Write the report
+        id: report
+        run: |
+          image_base_url=""
+          baseline=""
+          if [ "${SAME_REPO}" = "true" ] && [ -n "${PR}" ]; then
+            image_base_url="https://raw.githubusercontent.com/${{ github.repository }}/${PLOT_BRANCH}/pr-${PR}/${SHA}"
+            [ -f plots/main/metrics.json ] && baseline="plots/main"
+          fi
+          status=0
+          python benchmarks/chimera_spectra_validation.py report \
+            --results chimera-spectra-validation \
+            ${baseline:+--baseline "${baseline}"} \
+            ${image_base_url:+--image-base-url "${image_base_url}"} \
+            --sha "${SHA::7}" \
+            --output report.md || status=$?
+          cat report.md >> "${GITHUB_STEP_SUMMARY}"
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
+
+      - name: Store plots, and main's metrics as the PR baseline
+        if: env.SAME_REPO == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [ -n "${PR}" ]; then dest="pr-${PR}/${SHA}"; else dest="main"; fi
+          rm -rf "plots/${dest}" && mkdir -p "plots/${dest}"
+          cp chimera-spectra-validation/*.png chimera-spectra-validation/metrics.json "plots/${dest}/"
+          cd plots
+          git add -A
           git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -q -m "Chimera spectral validation plots for PR #${PR} (${SHA::7})"
+            commit -q -m "Chimera spectral validation for ${dest} (${SHA::7})" || exit 0
           git push -q origin "${PLOT_BRANCH}"
 
       - name: Create or update the PR comment
-        if: env.SAME_REPO == 'true'
+        if: env.SAME_REPO == 'true' && github.event_name == 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -142,7 +173,10 @@ jobs:
           comment_id="$(gh api "repos/${{ github.repository }}/issues/${PR}/comments" --paginate \
             --jq "[.[] | select(.user.login == \"github-actions[bot]\" and (.body | contains(\"${marker}\")))][0].id // empty")"
           if [ -n "${comment_id}" ]; then
-            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${comment_id}" -F body=@chimera-spectra-validation/output > /dev/null
+            gh api -X PATCH "repos/${{ github.repository }}/issues/comments/${comment_id}" -F body=@report.md > /dev/null
           else
-            gh pr comment "${PR}" --repo "${{ github.repository }}" --body-file chimera-spectra-validation/output
+            gh pr comment "${PR}" --repo "${{ github.repository }}" --body-file report.md
           fi
+
+      - name: Gate on the thresholds
+        run: exit "${{ steps.report.outputs.status }}"

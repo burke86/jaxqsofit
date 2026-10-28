@@ -1,0 +1,53 @@
+{
+  "_comment": "Per quantity (or line measurement) and AGN-luminosity bin, for bins with at least 10 objects. Limits are the reference run's RMS x 1.15 and outlier fraction + 0.05 (#74, commit 3167f69). Update them in the same PR as an intended change to the recovery.",
+  "log_stellar_mass": {
+    "0": {"max_outlier_fraction": 0.064, "max_rms": 0.227},
+    "1": {"max_outlier_fraction": 0.091, "max_rms": 0.308},
+    "2": {"max_outlier_fraction": 0.175, "max_rms": 0.450},
+    "3": {"max_outlier_fraction": 0.183, "max_rms": 0.371}
+  },
+  "log_lbol_agn": {
+    "0": {"max_outlier_fraction": 0.934, "max_rms": 1.830},
+    "1": {"max_outlier_fraction": 0.662, "max_rms": 1.164},
+    "2": {"max_outlier_fraction": 0.362, "max_rms": 0.589},
+    "3": {"max_outlier_fraction": 0.077, "max_rms": 0.241}
+  },
+  "log_sfr": {
+    "0": {"max_outlier_fraction": 1.000, "max_rms": 1.536},
+    "1": {"max_outlier_fraction": 0.963, "max_rms": 1.460},
+    "2": {"max_outlier_fraction": 0.925, "max_rms": 1.561},
+    "3": {"max_outlier_fraction": 0.961, "max_rms": 1.258}
+  },
+  "line_fwhm:HALPHA_BR": {
+    "0": {"max_outlier_fraction": 0.204, "max_rms": 0.393},
+    "1": {"max_outlier_fraction": 0.264, "max_rms": 0.391}
+  },
+  "line_fwhm:HBETA_BR": {
+    "0": {"max_outlier_fraction": 0.158, "max_rms": 0.380},
+    "1": {"max_outlier_fraction": 0.225, "max_rms": 0.417},
+    "2": {"max_outlier_fraction": 0.155, "max_rms": 0.359},
+    "3": {"max_outlier_fraction": 0.112, "max_rms": 0.256}
+  },
+  "line_fwhm:MGII_BR": {
+    "0": {"max_outlier_fraction": 0.104, "max_rms": 0.325},
+    "1": {"max_outlier_fraction": 0.092, "max_rms": 0.310},
+    "2": {"max_outlier_fraction": 0.050, "max_rms": 0.194},
+    "3": {"max_outlier_fraction": 0.050, "max_rms": 0.199}
+  },
+  "line_flux:HALPHA_BR": {
+    "0": {"max_outlier_fraction": 0.973, "max_rms": 1.557},
+    "1": {"max_outlier_fraction": 0.264, "max_rms": 0.731}
+  },
+  "line_flux:HBETA_BR": {
+    "0": {"max_outlier_fraction": 1.000, "max_rms": 1.937},
+    "1": {"max_outlier_fraction": 0.675, "max_rms": 1.555},
+    "2": {"max_outlier_fraction": 0.366, "max_rms": 0.761},
+    "3": {"max_outlier_fraction": 0.196, "max_rms": 0.427}
+  },
+  "line_flux:MGII_BR": {
+    "0": {"max_outlier_fraction": 1.000, "max_rms": 2.126},
+    "1": {"max_outlier_fraction": 0.925, "max_rms": 1.550},
+    "2": {"max_outlier_fraction": 0.319, "max_rms": 0.539},
+    "3": {"max_outlier_fraction": 0.098, "max_rms": 0.287}
+  }
+}

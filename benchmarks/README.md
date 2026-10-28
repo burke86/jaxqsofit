@@ -80,7 +80,50 @@ python benchmarks/chimera_spectra_validation.py make-truth \
   --spectra <jaxsedfit>/benchmarks/data/chimera_validation_spectra.fits
 ```
 
+`report` turns a run into one compact Markdown report: a table of RMS · outlier
+fraction for each quantity and broad-line measurement in each luminosity bin, with
+the change from main's metrics when `--baseline` is given, and the per-bin statistics
+and plots behind a fold. It exits non-zero if a bin with at least 10 objects exceeds
+its limits in `chimera_spectra_validation_thresholds.json` (set from a reference run
+as RMS × 1.15 and outlier fraction + 0.05; update them in the same PR as an intended
+change to the recovery). Smaller bins are reported but not gated.
+
+```bash
+python benchmarks/chimera_spectra_validation.py report \
+  --results /tmp/chimera-spectra-validation --output /tmp/chimera-spectra-validation/report.md
+```
+
 `.github/workflows/chimera-spectra-validation.yml` runs this on pull requests that
-touch `src/` (and on manual dispatch), uploads the plots and, for pull requests
-from branches of this repository, creates or updates a PR comment with the metrics
-tables and embedded plots. Nothing is gated yet.
+touch `src/`, on pushes to main and on manual dispatch. Runs on main store their
+`metrics.json` and plots under `main/` on the `chimera-spectra-validation-plots`
+branch; pull requests from branches of this repository get one comment showing
+their change from main, with plots under `pr-<number>/<sha>/`, and the job fails
+past a limit.
+
+## PR performance benchmark
+
+`sdss_pr_benchmark.py` fits the SDSS spectrum from the main tutorial with a 200-step
+MAP fit (host + lines) and times the jit-compiled value and gradient of that fit's log
+density at the MAP, the function every optimizer and sampler step evaluates. `fetch`
+downloads the spectrum once; `measure` fits and times the `jaxqsofit` importable in its
+process and writes one JSON record; `report` combines base and PR records into a short
+comment of value + gradient time, compile time and the final MAP loss (a model-change
+flag), and exits non-zero if value + gradient is more than 10% slower beyond 3σ of the
+run-to-run scatter, or compile is more than 25% slower.
+
+`.github/workflows/pr-benchmarks.yml` alternates five base and five PR processes on one
+runner, each with its side's `src` first on `PYTHONPATH` (both use the PR's jaxsedfit
+pin), so drifts of the shared machine cancel; `publish-pr-benchmarks.yml` posts the
+comment, also when the benchmark failed.
+
+```bash
+python benchmarks/sdss_pr_benchmark.py fetch --output /tmp/bench/spectrum.npz
+for i in 1 2 3; do
+  PYTHONPATH=../jaxqsofit-main/src python benchmarks/sdss_pr_benchmark.py measure \
+    --spectrum /tmp/bench/spectrum.npz --sha main --output /tmp/bench/base-$i.json
+  PYTHONPATH=src python benchmarks/sdss_pr_benchmark.py measure \
+    --spectrum /tmp/bench/spectrum.npz --sha pr --output /tmp/bench/pr-$i.json
+done
+python benchmarks/sdss_pr_benchmark.py report --base "/tmp/bench/base-*.json" --pr "/tmp/bench/pr-*.json" \
+  --output /tmp/bench/output
+```

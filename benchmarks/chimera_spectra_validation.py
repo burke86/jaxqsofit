@@ -38,8 +38,12 @@ make-truth
     Build ``data/chimera_line_truth.csv`` from the Wu & Shen (2022) catalog
     (only needed when the sample changes).
 run
-    Fit the sample and write ``results.json``, ``metrics.json``, the plots and a
-    Markdown summary (``output``) for the PR comment. Nothing is gated yet.
+    Fit the sample and write ``results.json``, ``metrics.json`` and the plots.
+report
+    Write a compact Markdown report (``output``) for the PR comment, with the
+    change from main's metrics when given, and exit non-zero if any bin with at
+    least ``MIN_GATED_N`` objects is past its limit in
+    ``chimera_spectra_validation_thresholds.json``.
 """
 from __future__ import annotations
 
@@ -59,6 +63,9 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 DEFAULT_TRUTH = HERE / "data" / "chimera_line_truth.csv"
+DEFAULT_THRESHOLDS = HERE / "chimera_spectra_validation_thresholds.json"
+# Bins with fewer objects are reported but not gated: their RMS and outlier fraction are too noisy.
+MIN_GATED_N = 10
 LUMINOSITY_BIN_LABELS = ["L < 42", "42 ≤ L < 43", "43 ≤ L < 44", "44 ≤ L < 45"]
 OUTLIER_DEX = 0.5
 REDSHIFT_WINDOW = 0.25  # fit_batch's default redshift_window
@@ -584,47 +591,128 @@ def plot_lines(results, kind, path: Path) -> None:
     plt.close(fig)
 
 
-def _table(rows, first_col, first_key):
-    lines = [f"| {first_col} | N | median Δ | NMAD | RMS | outliers | in 95% |", "|---|---:|---:|---:|---:|---:|---:|"]
-    for m in rows:
+def _report_rows(metrics):
+    """(key, label, per-bin metrics) for every reported quantity and line measurement."""
+    short = {"log_stellar_mass": "M★", "log_lbol_agn": "L<sub>bol</sub>", "log_sfr": "SFR"}
+    rows = [(name, short[name], metrics[name]) for name in QUANTITIES]
+    for kind in LINE_PLOTS:
+        for _, base, _, _ in LINES:
+            bins = [m for m in metrics[f"line_{kind}"] if m["line"] == base]
+            rows.append((f"line_{kind}:{base}", f"{LINE_NAMES[base]} {'FWHM' if kind == 'fwhm' else 'flux'}", bins))
+    return rows
+
+
+def _limit(thresholds, key, m):
+    return thresholds.get(key, {}).get(str(m["bin"])) if m["n"] >= MIN_GATED_N else None
+
+
+def check_metrics(metrics, thresholds) -> list[str]:
+    failures = []
+    for key, label, bins in _report_rows(metrics):
+        for m in bins:
+            t = _limit(thresholds, key, m)
+            if t is None:
+                continue
+            if m["outlier_fraction"] > t["max_outlier_fraction"]:
+                failures.append(f"{label}, {m['label']}: outlier fraction {m['outlier_fraction']:.3f} > "
+                                f"{t['max_outlier_fraction']:.3f}")
+            if m["rms"] > t["max_rms"]:
+                failures.append(f"{label}, {m['label']}: RMS {m['rms']:.3f} > {t['max_rms']:.3f} dex")
+    return [f.replace("<sub>", "").replace("</sub>", "") for f in failures]
+
+
+def _cell(m, base, limit) -> str:
+    """``RMS · outliers`` for one bin, with the change from main and a ❌ past a limit."""
+    if m["n"] == 0:
+        return "–"
+    rms = f"{m['rms']:.2f}"
+    out = f"{100 * m['outlier_fraction']:.0f}%"
+    if base is not None and base["n"] > 0:
+        d_rms = m["rms"] - base["rms"]
+        d_out = 100 * (m["outlier_fraction"] - base["outlier_fraction"])
+        if abs(d_rms) >= 0.005:
+            rms += f" ({d_rms:+.2f})"
+        if abs(d_out) >= 0.5:
+            out += f" ({d_out:+.0f})"
+    if limit is not None:
+        rms += "" if m["rms"] <= limit["max_rms"] else " ❌"
+        out += "" if m["outlier_fraction"] <= limit["max_outlier_fraction"] else " ❌"
+    return f"{rms} · {out}" + ("" if m["n"] >= MIN_GATED_N else f" (N={m['n']})")
+
+
+def _detail_table(bins, thresholds, key):
+    lines = ["| AGN luminosity bin | N | median Δ | NMAD | RMS (limit) | outliers (limit) | in 95% |",
+             "|---|---:|---:|---:|---:|---:|---:|"]
+    for m in bins:
         if m["n"] == 0:
             continue
-        lines.append(f"| {m[first_key]} | {m['n']} | {m['median']:+.3f} | {m['nmad']:.3f} | {m['rms']:.3f} | "
-                     f"{100 * m['outlier_fraction']:.1f}% | {100 * m['coverage']:.0f}% |")
+        t = _limit(thresholds, key, m) or {}
+        rms_limit = f" ({t['max_rms']:.3f})" if t else ""
+        out_limit = f" ({100 * t['max_outlier_fraction']:.1f}%)" if t else ""
+        lines.append(f"| {m['label']} | {m['n']} | {m['median']:+.3f} | {m['nmad']:.3f} | {m['rms']:.3f}{rms_limit} | "
+                     f"{100 * m['outlier_fraction']:.1f}%{out_limit} | {100 * m['coverage']:.0f}% |")
     return lines
 
 
-def write_comment(path: Path, metrics, *, n_objects, sha, elapsed, image_base_url) -> None:
-    def image(name, alt):
-        return f"![{alt}]({image_base_url}/{name})" if image_base_url else "_Plot attached to the workflow artifacts._"
-
+def render_report(metrics, thresholds, *, sha, baseline=None, image_base_url=None) -> tuple[str, list[str]]:
+    failures = check_metrics(metrics, thresholds)
+    status = "✅ passed" if not failures else "❌ failed"
+    n_objects = sum(m["n"] for m in metrics["log_stellar_mass"])
+    versus = f" vs main `{baseline.get('sha', '?')}`" if baseline else ""
+    base_rows = {key: bins for key, _, bins in _report_rows(baseline)} if baseline else {}
     lines = [
-        f"## {COMMENT_MARKER}",
+        f"## {COMMENT_MARKER}: {status}",
         "",
-        f"Commit `{sha}` · {n_objects} Chimera spectra · spectrum-only MAP + Laplace (`fit_batch`) in {elapsed / 60:.1f} min · "
-        "reported, not gated",
+        f"`{sha}`{versus} · {n_objects} Chimera spectra · spectrum-only MAP + Laplace in {metrics['elapsed_s'] / 60:.0f} min",
         "",
-        f"Residual = posterior median − truth in bins of injected AGN luminosity (log erg/s); outlier: |Δ| > {OUTLIER_DEX} dex; "
-        "“in 95%”: fraction of truths inside the Laplace 95% interval (statistical errors only).",
+        f"Each cell: RMS of the residual [dex] · fraction of outliers (|Δ| > {OUTLIER_DEX} dex), in bins of injected AGN "
+        "log luminosity [erg/s]. Lines are log10(fit / truth) against Wu & Shen (2022)"
+        + ("; change from main in parentheses" if baseline else "")
+        + f"; ❌ marks a value past its limit. Bins with fewer than {MIN_GATED_N} objects show N and are not gated.",
+        "",
+        "| | " + " | ".join(LUMINOSITY_BIN_LABELS) + " |",
+        "|---|" + "---:|" * len(LUMINOSITY_BIN_LABELS),
     ]
+    for key, label, bins in _report_rows(metrics):
+        base = base_rows.get(key)
+        cells = [_cell(m, base[i] if base else None, _limit(thresholds, key, m)) for i, m in enumerate(bins)]
+        lines.append(f"| {label} | " + " | ".join(cells) + " |")
+    if failures:
+        lines += ["", "**Failures**", ""] + [f"- {f}" for f in failures]
+
+    def image(name, alt):
+        return [f"![{alt}]({image_base_url}/{name})"] if image_base_url else []
+
+    lines += ["", "<details><summary>Limits, per-bin statistics and plots</summary>", "",
+              "“in 95%”: fraction of truths inside the Laplace 95% interval (statistical errors only). The true line "
+              "flux is Wu & Shen's × QSO weight × the quasar's photometric scale; jaxqsofit's broad Gaussians have "
+              "FWHM ≥ 2,800 km/s, so narrower Wu & Shen broad lines cannot be matched."]
     for name, q in QUANTITIES.items():
-        lines += ["", f"### {q['title']}", ""]
-        if q.get("note"):
-            lines += [q["note"], ""]
-        lines += _table(metrics[name], "AGN luminosity bin", "label") + ["", image(q["plot"], q["title"])]
+        lines += ["", f"**{q['title']}**" + (f" — {q['note']}" if q.get("note") else ""), ""]
+        lines += _detail_table(metrics[name], thresholds, name) + [""] + image(q["plot"], q["title"])
     for kind, title in (("fwhm", "Broad-line FWHM"), ("flux", "Broad-line flux")):
-        lines += ["", f"### {title} vs Wu & Shen (2022)", "",
-                  "Δ = log10(fit / truth), for chimeras whose line is covered and measured by Wu & Shen; "
-                  "the true flux is theirs × QSO weight × the quasar's photometric scale. jaxqsofit's broad Gaussians "
-                  "have FWHM ≥ 2,800 km/s, so narrower Wu & Shen broad lines cannot be matched.", ""]
-        rows = [{**m, "name": f"{m['line_label']}, {m['label']}"} for m in metrics[f"line_{kind}"]]
-        lines += _table(rows, "Line, AGN luminosity bin", "name") + ["", image(LINE_PLOTS[kind], title)]
-    workflow_url = os.environ.get("GITHUB_SERVER_URL", "") and (
-        f"{os.environ['GITHUB_SERVER_URL']}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}"
-    )
-    if workflow_url:
-        lines += ["", f"[Workflow run]({workflow_url})"]
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        for key, label, bins in _report_rows(metrics):
+            if key.startswith(f"line_{kind}:"):
+                lines += ["", f"**{label}**", ""] + _detail_table(bins, thresholds, key)
+        lines += [""] + image(LINE_PLOTS[kind], title)
+    lines += ["", "</details>"]
+    server = os.environ.get("GITHUB_SERVER_URL")
+    if server:
+        lines += ["", f"[Workflow run]({server}/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/"
+                      f"{os.environ.get('GITHUB_RUN_ID', '')})"]
+    return "\n".join(lines) + "\n", failures
+
+
+def report(args) -> int:
+    metrics = json.loads((Path(args.results) / "metrics.json").read_text())
+    baseline_path = Path(args.baseline) / "metrics.json" if args.baseline else None
+    baseline = json.loads(baseline_path.read_text()) if baseline_path and baseline_path.is_file() else None
+    thresholds = {k: v for k, v in json.loads(Path(args.thresholds).read_text()).items() if not k.startswith("_")}
+    text, failures = render_report(metrics, thresholds, sha=args.sha, baseline=baseline,
+                                   image_base_url=args.image_base_url)
+    Path(args.output).write_text(text, encoding="utf-8")
+    print(text)
+    return 1 if failures else 0
 
 
 def run(args) -> int:
@@ -639,14 +727,11 @@ def run(args) -> int:
     results, elapsed = fit_sample(args, spectra, sample, lines)
     metrics = compute_metrics(results)
     (out / "results.json").write_text(json.dumps(results, indent=1))
-    (out / "metrics.json").write_text(json.dumps({**metrics, "elapsed_s": elapsed}, indent=2))
+    (out / "metrics.json").write_text(json.dumps({**metrics, "elapsed_s": elapsed, "sha": args.sha}, indent=2))
     for name, q in QUANTITIES.items():
         plot_quantity(results, metrics[name], name, out / q["plot"])
     for kind, name in LINE_PLOTS.items():
         plot_lines(results, kind, out / name)
-    write_comment(out / "output", metrics, n_objects=len(results), sha=args.sha, elapsed=elapsed,
-                  image_base_url=args.image_base_url)
-    print((out / "output").read_text())
     return 0
 
 
@@ -671,7 +756,7 @@ def main(argv=None) -> int:
         p.add_argument("--samples", type=int, default=100, help="Laplace draws per spectrum.")
         p.add_argument("--limit", type=int, default=None, help="Fit only the first N spectra of the file (quick look).")
 
-    p = sub.add_parser("run", help="Fit the spectra and write metrics, plots and the comment.")
+    p = sub.add_parser("run", help="Fit the spectra and write metrics and plots.")
     p.add_argument("--output-dir", required=True)
     add_fit_args(p)
     p.add_argument("--slice", type=int, default=128,
@@ -679,8 +764,16 @@ def main(argv=None) -> int:
     p.add_argument("--isolate-slices", action="store_true",
                    help="Fit each slice in its own process, so its memory is returned to the OS (for CI runners).")
     p.add_argument("--sha", default="local")
-    p.add_argument("--image-base-url", default=None, help="URL of the directory holding the plots.")
     p.set_defaults(func=run)
+
+    p = sub.add_parser("report", help="Write the PR report; exit non-zero past the limits.")
+    p.add_argument("--results", required=True, help="Output directory of run.")
+    p.add_argument("--baseline", help="Directory with main's metrics.json, for the change from main.")
+    p.add_argument("--thresholds", default=str(DEFAULT_THRESHOLDS))
+    p.add_argument("--image-base-url", default=None, help="URL of the directory holding the plots.")
+    p.add_argument("--sha", default="local")
+    p.add_argument("--output", default="output")
+    p.set_defaults(func=report)
 
     p = sub.add_parser("fit-slice", help="Internal: fit one slice of a run --isolate-slices and write JSON.")
     add_fit_args(p)
