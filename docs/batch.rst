@@ -110,24 +110,33 @@ Random starting points come from ``seed`` (default: the first fitter's
 Performance and memory
 ----------------------
 
-``chunk_size`` spectra are fitted together (default 16). As a guide, for spectra of
-about 3,300 pixels with the host, Fe II, Balmer continuum and emission lines, on an
-8-core laptop:
+``chunk_size`` spectra are fitted together (default 16). As a guide, for Chimera
+spectra of about 3,300 pixels fitted with the host, Fe II, Balmer continuum and
+emission lines (2,000 MAP steps, the Laplace Hessian and 50 draws) on an 8-core
+Apple M1 Pro laptop:
 
-* the fit itself (2,000 MAP steps plus the Laplace Hessian and 50 draws) takes
-  about 3 s per spectrum in chunks of 4, and about 6 s for a spectrum fitted alone;
-* each redshift window compiles two programs once, the fit (about 30 s) and the
-  posterior predictive that fills in each fitter's results (a few seconds);
-* filling in the results then takes about 0.1 s per chunk.
+* each redshift window compiles two programs once: the fit (40–50 s) and the
+  posterior predictive that fills in each fitter's results (3–9 s, longer for
+  larger chunks);
+* once compiled, the fit takes about 11 s per spectrum in chunks of 4, 8 or 16, and
+  about 14 s per spectrum with ``chunk_size=1``. On CPU, chunks larger than 4 do not
+  run faster per spectrum;
+* filling in the results takes under 1 s per chunk;
+* for comparison, :meth:`jaxqsofit.JAXQSOFit.fit` with ``method="laplace"`` takes
+  about 90 s per spectrum, most of it compiling, and compiles again for every
+  spectrum.
 
 The compiled programs are reused for every chunk of a window, so larger windows and
 catalogs amortize the compile time. On CPU they are compiled without two XLA
 passes (``constant_folding`` and ``simplify-while-loops``) that otherwise dominate
-the compile; see ``jaxsedfit.batched.BATCH_COMPILER_OPTIONS``.
+the compile; see ``jaxsedfit.batched.BATCH_COMPILER_OPTIONS``. On a 4-core GitHub
+runner, the 241-spectrum Chimera validation (chunks of 4, 50 draws) takes about
+80 minutes, about 20 s per spectrum including compiles, and peaks at 7 GB.
 
-Each fitted :class:`jaxqsofit.JAXQSOFit` keeps its predictive draws, about 16 MB at
-50 draws with the default configuration, and ``fit_batch`` keeps every fitter until
-it returns. Batched results do not keep the per-draw line profiles (line results
+Each fitted :class:`jaxqsofit.JAXQSOFit` keeps its predictive draws, about 0.3 MB per
+draw with the default configuration: 17 MB at 50 draws and 130 MB at the default
+``num_samples=400``. ``fit_batch`` keeps every fitter until it returns, and clears
+jaxsedfit's per-spectrum caches after each chunk. Batched results do not keep the per-draw line profiles (line results
 come from the component amplitudes, centers and widths) or the host template grid
 (``predict`` rebuilds it). For large catalogs, call ``fit_batch`` one redshift
 window at a time and keep only the quantities you need from each call; that adds
