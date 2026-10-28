@@ -31,12 +31,13 @@ jobs:
           python-version: "3.11"
           cache: "pip"
 
-      - name: Install package and benchmark deps
+      - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install "jax==0.4.31" "jaxlib==0.4.31" "numpyro==0.19.0"
-          pip install -e benchmark-head
-          pip install astroquery
+          # A regular (non-editable) install provides the dependencies, including the
+          # PR's jaxsedfit pin; each run below puts one side's jaxqsofit source first
+          # on PYTHONPATH.
+          pip install ./benchmark-head astroquery
 
       - name: Restore DSPS SSP template cache
         id: cache-dsps-ssp
@@ -53,44 +54,52 @@ jobs:
             --output tempdata.h5
           test -s tempdata.h5
 
-      - name: Run SDSS benchmark
+      - name: Run benchmarks (alternating base and PR)
+        id: bench
         env:
-          JAXQSOFIT_BENCH_OPTAX_STEPS: "200"
-          JAXQSOFIT_BENCH_OPTAX_LR: "1e-2"
-          JAXQSOFIT_BENCH_REPEATS: "3"
+          BASE_SHA: ${{ github.event.pull_request.base.sha || 'main' }}
+          PR_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
         run: |
-          mkdir -p benchmark-artifacts
-          python -m pip install --force-reinstall --no-deps -e benchmark-base
-          python benchmark-head/benchmarks/sdss_pr_benchmark.py run \
-            --output-dir benchmark-artifacts/base \
-            --label base \
-            --sha "${{ github.event.pull_request.base.sha || 'main' }}" \
-            --dsps-ssp-fn tempdata.h5
-
-          python -m pip install --force-reinstall --no-deps -e benchmark-head
-          python benchmark-head/benchmarks/sdss_pr_benchmark.py run \
-            --output-dir benchmark-artifacts/head \
-            --label pr \
-            --sha "${{ github.event.pull_request.head.sha || github.sha }}" \
-            --dsps-ssp-fn tempdata.h5
-
-          python benchmark-head/benchmarks/sdss_pr_benchmark.py compare \
-            --baseline-json benchmark-artifacts/base/benchmark.json \
-            --candidate-json benchmark-artifacts/head/benchmark.json \
-            --output-dir benchmark-artifacts
+          mkdir -p benchmark-artifacts/runs
+          bench="python benchmark-head/benchmarks/sdss_pr_benchmark.py"
+          run_all() {
+            ${bench} fetch --output spectrum.npz || return 1
+            for i in 1 2 3 4 5; do
+              PYTHONPATH=benchmark-base/src ${bench} measure --spectrum spectrum.npz --label base --sha "${BASE_SHA}" \
+                --dsps-ssp-fn tempdata.h5 --output "benchmark-artifacts/runs/base-${i}.json" || return 1
+              PYTHONPATH=benchmark-head/src ${bench} measure --spectrum spectrum.npz --label pr --sha "${PR_SHA}" \
+                --dsps-ssp-fn tempdata.h5 --output "benchmark-artifacts/runs/pr-${i}.json" || return 1
+            done
+          }
+          status=0
+          if run_all; then
+            ${bench} report --base "benchmark-artifacts/runs/base-*.json" --pr "benchmark-artifacts/runs/pr-*.json" \
+              --output benchmark-artifacts/output || status=$?
+          else
+            status=1
+            printf '### jaxqsofit PR benchmark: ❌ error\n\nA benchmark run crashed; see the [workflow log](%s).\n' \
+              "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" > benchmark-artifacts/output
+          fi
+          cat benchmark-artifacts/output >> "${GITHUB_STEP_SUMMARY}"
+          echo "status=${status}" >> "${GITHUB_OUTPUT}"
 
       - name: Store PR number
-        if: github.event_name == 'pull_request'
+        if: always() && github.event_name == 'pull_request'
         run: |
           printf "%s" "${{ github.event.pull_request.number }}" > benchmark-artifacts/pr
 
       - name: Store manual run marker
-        if: github.event_name != 'pull_request'
+        if: always() && github.event_name != 'pull_request'
         run: |
           printf "%s" "0" > benchmark-artifacts/pr
 
       - name: Upload benchmark artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: benchmark-artifacts
           path: benchmark-artifacts/
+
+      # After the upload, so the publish workflow still posts the comment.
+      - name: Gate on the limits
+        run: exit "${{ steps.bench.outputs.status }}"
