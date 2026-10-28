@@ -19,10 +19,11 @@ Documentation builds render their saved outputs without executing them. Set
    notebooks/06_custom_components_tutorial
    notebooks/07_local_sdss_bal_tutorial
 
-What this tutorial covers
--------------------------
+What the first tutorial covers
+------------------------------
 
-- Fetching an SDSS spectrum near ``(ra, dec) = (184.0307, -2.2383)``
-- Running ``JAXQSOFit`` with ``nuts``, ``optax``, and ``optax+nuts``
-- Overriding priors via ``prior_config``
-- Computing broad-line FWHM and luminosity from fitted components
+- Downloading an SDSS spectrum with ``astroquery``
+- Overriding the default priors with ``PriorConfig``
+- Configuring a fit with ``FitConfig`` and choosing ``optax``, ``optax+nuts``, or ``nuts``
+- Inspecting the posterior and the fitted components through ``result.spectrum``
+- Measuring broad-line FWHM and luminosity with posterior uncertainties
