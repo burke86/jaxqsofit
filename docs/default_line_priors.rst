@@ -25,16 +25,12 @@ Optional optical and red/NIR narrow lines
 :data:`jaxqsofit.defaults.DEFAULT_ELG_NARROW_LINE_PRIOR_ROWS` adds a denser
 narrow-line list for emission-line-galaxy and host-dominated spectra. It
 includes the resolved [O II] doublet, [Ne III], additional narrow Balmer lines,
-He I, [O I], [N II], [S II], near-IR Paschen lines, and [S III]. Enable it when
-constructing the prior configuration:
+He I, [O I], [N II], [S II], near-IR Paschen lines, and [S III]. Enable it on the
+line configuration (see :doc:`lines`):
 
 .. code-block:: python
 
-   cfg.prior_config = PriorConfig.from_spectrum(
-       flux=flux,
-       redshift=z,
-       include_elg_narrow_lines=True,
-   )
+   cfg.lines.include_elg_narrow_lines = True
 
 .. optical-line-table::
 
@@ -47,11 +43,7 @@ together with the broader optical table:
 
 .. code-block:: python
 
-   cfg.prior_config = PriorConfig.from_spectrum(
-       flux=flux,
-       redshift=z,
-       include_high_ionization_lines=True,
-   )
+   cfg.lines.include_high_ionization_lines = True
 
 .. high-ionization-line-table::
 

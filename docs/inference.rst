@@ -89,9 +89,24 @@ starts from default initial values built from the priors and the line table.
    result.plot_trace()
 
 The mass matrix is diagonal except for compact dense blocks for each emission-line
-complex (``dense_mass=False``, ``line_block_dense_mass=True``, the defaults).
-``max_tree_depth`` and ``warmup_max_tree_depth`` limit the trajectory length; see
-:doc:`quickstart` for tuning a difficult tied-line spectrum.
+complex and its shared ordered-width hierarchy (``dense_mass=False``,
+``line_block_dense_mass=True``, the defaults); the continuum, host and unrelated line
+coordinates stay diagonal. ``dense_mass=True`` requests one fully dense matrix
+instead, which usually needs much more warmup; ``line_block_dense_mass=False`` makes
+it fully diagonal.
+
+``max_tree_depth`` limits the trajectory length during both warmup and sampling.
+For a difficult tied-line spectrum, try a longer but shallower warmup before raising
+the limit for the retained draws:
+
+.. code-block:: python
+
+   cfg.inference.num_warmup = 500
+   cfg.inference.warmup_max_tree_depth = 7
+   cfg.inference.max_tree_depth = 8
+
+The extra warmup draws matter: with only 250 warmup draws, a depth-7 limit can leave
+the line-block covariance under-adapted.
 
 Laplace approximation (``"laplace"``)
 -------------------------------------
